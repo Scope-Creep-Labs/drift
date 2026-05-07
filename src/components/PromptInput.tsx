@@ -1,36 +1,29 @@
 import { useState, useCallback, KeyboardEvent } from 'react'
 import { Box, IconButton, Paper, TextField, Tooltip, CircularProgress } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
-import { usePromptMutation } from '../query/usePromptMutation'
-import { useInvestigationStore } from '../state/investigationStore'
+import StopIcon from '@mui/icons-material/Stop'
+import { useInvestigate } from '../query/useInvestigate'
 
 export function PromptInput() {
   const [value, setValue] = useState('')
-  const mutation = usePromptMutation()
-  const activeId = useInvestigationStore((s) => s.activeId)
-  const create = useInvestigationStore((s) => s.createInvestigation)
+  const { submit, cancel, isStreaming, error } = useInvestigate()
 
-  const submit = useCallback(() => {
+  const onSubmit = useCallback(() => {
     const prompt = value.trim()
-    if (!prompt || mutation.isPending) return
-    if (!activeId) create()
-    mutation.mutate(
-      { prompt },
-      {
-        onSuccess: () => setValue(''),
-      },
-    )
-  }, [value, mutation, activeId, create])
+    if (!prompt || isStreaming) return
+    submit({ prompt })
+    setValue('')
+  }, [value, isStreaming, submit])
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      submit()
+      onSubmit()
     }
   }
 
   return (
-    <Box sx={{ position: 'sticky', bottom: 0, pt: 2, pb: 2.5, px: 0, bgcolor: 'background.default' }}>
+    <Box sx={{ position: 'sticky', bottom: 0, pt: 2, pb: 2.5, bgcolor: 'background.default' }}>
       <Paper
         variant="outlined"
         sx={{
@@ -52,26 +45,38 @@ export function PromptInput() {
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={onKeyDown}
-          disabled={mutation.isPending}
+          disabled={isStreaming}
           InputProps={{ disableUnderline: true, sx: { fontSize: '0.95rem', px: 1 } }}
         />
-        <Tooltip title="Send (⌘/Ctrl + Enter)">
-          <span>
-            <IconButton
-              color="primary"
-              onClick={submit}
-              disabled={!value.trim() || mutation.isPending}
-              sx={{ alignSelf: 'flex-end' }}
-            >
-              {mutation.isPending ? <CircularProgress size={18} /> : <SendIcon fontSize="small" />}
+        {isStreaming ? (
+          <Tooltip title="Stop">
+            <IconButton color="error" onClick={cancel} sx={{ alignSelf: 'flex-end' }}>
+              <StopIcon fontSize="small" />
             </IconButton>
-          </span>
-        </Tooltip>
+          </Tooltip>
+        ) : (
+          <Tooltip title="Send (⌘/Ctrl + Enter)">
+            <span>
+              <IconButton
+                color="primary"
+                onClick={onSubmit}
+                disabled={!value.trim()}
+                sx={{ alignSelf: 'flex-end' }}
+              >
+                <SendIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+        )}
       </Paper>
-      {mutation.isError && (
-        <Box sx={{ mt: 1, color: 'error.main', fontSize: '0.8rem' }}>
-          {(mutation.error as Error).message}
+      {isStreaming && (
+        <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary' }}>
+          <CircularProgress size={12} />
+          <Box sx={{ fontSize: '0.78rem' }}>Investigating…</Box>
         </Box>
+      )}
+      {error && (
+        <Box sx={{ mt: 1, color: 'error.main', fontSize: '0.8rem' }}>{error}</Box>
       )}
     </Box>
   )

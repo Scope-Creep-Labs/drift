@@ -46,5 +46,16 @@ lerna-debug.log*
 coverage/
 .nyc_output/
 
+# Python (drift-agent)
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # Claude Code
 .claude/

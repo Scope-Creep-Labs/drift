@@ -1,5 +1,6 @@
-import type { PromptRequest, PromptResponse } from './prompt'
+import type { PromptRequest } from './prompt'
+import type { AgentEvent } from './agentEvents'
 
 export interface EngineAdapter {
-  run(req: PromptRequest): Promise<PromptResponse>
+  stream(req: PromptRequest, signal?: AbortSignal): AsyncIterable<AgentEvent>
 }

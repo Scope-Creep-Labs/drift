@@ -2,7 +2,8 @@
 
 interface ImportMetaEnv {
   readonly VITE_ENGINE?: string
-  readonly VITE_LANGFLOW_URL?: string
+  readonly VITE_API_BASE?: string
+  readonly VITE_AGENT_DEV_URL?: string
 }
 
 interface ImportMeta {

@@ -50,9 +50,12 @@ export default function ChartBlockPlotly({
     return <Skeleton variant="rounded" height={320} />
   }
   if (error) {
+    const isAgentRef = (block.dataRef ?? '').startsWith('prom://')
     return (
-      <Typography variant="body2" color="error">
-        Failed to load chart data: {(error as Error).message}
+      <Typography variant="body2" color="text.secondary" sx={{ fontStyle: 'italic' }}>
+        {isAgentRef
+          ? 'Chart data is no longer in cache (the page was reloaded). Re-run the prompt to refetch.'
+          : `Failed to load chart data: ${(error as Error).message}`}
       </Typography>
     )
   }
