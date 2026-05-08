@@ -4,6 +4,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import type { Turn as TurnT, StreamingTurn } from '../state/investigationStore'
 import { BlockRenderer } from './blocks/BlockRenderer'
 import { Scratchpad } from './Scratchpad'
+import { costForUsage, formatUsd } from '../lib/pricing'
 
 type TurnLike = TurnT | (StreamingTurn & { id: string; createdAt: string })
 
@@ -45,9 +46,22 @@ export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: 
               sx={{ display: 'block', mb: 1, textTransform: 'lowercase' }}
             >
               {turn.metadata.engine ?? 'agent'}
-              {turn.metadata.usage?.cache_read_input_tokens !== undefined &&
-                turn.metadata.usage.cache_read_input_tokens > 0 &&
-                ` · cache hit ${turn.metadata.usage.cache_read_input_tokens.toLocaleString()} tok`}
+              {(() => {
+                const u = turn.metadata.usage
+                if (!u) return null
+                const parts: string[] = []
+                if (u.input_tokens) parts.push(`in ${u.input_tokens.toLocaleString()}`)
+                if (u.output_tokens) parts.push(`out ${u.output_tokens.toLocaleString()}`)
+                if (u.cache_read_input_tokens) parts.push(`cache hit ${u.cache_read_input_tokens.toLocaleString()}`)
+                if (u.cache_creation_input_tokens) parts.push(`cache write ${u.cache_creation_input_tokens.toLocaleString()}`)
+                const cost = costForUsage(u)
+                return (
+                  <>
+                    {parts.length > 0 && ` · ${parts.join(' · ')} tok`}
+                    {cost > 0 && ` · ${formatUsd(cost)}`}
+                  </>
+                )
+              })()}
               {turn.metadata.stop_reason && ` · ${turn.metadata.stop_reason}`}
             </Typography>
           )}

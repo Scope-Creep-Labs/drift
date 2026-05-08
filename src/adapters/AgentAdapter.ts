@@ -3,7 +3,12 @@ import type { PromptRequest } from '../types/prompt'
 import type { AgentEvent } from '../types/agentEvents'
 import { parseSSE } from '../lib/sseParser'
 
-const API_BASE: string = import.meta.env.VITE_API_BASE ?? '/api'
+// When unset (or set to empty string by an ARG default), derive from Vite's
+// BASE_URL so the agent endpoint follows the app's deployment subroute
+// (e.g. base '/drift/' → API_BASE '/drift/api'). `||` (not `??`) is intentional
+// so that an empty string also triggers the fallback.
+const API_BASE: string =
+  import.meta.env.VITE_API_BASE || `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`
 
 export class AgentAdapter implements EngineAdapter {
   constructor(private readonly base: string = API_BASE) {}

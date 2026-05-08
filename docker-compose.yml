@@ -1,19 +1,13 @@
 # Drift — agentic observability platform
 #
-# Default `up` brings up the agent backend + frontend. Both expect a
+# `up` brings up the agent backend + frontend. Both expect a
 # Prometheus-compatible time-series source at $VM_URL.
 #
 #   docker compose up --build
 #
-# Add `--profile demo` to also start a self-contained VictoriaMetrics +
-# node-exporter + cAdvisor stack (the host running compose becomes its own
-# observability target):
-#
-#   docker compose --profile demo up --build
-#
 # Required env vars in .env:
 #   ANTHROPIC_API_KEY=sk-ant-...
-#   VM_URL=...                   # e.g. http://victoriametrics:8428 (default), or your own
+#   VM_URL=...                   # e.g. http://your-victoriametrics:8428
 #
 # All compose-managed services run on the `drift` bridge network.
 
@@ -24,14 +18,14 @@ services:
     image: drift-agent:latest
     env_file: .env
     environment:
-      VM_URL: ${VM_URL:-http://victoriametrics:8428}
+      VM_URL: ${VM_URL}
       VM_TENANT_PATH: ${VM_TENANT_PATH:-}
       VM_BASIC_AUTH: ${VM_BASIC_AUTH:-}
       VM_BEARER_TOKEN: ${VM_BEARER_TOKEN:-}
       MODEL: ${MODEL:-claude-opus-4-7}
       EFFORT: ${EFFORT:-high}
       MAX_TOKENS: ${MAX_TOKENS:-64000}
-      ALLOWED_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:10001,http://127.0.0.1:10001,https://drift.example.com}
     ports:
       - "8000:8000"
     networks: [drift]
@@ -43,69 +37,17 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_ENGINE: agent
-        VITE_API_BASE: /api
+        # Served at https://drift.example.com/drift/ behind Caddy.
+        # Use '/' for root-served deployments.
+        VITE_BASE: /drift/
     image: drift-frontend:latest
     depends_on:
       - drift-agent
     ports:
-      - "5173:80"
-    networks: [drift]
-    restart: unless-stopped
-
-  # ---- Demo telemetry stack (profile=demo) ----
-  # Self-contained metrics for testing without your real VictoriaMetrics.
-  # The compose host's containers and node-exporter become the data source.
-
-  victoriametrics:
-    profiles: [demo]
-    image: victoriametrics/victoria-metrics:v1.106.0
-    volumes:
-      - ./compose/scrape.yaml:/etc/vm/scrape.yaml:ro
-      - vm-data:/storage
-    command:
-      - "-storageDataPath=/storage"
-      - "-retentionPeriod=14d"
-      - "-promscrape.config=/etc/vm/scrape.yaml"
-      - "-httpListenAddr=:8428"
-    ports:
-      - "8428:8428"
-    networks: [drift]
-    restart: unless-stopped
-
-  node-exporter:
-    profiles: [demo]
-    image: prom/node-exporter:v1.8.2
-    pid: host
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro,rslave
-    command:
-      - "--path.procfs=/host/proc"
-      - "--path.sysfs=/host/sys"
-      - "--path.rootfs=/rootfs"
-      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
-    networks: [drift]
-    restart: unless-stopped
-
-  cadvisor:
-    profiles: [demo]
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    privileged: true
-    devices:
-      - /dev/kmsg
-    volumes:
-      - /:/rootfs:ro
-      - /var/run:/var/run:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - "10001:80"
     networks: [drift]
     restart: unless-stopped
 
 networks:
   drift:
     driver: bridge
-
-volumes:
-  vm-data:

@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     effort: str = "high"
     max_tokens: int = 64000
 
-    vm_url: str = "http://victoriametrics:8428"
+    vm_url: str = ""
     vm_tenant_path: str = ""
     vm_basic_auth: str = ""
     vm_bearer_token: str = ""

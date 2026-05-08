@@ -10,7 +10,7 @@
 
 - **Frontend** — React + Material UI dark theme, Plotly time-series charts, real-time streaming UI that surfaces the agent's thinking and tool calls.
 - **Backend** — FastAPI agent powered by Claude Opus 4.7 with adaptive thinking, prompt caching, and 16 tools across discovery / query / analysis / render-block emission.
-- **Compose stack** — slim Docker images for both, plus an optional self-contained demo profile that monitors itself via VictoriaMetrics + node-exporter + cAdvisor.
+- **Compose stack** — slim Docker images for both services. Brings its own TSDB? No — point it at any Prometheus-compatible source via `VM_URL`.
 
 ```
 prompt → agent (tool use → metrics fetch → analysis) → streaming render blocks → UI
@@ -28,51 +28,40 @@ prompt → agent (tool use → metrics fetch → analysis) → streaming render 
 | Python       | ≥ 3.12   | Local backend dev (alternative to Docker).     |
 | Anthropic API key | — | Required for the agent to actually call the LLM. Get one at https://console.anthropic.com. |
 
-You also need a **Prometheus-compatible time-series source** the agent can reach. Three options:
-- Use the in-compose demo stack (`--profile demo`) — zero external dependencies.
-- Point at your existing VictoriaMetrics (single-node or vmselect cluster) via `VM_URL`.
-- Use any Prometheus-API-compatible store (Prometheus itself, Thanos, Grafana Mimir, etc.).
+You also need a **Prometheus-compatible time-series source** the agent can reach:
+- Your VictoriaMetrics (single-node or vmselect cluster) via `VM_URL`.
+- Any Prometheus-API-compatible store (Prometheus, Thanos, Grafana Mimir, etc.).
+
+> On this host, a VM stack lives at `/root/setup/victoria/` (single-node VM on `:8428`, vmauth basic-auth proxy on `:8427`, Grafana on `:3000`) with a vmagent + cadvisor reporter at `/root/setup/victoria/reporter/`. The shipped `.env.example` shows how to point Drift at it via the public vmauth URL.
 
 ---
 
 ## Quickstart
 
-Three paths, pick whichever fits.
+Two paths, pick whichever fits.
 
-### Option A — self-contained Docker demo (recommended first run)
-
-The compose stack monitors itself. No external telemetry needed.
+### Option A — Docker
 
 ```bash
 git clone <this repo>
 cd drift
 cp .env.example .env
-$EDITOR .env                                   # paste ANTHROPIC_API_KEY
-docker compose --profile demo up --build
-```
-
-Open <http://localhost:5173>. The agent now has metrics flowing from a VictoriaMetrics instance scraping node-exporter and cAdvisor running alongside it. Try:
-
-- *"Which hosts are reporting metrics, and what jobs are scraping?"*
-- *"Show CPU usage on compose-host over the last 15 minutes."*
-- *"Which containers are using the most memory right now?"*
-- *"Look for anomalies in network traffic over the last hour."*
-
-Stop with `docker compose --profile demo down`. Add `-v` to also wipe the VictoriaMetrics volume.
-
-### Option B — Docker pointing at your own VictoriaMetrics
-
-```bash
-cp .env.example .env
-$EDITOR .env       # ANTHROPIC_API_KEY plus VM_URL pointing at your VM
+$EDITOR .env       # ANTHROPIC_API_KEY plus VM_URL (and VM_BASIC_AUTH / VM_BEARER_TOKEN if needed)
 docker compose up --build
 ```
 
-For VM cluster (vmselect): set `VM_TENANT_PATH=/select/<accountID>/prometheus`.
+The frontend is exposed on host port `10001` (mapped to nginx :80 in the container). Open <http://localhost:10001> for direct access, or wire it up behind a reverse proxy at the path of your choice (this repo's deployment is at <https://drift.example.com/drift/>). Try:
 
-For auth: set `VM_BASIC_AUTH=user:pass` or `VM_BEARER_TOKEN=...`.
+- *"Which hosts are reporting metrics, and what jobs are scraping?"*
+- *"Show CPU usage on the host over the last 15 minutes."*
+- *"Which containers are using the most memory right now?"*
+- *"Look for anomalies in network traffic over the last hour."*
 
-### Option C — local dev (no Docker)
+For VM cluster (vmselect): set `VM_TENANT_PATH=/select/<accountID>/prometheus`. For auth: set `VM_BASIC_AUTH=user:pass` or `VM_BEARER_TOKEN=...`.
+
+If your VM is on the **docker host** (not in another compose stack on a shared network), use `VM_URL=http://host.docker.internal:8428` and add `extra_hosts: ["host.docker.internal:host-gateway"]` to the `drift-agent` service.
+
+### Option B — local dev (no Docker)
 
 Run the backend in a venv and the frontend in Vite's dev server. Best for iterating on code.
 
@@ -118,7 +107,7 @@ In Docker, only the root `.env` matters. In local dev, both can exist independen
 | Variable             | Required | Default                                  | Notes                                      |
 | -------------------- | -------- | ---------------------------------------- | ------------------------------------------ |
 | `ANTHROPIC_API_KEY`  | yes      | —                                        | Claude API key.                            |
-| `VM_URL`             | yes      | `http://victoriametrics:8428`            | Base URL of your VictoriaMetrics / Prometheus. |
+| `VM_URL`             | yes      | —                                        | Base URL of your VictoriaMetrics / Prometheus. |
 | `VM_TENANT_PATH`     | no       | `""`                                     | `/select/<id>/prometheus` for vmselect; empty for single-node. |
 | `VM_BASIC_AUTH`      | no       | `""`                                     | `user:pass`. Sent as `Authorization: Basic`. |
 | `VM_BEARER_TOKEN`    | no       | `""`                                     | Sent as `Authorization: Bearer <token>`.    |
@@ -135,7 +124,7 @@ In Docker, only the root `.env` matters. In local dev, both can exist independen
 | `VITE_API_BASE`       | `/api`                | Base URL the AgentAdapter POSTs to.                     |
 | `VITE_AGENT_DEV_URL`  | `http://localhost:8000` | Where Vite's dev proxy forwards `/api/*`. Dev only.   |
 
-In Docker, the frontend image is built with `VITE_ENGINE=agent` and `VITE_API_BASE=/api` (via build args in the Dockerfile). Override at build time with `--build-arg VITE_ENGINE=mock` if you want the demo without the backend.
+In Docker, the frontend image is built with `VITE_ENGINE=agent` and `VITE_API_BASE=/api` (via build args in the Dockerfile). Override at build time with `--build-arg VITE_ENGINE=mock` if you want the UI without the backend.
 
 ---
 
@@ -147,7 +136,7 @@ Top level:
 drift/
 ├── README.md                  this file
 ├── ARCHITECTURE.md            deep dive: data flow, agent loop, dataRef pattern, tool catalog
-├── docker-compose.yml         frontend + agent (always); demo telemetry (--profile demo)
+├── docker-compose.yml         frontend + agent
 ├── Dockerfile                 frontend: alpine node builder + nginx alpine runtime
 ├── nginx.conf                 SPA + SSE-friendly /api proxy
 ├── package.json               frontend dependencies
@@ -156,7 +145,6 @@ drift/
 ├── index.html
 ├── src/                       React frontend
 ├── drift-agent/               Python backend (FastAPI + agent + tools)
-├── compose/                   compose support (scrape.yaml for demo VM)
 └── spec/                      original product specs (reference only)
 ```
 
@@ -220,7 +208,8 @@ Either the key is invalid, the model ID is wrong, or you've hit a rate limit. Ch
 
 **Agent runs but every tool call fails with HTTP timeout / connection refused.**
 The agent can't reach `VM_URL`. From inside the agent container: `docker compose exec drift-agent curl -s "$VM_URL/api/v1/labels"`. Common causes:
-- Wrong host (the in-compose VM is `victoriametrics:8428`, not `localhost:8428`).
+- VM is on the docker host but `VM_URL=http://localhost:8428` — containers can't see the host's `localhost`. Use `http://host.docker.internal:8428` with an `extra_hosts: host-gateway` mapping, or attach drift to the VM stack's docker network.
+- Auth required but `VM_BASIC_AUTH` / `VM_BEARER_TOKEN` not set (e.g. you're hitting `vmauth` on `:8427`, not `vm:8428`).
 - Firewall / Tailscale not connected.
 - vmselect cluster but you forgot `VM_TENANT_PATH=/select/0/prometheus`.
 

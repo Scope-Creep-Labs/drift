@@ -76,21 +76,20 @@ What Drift is **not**:
                    │
                    ▼
         ┌────────────────────┐
-        │   VictoriaMetrics  │  ← scrapes node-exporter + cAdvisor
-        │   (or your real    │     (compose --profile demo)
-        │    aggregator)     │     or your real fleet
+        │   VictoriaMetrics  │  ← external; reached via VM_URL
+        │   (or any Prom-    │
+        │    compatible TSDB)│
         └────────────────────┘
 ```
 
-Three deployable services in `docker-compose.yml`:
+Two deployable services in `docker-compose.yml`:
 
-| Service          | Default | What it does                                                   |
-| ---------------- | ------- | -------------------------------------------------------------- |
-| `drift-agent`    | always  | FastAPI backend, agent loop, tools, SSE endpoint               |
-| `drift-frontend` | always  | nginx serving the built SPA + reverse-proxying `/api/*`        |
-| `victoriametrics`| `demo`  | Single-node VM; scrapes the demo `node-exporter` and `cadvisor` |
-| `node-exporter`  | `demo`  | Host-level metrics from the compose host                        |
-| `cadvisor`       | `demo`  | Per-container metrics from the Docker daemon                    |
+| Service          | What it does                                                   |
+| ---------------- | -------------------------------------------------------------- |
+| `drift-agent`    | FastAPI backend, agent loop, tools, SSE endpoint               |
+| `drift-frontend` | nginx serving the built SPA + reverse-proxying `/api/*`        |
+
+The TSDB is **not** managed by this compose stack — point `VM_URL` at any Prometheus-API-compatible source (your own VictoriaMetrics, Prometheus, Thanos, Mimir, etc.). On this host, the VM stack at `/root/setup/victoria/` is reachable via its public vmauth proxy with basic auth (see `.env.example`).
 
 ---
 
@@ -651,8 +650,6 @@ drift/
 │           ├── metrics.py         VMClient, ToolContext, discovery + query tools.
 │           ├── analysis.py        numpy/scipy stats tools.
 │           └── emit.py            make_* tools that push SSE block/data events.
-├── compose/
-│   └── scrape.yaml                Demo VictoriaMetrics scrape config.
 └── spec/                          Original product specs (reference only — code is authoritative).
     ├── prompt_driven_observability_notebook_simplified_spec.md
     └── drift_agentic_observability_spec.md

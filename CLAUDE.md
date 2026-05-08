@@ -34,9 +34,10 @@ npm run dev   # uses .env.local: VITE_ENGINE=agent, VITE_AGENT_DEV_URL=http://lo
 **Docker (full stack):**
 
 ```bash
-docker compose --profile demo up --build       # self-contained, monitors itself
 docker compose up --build                      # uses external VM_URL from .env
 ```
+
+The TSDB is external — not part of this compose stack. On this host, a VM stack at `/root/setup/victoria/` is reachable via the public vmauth URL configured in `.env.example`.
 
 **Type-check:**
 

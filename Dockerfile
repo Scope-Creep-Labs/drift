@@ -13,10 +13,14 @@ COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
 
 # In Docker, the frontend talks to the agent through nginx → drift-agent.
-# Override at build time via --build-arg if needed.
+# Override at build time via --build-arg if needed. VITE_BASE supports
+# subroute deployments (e.g. /drift/) — leave as / for root-served sites.
+# VITE_API_BASE is empty by default and auto-derives from VITE_BASE at runtime.
 ARG VITE_ENGINE=agent
-ARG VITE_API_BASE=/api
+ARG VITE_BASE=/
+ARG VITE_API_BASE=
 ENV VITE_ENGINE=${VITE_ENGINE} \
+    VITE_BASE=${VITE_BASE} \
     VITE_API_BASE=${VITE_API_BASE}
 
 RUN npm run build

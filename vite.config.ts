@@ -5,8 +5,12 @@ import path from 'node:path'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const agentTarget = env.VITE_AGENT_DEV_URL || 'http://localhost:8000'
+  // Subroute support: set VITE_BASE=/drift/ to serve from https://host/drift/.
+  // Must include a trailing slash. Defaults to '/' for root-served deployments and dev.
+  const base = env.VITE_BASE || '/'
 
   return {
+    base,
     plugins: [react()],
     resolve: {
       alias: {
