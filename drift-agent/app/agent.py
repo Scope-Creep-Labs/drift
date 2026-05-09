@@ -71,6 +71,42 @@ def all_handlers() -> dict:
     return {**METRICS_HANDLERS, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
 
 
+def _sanitize_assistant_content(blocks: Any) -> list[dict]:
+    """Re-serialize assistant blocks for inclusion in the next turn's `messages`.
+
+    The Anthropic API rejects server-only response fields if they're echoed back
+    (e.g. `parsed_output` on text blocks emitted under `output_config.effort`).
+    Whitelist what we send to keep round-trips valid.
+    """
+    out: list[dict] = []
+    for b in blocks:
+        d = b.model_dump(exclude_none=True)
+        t = d.get("type")
+        if t == "text":
+            keep = {"type": "text", "text": d.get("text", "")}
+            if d.get("citations"):
+                keep["citations"] = d["citations"]
+            out.append(keep)
+        elif t == "thinking":
+            keep = {"type": "thinking", "thinking": d.get("thinking", "")}
+            if d.get("signature"):
+                keep["signature"] = d["signature"]
+            out.append(keep)
+        elif t == "redacted_thinking":
+            out.append({"type": "redacted_thinking", "data": d.get("data", "")})
+        elif t == "tool_use":
+            out.append({
+                "type": "tool_use",
+                "id": d["id"],
+                "name": d["name"],
+                "input": d.get("input", {}),
+            })
+        else:
+            # Unknown block type — pass through and hope the API accepts it.
+            out.append(d)
+    return out
+
+
 def _summarize_for_event(name: str, result: Any) -> str:
     """Compact one-line preview for the UI's tool-call chip."""
     if not isinstance(result, dict):
@@ -197,7 +233,7 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
                 return
 
             # Run tools and stream events.
-            messages.append({"role": "assistant", "content": [b.model_dump() for b in final.content]})
+            messages.append({"role": "assistant", "content": _sanitize_assistant_content(final.content)})
 
             tool_results = []
             for tu in tool_uses:
