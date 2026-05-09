@@ -14,7 +14,7 @@ export const theme = createTheme({
   typography: {
     fontFamily:
       '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
-    fontSize: 13,
+    fontSize: 15,
     h6: { fontWeight: 600, fontSize: '0.95rem' },
     body2: { lineHeight: 1.55 },
   },
