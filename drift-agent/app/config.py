@@ -14,6 +14,25 @@ class Settings(BaseSettings):
     vm_basic_auth: str = ""
     vm_bearer_token: str = ""
 
+    # vmalert + Alertmanager. Both are optional — if URLs are empty, the
+    # alert tools just refuse to run with a clear error message.
+    vmalert_url: str = ""
+    vmalert_basic_auth: str = ""
+    alertmanager_url: str = ""
+    alertmanager_basic_auth: str = ""
+
+    # Path (inside the drift-agent container) where rule files live. The
+    # agent reads/writes only `<dir>/drift-managed.yml` to avoid touching
+    # hand-edited rule files in the same directory.
+    vmalert_rules_dir: str = "/etc/alerts"
+
+    # alertmanager.yml location inside the drift-agent container (rw mount)
+    # and the secrets directory (ro mount). Receiver secrets are referenced
+    # as `<secrets_dir>/<filename>` from the agent's writes; the agent never
+    # reads file contents — just checks for presence.
+    alertmanager_config_file: str = "/etc/alertmanager/alertmanager.yml"
+    alertmanager_secrets_dir: str = "/etc/alertmanager/secrets"
+
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property

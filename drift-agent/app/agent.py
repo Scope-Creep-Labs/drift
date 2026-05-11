@@ -8,6 +8,7 @@ import anthropic
 from .config import settings
 from .schemas import PromptRequest
 from .stream import sse
+from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
 from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
 from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm_client
@@ -37,7 +38,20 @@ efficiently.
 `compare_distributions`, and `detect_change_point` for actual math. Don't eyeball numbers \
 or invent statistics — call a tool.
 
-4. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
+4. **Manage alerts when asked.** Read-only: `list_alert_rules`, `list_active_alerts`, \
+`list_silences`, `list_receivers`. Rule lifecycle: `silence_alert`, `delete_silence`, \
+`propose_alert_rule`, `apply_alert_rule`, `delete_alert_rule`. Receiver/route lifecycle: \
+`propose_receiver`, `upsert_receiver`, `delete_receiver`, `set_route`, `delete_route`. \
+When the user asks to create or change a rule OR a receiver, ALWAYS call the corresponding \
+`propose_*` first, show the YAML in a `make_markdown` block, and wait for explicit \
+confirmation before applying. Rules are owned in `drift-managed.yml`; hand-edited files \
+are off-limits. **Receiver secrets** (webhook URLs, bearer tokens, basic-auth passwords) \
+must NEVER appear in your tool input — pass FILENAMES (e.g. `auth_credentials_file: \
+"ntfy-default"`), and tell the user which secret files to populate on the host. \
+**Confirm before silencing** anything with a broad matcher (e.g. a bare `severity=warning`) \
+— over-silencing hides real problems.
+
+5. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a scratchpad. The user-visible \
 response — narrative, charts, tables, metrics, timelines — must be assembled by calling \
 `make_markdown`, `make_chart`, `make_table`, `make_metric`, and `make_timeline`. Emit blocks \
@@ -64,11 +78,11 @@ what you tried and what would be needed to answer the question.\
 
 
 def all_tools() -> list[dict]:
-    return [*METRICS_TOOLS, *ANALYSIS_TOOLS, *EMIT_TOOLS]
+    return [*METRICS_TOOLS, *ALERT_TOOLS, *ANALYSIS_TOOLS, *EMIT_TOOLS]
 
 
 def all_handlers() -> dict:
-    return {**METRICS_HANDLERS, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
+    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
 
 
 def _sanitize_assistant_content(blocks: Any) -> list[dict]:
@@ -128,6 +142,36 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{ns} series · {n} pts · ref {result.get('ref','?')}"
     if name == "instant_query":
         return f"{result.get('n', 0)} rows"
+    if name == "list_alert_rules":
+        return f"{result.get('n', 0)} rules"
+    if name == "list_active_alerts":
+        firing = sum(1 for a in result.get("alerts") or [] if a.get("state") == "firing")
+        pending = sum(1 for a in result.get("alerts") or [] if a.get("state") == "pending")
+        return f"{firing} firing · {pending} pending"
+    if name == "list_silences":
+        return f"{result.get('n', 0)} silences"
+    if name == "list_receivers":
+        return f"{result.get('n', 0)} receivers"
+    if name == "silence_alert":
+        return f"silenced → {result.get('silence_id', '?')[:8]}…"
+    if name == "delete_silence":
+        return f"deleted {result.get('deleted', '?')[:8]}…"
+    if name == "propose_alert_rule":
+        return f"{result.get('action', '?')} → {result.get('name', '?')}"
+    if name == "apply_alert_rule":
+        return f"{result.get('action', '?')} {result.get('name', '?')}"
+    if name == "delete_alert_rule":
+        return f"deleted {result.get('deleted', '?')}"
+    if name == "propose_receiver":
+        return f"{result.get('action', '?')} → {result.get('name', '?')}"
+    if name == "upsert_receiver":
+        return f"{result.get('action', '?')} {result.get('name', '?')}"
+    if name == "delete_receiver":
+        return f"deleted receiver {result.get('deleted', '?')}"
+    if name == "set_route":
+        return f"{result.get('action', '?')} route → {result.get('receiver', '?')}"
+    if name == "delete_route":
+        return f"deleted route → {result.get('deleted_for', '?')}"
     if name == "summarize_series":
         return f"{len(result.get('series') or [])} series summarized"
     if name == "detect_anomalies":
@@ -152,13 +196,14 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     """Run the tool-use loop and yield SSE bytes for the response stream."""
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     vm = make_vm_client()
+    alerts = make_alert_client()
 
     events: list[bytes] = []  # outbound buffer for sync emit calls within this scope
 
     async def emit(event: str, data: Any) -> None:
         events.append(sse(event, data))
 
-    ctx = ToolContext(vm=vm, emit=emit)
+    ctx = ToolContext(vm=vm, emit=emit, alerts=alerts)
     handlers = all_handlers()
     tools = all_tools()
 
@@ -283,3 +328,4 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
         yield sse("done", {})
     finally:
         await vm.aclose()
+        await alerts.aclose()

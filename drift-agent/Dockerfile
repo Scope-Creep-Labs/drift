@@ -18,7 +18,8 @@ RUN pip install --upgrade pip wheel \
         "pydantic>=2.9.0" \
         "pydantic-settings>=2.6.0" \
         "numpy>=2.1.0" \
-        "scipy>=1.14.0"
+        "scipy>=1.14.0" \
+        "pyyaml>=6.0"
 
 # ---- Runtime ----
 FROM python:3.12-slim AS runtime

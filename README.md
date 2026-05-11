@@ -3,6 +3,8 @@
 **Agentic observability for time-series systems.** Ask questions about your telemetry in plain language; an LLM agent picks the right tools, queries your VictoriaMetrics / Prometheus, runs statistical analysis, and assembles a rich response — markdown, charts, tables, metric cards, timelines — that streams progressively into the UI as the investigation unfolds.
 
 > 📐 For the full architecture deep dive (data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+>
+> 🚨 For the alerting subsystem (vmalert + Alertmanager + the agent's 14 alert tools, with end-to-end workflows), see [ALERTING.md](./ALERTING.md).
 
 ---
 
@@ -136,6 +138,7 @@ Top level:
 drift/
 ├── README.md                  this file
 ├── ARCHITECTURE.md            deep dive: data flow, agent loop, dataRef pattern, tool catalog
+├── ALERTING.md                vmalert + Alertmanager subsystem; alert/silence/receiver tools
 ├── docker-compose.yml         frontend + agent
 ├── Dockerfile                 frontend: alpine node builder + nginx alpine runtime
 ├── nginx.conf                 SPA + SSE-friendly /api proxy

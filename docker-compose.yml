@@ -22,12 +22,31 @@ services:
       VM_TENANT_PATH: ${VM_TENANT_PATH:-}
       VM_BASIC_AUTH: ${VM_BASIC_AUTH:-}
       VM_BEARER_TOKEN: ${VM_BEARER_TOKEN:-}
+      VMALERT_URL: ${VMALERT_URL:-}
+      VMALERT_BASIC_AUTH: ${VMALERT_BASIC_AUTH:-}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-}
+      ALERTMANAGER_BASIC_AUTH: ${ALERTMANAGER_BASIC_AUTH:-}
       MODEL: ${MODEL:-claude-opus-4-7}
       EFFORT: ${EFFORT:-high}
       MAX_TOKENS: ${MAX_TOKENS:-64000}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:10001,http://127.0.0.1:10001,https://drift.example.com}
+      VMALERT_RULES_DIR: ${VMALERT_RULES_DIR:-/etc/alerts}
+      ALERTMANAGER_CONFIG_FILE: ${ALERTMANAGER_CONFIG_FILE:-/etc/alertmanager/alertmanager.yml}
+      ALERTMANAGER_SECRETS_DIR: ${ALERTMANAGER_SECRETS_DIR:-/etc/alertmanager/secrets}
     ports:
       - "8000:8000"
+    # Bind-mount the vmalert rule dir so the agent can write
+    # `drift-managed.yml` and trigger a reload. Set VMALERT_RULES_HOST_DIR
+    # in .env to the path on the docker host (default points at the local
+    # VM stack at /root/setup/victoria/alerts).
+    #
+    # Also mount alertmanager.yml (rw) + the AM secrets dir (ro) so the
+    # agent can manage receivers/routes via webhook references — but never
+    # see the secret contents themselves.
+    volumes:
+      - ${VMALERT_RULES_HOST_DIR:-/root/setup/victoria/alerts}:/etc/alerts:rw
+      - ${ALERTMANAGER_CONFIG_HOST_FILE:-/root/setup/victoria/alertmanager.yml}:/etc/alertmanager/alertmanager.yml:rw
+      - ${ALERTMANAGER_SECRETS_HOST_DIR:-/root/setup/victoria/am-secrets}:/etc/alertmanager/secrets:ro
     networks: [drift]
     restart: unless-stopped
 
