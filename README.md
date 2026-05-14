@@ -5,6 +5,8 @@
 > 📐 For the full architecture deep dive (data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference), see [ARCHITECTURE.md](./ARCHITECTURE.md).
 >
 > 🚨 For the alerting subsystem (vmalert + Alertmanager + the agent's 14 alert tools, with end-to-end workflows), see [ALERTING.md](./ALERTING.md).
+>
+> 🚀 For Drift Deploy — fleet management & compose-app deployment via the prompt UI — see [DEPLOY.md](./DEPLOY.md) (currently in the `drift-deploy` branch).
 
 ---
 
@@ -139,6 +141,7 @@ drift/
 ├── README.md                  this file
 ├── ARCHITECTURE.md            deep dive: data flow, agent loop, dataRef pattern, tool catalog
 ├── ALERTING.md                vmalert + Alertmanager subsystem; alert/silence/receiver tools
+├── DEPLOY.md                  Drift Deploy user guide; deploy/commission/migrate scenarios
 ├── docker-compose.yml         frontend + agent
 ├── Dockerfile                 frontend: alpine node builder + nginx alpine runtime
 ├── nginx.conf                 SPA + SSE-friendly /api proxy
