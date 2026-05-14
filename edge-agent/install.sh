@@ -2,17 +2,18 @@
 # Drift Deploy agent installer.
 #
 # Pipe-able from the control plane:
-#   curl -sSL -u 'drift:CADDY_PW' $CP_URL/agent/install.sh | \
+#   curl -sSL $CP_URL/agent/install.sh | \
 #     DEVICE_NAME=<name> BOOTSTRAP_TOKEN=<token> \
-#     CP_URL=$CP_URL CP_BASIC_AUTH='drift:CADDY_PW' \
-#     MANAGED_APPS=podnot,ente sudo -E bash
+#     CP_URL=$CP_URL MANAGED_APPS=podnot,ente sudo -E bash
+#
+# Auth model: bearer-only. /drift/api/deploy/agent/* is not gated by
+# Caddy basic_auth — the device's bootstrap token is the credential.
 
 set -euo pipefail
 
 : "${DEVICE_NAME:?DEVICE_NAME required}"
 : "${BOOTSTRAP_TOKEN:?BOOTSTRAP_TOKEN required}"
 : "${CP_URL:?CP_URL required}"
-: "${CP_BASIC_AUTH:?CP_BASIC_AUTH required}"
 MANAGED_APPS=${MANAGED_APPS:-}
 POLL_INTERVAL=${POLL_INTERVAL:-30}
 
@@ -46,17 +47,16 @@ cat > /etc/drift-deploy/env <<EOF
 DEVICE_NAME=$DEVICE_NAME
 BOOTSTRAP_TOKEN=$BOOTSTRAP_TOKEN
 CP_URL=$CP_URL
-CP_BASIC_AUTH=$CP_BASIC_AUTH
 MANAGED_APPS=$MANAGED_APPS
 POLL_INTERVAL=$POLL_INTERVAL
 EOF
 chmod 600 /etc/drift-deploy/env
 umask 022
 
-curl -fsSL -u "$CP_BASIC_AUTH" "$CP_URL/agent/agent.sh" -o /usr/local/bin/drift-deploy-agent.sh
+curl -fsSL "$CP_URL/agent/agent.sh" -o /usr/local/bin/drift-deploy-agent.sh
 chmod +x /usr/local/bin/drift-deploy-agent.sh
 
-curl -fsSL -u "$CP_BASIC_AUTH" "$CP_URL/agent/drift-deploy-agent.service" \
+curl -fsSL "$CP_URL/agent/drift-deploy-agent.service" \
      -o /etc/systemd/system/drift-deploy-agent.service
 
 systemctl daemon-reload

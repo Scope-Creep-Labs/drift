@@ -76,15 +76,14 @@ async def delete_device(name: str, db: AsyncSession = Depends(get_db)) -> None:
 
 
 def _render_install_cmd(name: str, token: str) -> str:
-    # Placeholder install URL — real script ships in the bash-agent step.
-    # The Caddy basic_auth pair is left as a placeholder because the
-    # operator pasting this one-liner already knows it (it's how they
-    # log into Drift's UI).
+    # /drift/api/deploy/agent/* is intentionally NOT Caddy-basic-auth-gated
+    # (the bootstrap token is the device's credential), so no -u flag is
+    # needed here. The token itself is the secret.
     return (
-        f"curl -sSL -u 'drift:CADDY_PASSWORD' https://drift.example.com/drift/api/deploy/agent/install.sh | "
+        f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
         f"CP_URL=https://drift.example.com/drift/api/deploy "
-        f"CP_BASIC_AUTH='drift:CADDY_PASSWORD' sudo -E bash"
+        f"MANAGED_APPS= sudo -E bash"
     )
 
 

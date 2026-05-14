@@ -203,8 +203,8 @@ async def commission_device(_ctx: ToolContext, args: dict) -> dict:
         "guidance": (
             "Paste the install_cmd on the new device as root. The bootstrap_token shown "
             "here is the only credential the agent needs and is shown ONCE — treat it like "
-            "a password. Replace CADDY_PASSWORD with the same credential you use to log "
-            "into the Drift UI."
+            "a password. Fill in MANAGED_APPS= with a comma-separated list of apps this "
+            "device is allowed to deploy (e.g. MANAGED_APPS=podnot,reporter)."
         ),
     }
 
@@ -225,14 +225,13 @@ async def delete_device(_ctx: ToolContext, args: dict) -> dict:
 
 
 def _render_install_cmd(name: str, token: str) -> str:
-    # Same shape as routes_admin._render_install_cmd; duplicated here so the
-    # tool layer doesn't depend on route internals.
+    # Mirror of routes_admin._render_install_cmd. Bearer-only auth — Caddy
+    # is configured to NOT basic_auth /drift/api/deploy/agent/* paths.
     return (
-        f"curl -sSL -u 'drift:CADDY_PASSWORD' "
-        f"https://drift.example.com/drift/api/deploy/agent/install.sh | "
+        f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
         f"CP_URL=https://drift.example.com/drift/api/deploy "
-        f"CP_BASIC_AUTH='drift:CADDY_PASSWORD' sudo -E bash"
+        f"MANAGED_APPS= sudo -E bash"
     )
 
 

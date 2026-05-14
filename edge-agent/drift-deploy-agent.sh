@@ -2,8 +2,13 @@
 # Drift Deploy edge agent — v0 (bash + systemd).
 #
 # Loaded from /etc/drift-deploy/env:
-#   DEVICE_NAME, BOOTSTRAP_TOKEN, CP_URL, CP_BASIC_AUTH (user:pass for Caddy),
+#   DEVICE_NAME, BOOTSTRAP_TOKEN, CP_URL,
 #   MANAGED_APPS (comma-separated allowlist), POLL_INTERVAL (default 30s).
+#
+# Auth model: bearer-only. The Caddy reverse proxy is configured to NOT
+# basic_auth /drift/api/deploy/agent/* paths because we can't send both
+# Caddy's `Authorization: Basic` and our `Authorization: Bearer` in the
+# same request (HTTP Authorization is single-valued).
 #
 # Loop: every POLL_INTERVAL seconds, POST /agent/check-in with current
 # revisions, receive desired state with presigned bundle URLs, apply any
@@ -20,7 +25,6 @@ set -euo pipefail
 : "${DEVICE_NAME:?DEVICE_NAME required}"
 : "${BOOTSTRAP_TOKEN:?BOOTSTRAP_TOKEN required}"
 : "${CP_URL:?CP_URL required}"
-: "${CP_BASIC_AUTH:?CP_BASIC_AUTH required}"
 : "${MANAGED_APPS:=}"
 : "${POLL_INTERVAL:=30}"
 
@@ -45,8 +49,7 @@ is_managed() {
 }
 
 curl_cp() {
-  curl -sS -u "$CP_BASIC_AUTH" \
-       -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+  curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
        -H "Content-Type: application/json" \
        --connect-timeout 10 --max-time 60 "$@"
 }
