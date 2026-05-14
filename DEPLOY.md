@@ -230,14 +230,23 @@ curl -fsSL "$CP_URL/agent/install.sh" | sudo -E bash
 
 The installer:
 1. Drops the env file at `/etc/drift-deploy/env` (chmod 600)
-2. Downloads `agent.sh` and the systemd unit
-3. Enables + starts the service
+2. Pulls the build context, runs `docker build` to produce
+   `drift-deploy-agent:latest` locally (~5s on alpine base)
+3. `docker run -d --restart unless-stopped` with the host's docker socket
+   and `/var/lib/drift-deploy` bind-mounted
+
+The only host-side dep is Docker itself — no systemd, no jq, no compose
+plugin. Same install works on Linux VMs, Raspberry Pi, **Synology NAS**,
+anywhere Docker runs.
 
 **Verify on the Pi:**
 ```bash
-systemctl status drift-deploy-agent
-journalctl -u drift-deploy-agent -f
+docker ps --filter name=drift-deploy-agent
+docker logs -f drift-deploy-agent
 ```
+
+**To upgrade the agent later**: re-run the same `curl … | bash` line.
+The installer detects the existing container and replaces it in place.
 
 **Verify on the control plane (from Drift's UI):**
 
@@ -445,7 +454,7 @@ Within ~30s the agent will see drift and re-apply.
 | Agent log: `sha256 mismatch` | Bundle corrupted in transit (very unlikely) or B2 storing differently | Re-`apply_app_revision`; sha256 will be re-computed |
 | Agent log: `post-up health check failed: {...State: "exited"}` | Container crashed within 30s of starting | `docker compose -f /var/lib/drift-deploy/apps/<app>/<rev>/compose.yaml logs` |
 | Agent log: `another run holds lock; skipping tick` | Previous tick still applying (e.g. slow image pull) | Normal during big pulls; verify on the next tick |
-| `journalctl -u drift-deploy-agent` shows nothing recent | Service not running, OR systemd unit file stale | `systemctl status drift-deploy-agent`; if status is fine but logs are empty, check `/etc/drift-deploy/env` syntax |
+| `docker logs drift-deploy-agent` shows nothing recent | Container not running, OR env file syntax issue | `docker ps --filter name=drift-deploy-agent`; if it's not there or restarting, `docker inspect drift-deploy-agent` for exit code + check `/etc/drift-deploy/env` syntax |
 | Drift UI says "device offline" but agent is running | Control plane unreachable from device, or check-in 401ing | On device: `curl -H "Authorization: Bearer $BOOTSTRAP_TOKEN" $CP_URL/agent/check-in -X POST -H 'Content-Type: application/json' -d '{"device_name":"…","agent_version":"…"}'` |
 | `apply` succeeds but the previous version still answers | `docker compose up -d` left the old container running because `container_name` is hard-coded | Either drop the `container_name:` line or use `--remove-orphans` (the agent already does this) |
 
@@ -462,7 +471,7 @@ Within ~30s the agent will see drift and re-apply.
 | Database models | `drift-agent/app/deploy/models.py` |
 | Edge-agent reconciliation loop | `edge-agent/drift-deploy-agent.sh` |
 | Edge-agent installer | `edge-agent/install.sh` |
-| systemd unit | `edge-agent/drift-deploy-agent.service` |
+| Agent container image build | `edge-agent/Dockerfile` |
 | Control-plane Prometheus metrics | `drift-agent/app/deploy/observability.py` |
 | Auth boundary (Caddy / nginx / app) | this doc's "Sample prompts" → "Migrate an existing stack" section and the auth-fix commit |
 

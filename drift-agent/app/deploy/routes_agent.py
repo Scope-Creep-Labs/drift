@@ -5,17 +5,23 @@ against the device's stored hash.
 """
 from __future__ import annotations
 
+import io
+import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
 EDGE_AGENT_DIR = Path("/opt/edge-agent")
+
+# Files included in the build context the device pulls to docker build the
+# agent image locally. Tiny — keeps install.sh dependency-free of a registry.
+BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh")
 
 from . import bundles
 from .auth import authenticate_device, extract_bearer
@@ -35,19 +41,27 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 @router.get("/install.sh")
 async def install_script() -> FileResponse:
-    """Installer that the operator pipes into `sudo -E bash`."""
+    """Installer the operator pipes into `sudo -E bash`. Runs docker build
+    + docker run; no systemd, no host-side compose plugin required."""
     return _serve_edge_file("install.sh", media_type="text/x-shellscript")
 
 
-@router.get("/agent.sh")
-async def agent_script() -> FileResponse:
-    """The reconciliation loop script the installer drops on the device."""
-    return _serve_edge_file("drift-deploy-agent.sh", media_type="text/x-shellscript")
-
-
-@router.get("/drift-deploy-agent.service")
-async def agent_unit() -> FileResponse:
-    return _serve_edge_file("drift-deploy-agent.service", media_type="text/plain")
+@router.get("/build-context.tar")
+async def build_context() -> StreamingResponse:
+    """Build context (Dockerfile + agent.sh) the installer fetches and
+    `docker build`s on the device. Tiny tarball; alpine base is fast."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name in BUILD_CONTEXT_FILES:
+            path = EDGE_AGENT_DIR / name
+            if not path.is_file():
+                raise HTTPException(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    f"build context missing file '{name}'",
+                )
+            tar.add(str(path), arcname=name)
+    data = buf.getvalue()
+    return StreamingResponse(iter([data]), media_type="application/x-tar")
 
 
 def _serve_edge_file(name: str, media_type: str) -> FileResponse:

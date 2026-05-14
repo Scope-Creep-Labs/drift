@@ -201,11 +201,13 @@ async def commission_device(_ctx: ToolContext, args: dict) -> dict:
         "bootstrap_token": token,
         "install_cmd": install_cmd,
         "guidance": (
-            "Paste the install_cmd on the new device as root. The bootstrap_token shown "
-            "here is the only credential the agent needs and is shown ONCE — treat it like "
-            "a password. The agent will refuse to deploy any bundle whose compose declares "
-            "a protected service/container name (drift-agent, drift-postgres, "
-            "drift-frontend, drift-deploy-agent) as a bricking safeguard."
+            "Paste the install_cmd on the new device as root. Only host dep is Docker — "
+            "the agent runs as a container, so no systemd, no jq, no docker compose "
+            "plugin needed on the host. Works on Linux VMs, Raspberry Pi, Synology NAS, "
+            "anywhere Docker runs. The bootstrap_token is shown ONCE — treat it like a "
+            "password. Protected service/container names (drift-agent, drift-postgres, "
+            "drift-frontend, drift-deploy-agent) are refused by the agent as a bricking "
+            "safeguard."
         ),
     }
 
