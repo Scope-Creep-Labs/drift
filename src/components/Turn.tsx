@@ -72,6 +72,37 @@ export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: 
 
           {streaming && turn.blocks.length === 0 && <StreamingPlaceholder />}
 
+          {/* Defensive fallback: if a turn finished with zero render blocks
+              (agent forgot to call make_markdown for a chat-style reply), surface
+              the narrative text so the user isn't staring at an empty turn. */}
+          {!streaming && turn.blocks.length === 0 && (() => {
+            const narrative = turn.trace
+              .filter((t): t is { kind: 'narrative'; text: string } => t.kind === 'narrative')
+              .map((t) => t.text)
+              .join('')
+              .trim()
+            if (!narrative) return null
+            return (
+              <Box
+                sx={{
+                  mt: 1,
+                  p: 1.4,
+                  border: 1,
+                  borderColor: 'warning.main',
+                  borderRadius: 1,
+                  bgcolor: 'rgba(255,176,32,0.06)',
+                }}
+              >
+                <Typography variant="caption" color="warning.main" sx={{ display: 'block', mb: 0.6, fontWeight: 600 }}>
+                  Unrendered narrative (agent should have used make_markdown):
+                </Typography>
+                <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                  {narrative}
+                </Typography>
+              </Box>
+            )
+          })()}
+
           {turn.error && (
             <Box
               sx={{

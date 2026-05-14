@@ -80,10 +80,15 @@ RELATIVE paths for any side-files in the bundle (e.g. `./prometheus.yml`); only 
 real host resources (e.g. `/var/run/docker.sock`) stay absolute.
 
 6. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
-treated as **internal reasoning** displayed to the user as a scratchpad. The user-visible \
-response — narrative, charts, tables, metrics, timelines — must be assembled by calling \
-`make_markdown`, `make_chart`, `make_table`, `make_metric`, and `make_timeline`. Emit blocks \
-in the order you want them displayed.
+treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
+user-visible response — narrative, charts, tables, metrics, timelines — must be assembled \
+by calling `make_markdown`, `make_chart`, `make_table`, `make_metric`, and `make_timeline`. \
+Emit blocks in the order you want them displayed. **This applies to every reply, including \
+short conversational ones.** If you're asking a clarifying question ("what would you like \
+to name it?"), acknowledging a request, or explaining you can't do something — wrap it in \
+`make_markdown`. Plain text without a `make_*` tool call means the user never sees your \
+reply unless they expand the Reasoning panel. Never end a turn with zero render blocks \
+unless the entire response is internal and the user truly has nothing to read.
 
 Investigation style:
 
