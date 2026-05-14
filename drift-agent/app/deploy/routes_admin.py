@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from . import bundles, security
+from .observability import revision_uploads_total
 from .db import session
 from .models import App, AppRevision, Device, DeploymentTarget
 from .schemas import (
@@ -156,6 +157,7 @@ async def create_revision(
     db.add(rev)
     await db.commit()
     await db.refresh(rev)
+    revision_uploads_total.labels(app=app.name).inc()
     return AppRevisionOut.model_validate(rev, from_attributes=True)
 
 

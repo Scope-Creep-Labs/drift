@@ -23,7 +23,8 @@ RUN pip install --upgrade pip wheel \
         "sqlalchemy[asyncio]>=2.0.30" \
         "asyncpg>=0.29" \
         "alembic>=1.13" \
-        "boto3>=1.34"
+        "boto3>=1.34" \
+        "prometheus-client>=0.20"
 
 # ---- Runtime ----
 FROM python:3.12-slim AS runtime

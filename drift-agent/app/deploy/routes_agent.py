@@ -16,6 +16,7 @@ from . import bundles
 from .auth import authenticate_device, extract_bearer
 from .db import session
 from .models import App, AppRevision, DeploymentTarget
+from .observability import apply_transitions_total, check_ins_total
 from .schemas import AgentCheckIn, AgentCheckInResponse, DesiredApp
 
 
@@ -44,7 +45,12 @@ async def check_in(
     bearer: str = Depends(extract_bearer),
     db: AsyncSession = Depends(get_db),
 ) -> AgentCheckInResponse:
-    device = await authenticate_device(body.device_name, bearer, db)
+    try:
+        device = await authenticate_device(body.device_name, bearer, db)
+    except HTTPException:
+        check_ins_total.labels(result="unauthorized").inc()
+        raise
+    check_ins_total.labels(result="ok").inc()
 
     # Update liveness + agent_version (best-effort).
     device.last_seen = datetime.now(timezone.utc)
@@ -72,10 +78,15 @@ async def check_in(
             target = target_row.scalar_one_or_none()
             if target is None:
                 continue
+            prior_status = target.status
             target.current_revision_id = current_rev_id
             if target.desired_revision_id == current_rev_id:
                 target.status = "healthy"
                 target.last_error = None
+            if prior_status != target.status:
+                apply_transitions_total.labels(
+                    from_status=prior_status, to_status=target.status
+                ).inc()
 
     # Build desired-state response: every target with desired != current.
     targets_rows = await db.execute(
