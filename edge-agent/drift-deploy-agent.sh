@@ -153,13 +153,16 @@ apply_revision() {
     return 1
   fi
 
-  if ! ( cd "$rev_dir" && docker compose pull && docker compose up -d --remove-orphans ); then
+  # -p <app-name> pins the compose project name to the app, so containers
+  # get human-readable names (hello-world-echo-1) instead of UUID-prefixed
+  # ones derived from the per-revision parent directory.
+  if ! ( cd "$rev_dir" && docker compose -p "$app" pull && docker compose -p "$app" up -d --remove-orphans ); then
     log "[$app] docker compose up failed"; return 1
   fi
 
   sleep 30
   local bad
-  bad=$( cd "$rev_dir" && docker compose ps --format json \
+  bad=$( cd "$rev_dir" && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
     log "[$app] post-up health check failed: $bad"

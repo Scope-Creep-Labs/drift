@@ -418,6 +418,22 @@ When you paste a bundle like this to Drift, the agent should set `files = {"comp
 
 ---
 
+## Force a redeploy without bumping the revision
+
+The agent's `state.json` on the device is the source of truth for "what's currently running here". The control plane keeps a `current_revision_id` cache, but the agent's report always wins on the next check-in. So to force a re-apply of the same revision (e.g. after a manual `docker compose down`), you need to clear *both*:
+
+```bash
+# On the device:
+jq 'del(.current_revisions["<app>"])' /var/lib/drift-deploy/state.json > /tmp/s && mv /tmp/s /var/lib/drift-deploy/state.json
+
+# On the control-plane DB (or via tools later):
+docker exec drift-postgres psql -U drift -d drift -c \
+  "UPDATE deployment_targets SET current_revision_id=NULL, status='pending' \
+   WHERE app_id=(SELECT id FROM apps WHERE name='<app>');"
+```
+
+Within ~30s the agent will see drift and re-apply.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Check |
