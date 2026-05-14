@@ -20,9 +20,24 @@ app.add_middleware(
 )
 
 
+# Mount Drift Deploy routers only when DRIFT_PG_URL is set, so an
+# operator can run drift-agent for pure observability without Postgres.
+if settings.drift_pg_url:
+    from .deploy.routes_admin import router as deploy_admin_router
+    from .deploy.routes_agent import router as deploy_agent_router
+
+    app.include_router(deploy_admin_router)
+    app.include_router(deploy_agent_router)
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
-    return {"ok": True, "model": settings.model, "vm_url": settings.vm_url}
+    return {
+        "ok": True,
+        "model": settings.model,
+        "vm_url": settings.vm_url,
+        "deploy_enabled": settings.deploy_enabled,
+    }
 
 
 @app.post("/investigate")
