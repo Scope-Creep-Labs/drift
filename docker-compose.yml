@@ -12,11 +12,31 @@
 # All compose-managed services run on the `drift` bridge network.
 
 services:
+  drift-postgres:
+    image: postgres:16-alpine
+    container_name: drift-postgres
+    environment:
+      POSTGRES_USER: ${DRIFT_PG_USER:-drift}
+      POSTGRES_PASSWORD: ${DRIFT_PG_PASSWORD:?set DRIFT_PG_PASSWORD in .env}
+      POSTGRES_DB: ${DRIFT_PG_DB:-drift}
+    volumes:
+      - drift-pg-data:/var/lib/postgresql/data
+    networks: [drift]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   drift-agent:
     build:
       context: ./drift-agent
     image: drift-agent:latest
     env_file: .env
+    depends_on:
+      drift-postgres:
+        condition: service_healthy
     environment:
       VM_URL: ${VM_URL}
       VM_TENANT_PATH: ${VM_TENANT_PATH:-}
@@ -33,6 +53,16 @@ services:
       VMALERT_RULES_DIR: ${VMALERT_RULES_DIR:-/etc/alerts}
       ALERTMANAGER_CONFIG_FILE: ${ALERTMANAGER_CONFIG_FILE:-/etc/alertmanager/alertmanager.yml}
       ALERTMANAGER_SECRETS_DIR: ${ALERTMANAGER_SECRETS_DIR:-/etc/alertmanager/secrets}
+      # Deploy subsystem (Drift Deploy). Postgres for the control plane;
+      # B2 for compose-bundle storage. All optional — when DRIFT_PG_URL is
+      # unset the deploy module stays dormant and existing tools keep working.
+      DRIFT_PG_URL: ${DRIFT_PG_URL:-postgresql+asyncpg://drift:${DRIFT_PG_PASSWORD}@drift-postgres:5432/drift}
+      B2_ENDPOINT: ${B2_ENDPOINT:-}
+      B2_REGION: ${B2_REGION:-}
+      B2_ACCESS_KEY_ID: ${B2_ACCESS_KEY_ID:-}
+      B2_SECRET_ACCESS_KEY: ${B2_SECRET_ACCESS_KEY:-}
+      B2_BUCKET: ${B2_BUCKET:-}
+      B2_PREFIX: ${B2_PREFIX:-drift-bundles}
     ports:
       - "8000:8000"
     # Bind-mount the vmalert rule dir so the agent can write
@@ -66,6 +96,9 @@ services:
       - "10001:80"
     networks: [drift]
     restart: unless-stopped
+
+volumes:
+  drift-pg-data:
 
 networks:
   drift:

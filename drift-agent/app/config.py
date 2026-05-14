@@ -33,6 +33,21 @@ class Settings(BaseSettings):
     alertmanager_config_file: str = "/etc/alertmanager/alertmanager.yml"
     alertmanager_secrets_dir: str = "/etc/alertmanager/secrets"
 
+    # Drift Deploy — control plane state + bundle storage. All optional; an
+    # empty drift_pg_url makes the deploy subsystem dormant.
+    drift_pg_url: str = ""
+    b2_endpoint: str = ""
+    b2_region: str = ""
+    b2_access_key_id: str = ""
+    b2_secret_access_key: str = ""
+    b2_bucket: str = ""
+    b2_prefix: str = "drift-bundles"
+
+    @property
+    def deploy_enabled(self) -> bool:
+        """Deploy subsystem requires both Postgres and B2 storage."""
+        return bool(self.drift_pg_url) and bool(self.b2_bucket)
+
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @property
