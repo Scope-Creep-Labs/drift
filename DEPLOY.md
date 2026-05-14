@@ -12,9 +12,9 @@ End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devi
 
 **Currently managed devices:**
 
-| Device | Status | MANAGED_APPS |
+| Device | Status | Blocklist (refused) |
 |---|---|---|
-| `dev-hetzner` | online | `demo` (the throwaway test app) — extend this list to add more |
+| `dev-hetzner` | online | `drift-agent`, `drift-postgres`, `drift-frontend`, `drift-deploy-agent` (hard-coded — anything not on the list is allowed) |
 
 **Currently registered apps:**
 
@@ -102,9 +102,8 @@ The simplest scenario: spin up a one-container service on dev-hetzner and verify
 3. The agent shows you the proposed YAML and asks for confirmation
 4. You confirm; `apply_app_revision` packs + uploads to B2, returns revision v1 id
 5. `deploy_revision(app="hello-world", device="dev-hetzner")` → status `pending`
-6. **You must first add `hello-world` to MANAGED_APPS on the device** — see "Allowlisting an app" below.
-7. Within 30s of the next check-in, the bash agent pulls the bundle and runs `docker compose up -d`
-8. After 30s health probe, status flips to `healthy`
+6. Within 30s of the next check-in, the bash agent pulls the bundle and runs `docker compose up -d`
+7. After 30s health probe, status flips to `healthy`
 
 **Verify:**
 
@@ -116,18 +115,22 @@ journalctl -u drift-deploy-agent --since=2min -o cat | grep hello-world
 
 ---
 
-### Allowlisting an app on a device
+### The blocklist (bricking safeguard)
 
-**Critical safety rail:** the bash agent only deploys apps listed in `MANAGED_APPS`. New apps need to be added explicitly.
+The bash agent refuses to deploy any bundle whose compose declares a service name OR a `container_name:` matching one of:
 
-```bash
-# On dev-hetzner (or any managed device):
-sudo sed -i 's/^MANAGED_APPS=.*/MANAGED_APPS=demo,hello-world/' /etc/drift-deploy/env
-sudo systemctl restart drift-deploy-agent
-journalctl -u drift-deploy-agent --since=1min -o cat   # confirm "MANAGED_APPS=demo,hello-world"
+```
+drift-agent  drift-postgres  drift-frontend  drift-deploy-agent
 ```
 
-The allowlist is *intentionally manual* — the agent on a device deciding what it's allowed to run is the last line of defense if the control plane is compromised. v1 will move this into a per-device DB column, but v0 keeps it in the env file as a deliberate "physical-access required" step.
+This is hard-coded in `edge-agent/drift-deploy-agent.sh` (the `PROTECTED_NAMES` array). Anything else is allowed — no per-app allowlist to maintain. If the agent refuses a deploy, the log will read:
+
+```
+[<app>] REFUSED: bundle would touch a protected service/container — bricking safeguard
+blocklist hit: 'drift-agent' appears in compose as service or container_name
+```
+
+The deployment_target stays at `pending` so the failure is visible from Drift. Edit the array in the script if you need to extend the list for a particular host (rare).
 
 ---
 
@@ -222,7 +225,6 @@ When your compose references files via relative paths (e.g. `./prometheus.yml:/e
 DEVICE_NAME=pi-livingroom \
 BOOTSTRAP_TOKEN=drift-…(paste from Drift UI)… \
 CP_URL=https://drift.example.com/drift/api/deploy \
-MANAGED_APPS=reporter \
 curl -fsSL "$CP_URL/agent/install.sh" | sudo -E bash
 ```
 
@@ -408,7 +410,7 @@ When you paste a bundle like this to Drift, the agent should set `files = {"comp
 - **No registry credentials in the system.** Private images require `docker login` to be done out-of-band on each device.
 - **No rollback button.** To roll back: re-deploy the previous revision. The agent will run the older bundle on the next check-in.
 - **No compose-editor block in the UI.** You paste YAML into the prompt textbox. Monaco editor planned for v1.
-- **No structured updates to MANAGED_APPS.** It's a manual env-file edit + restart per device. v1 will store the allowlist server-side and have the agent fetch it on check-in (still gated so a malicious control plane can't grow the list without operator action).
+- **Blocklist is host-file-level.** Extending the protected name list requires editing `PROTECTED_NAMES` in the agent script on the device. Fine because it's rare and intentional.
 - **Bash agent has no self-update.** A new `agent.sh` requires re-running `install.sh` on the device.
 - **No retry budget.** A repeatedly-failing apply will keep retrying every poll. The bash agent logs `apply failed; will retry next tick` but doesn't back off.
 - **Bundle size unbounded.** No upper limit on file size or count in `apply_app_revision`. Don't ship gigabytes of binary blobs in a compose bundle — that's what container images are for.
@@ -422,8 +424,8 @@ When you paste a bundle like this to Drift, the agent should set `files = {"comp
 |---|---|---|
 | `propose_app_revision` errors with "bundle must contain one of compose.yaml…" | The agent forgot to include the compose filename in the files dict | Tell the agent: "the compose filename must be `compose.yaml`" |
 | `apply_app_revision` returns "bundle pack/upload failed" | B2 credentials missing or wrong | `curl localhost:8000/healthz` — `deploy_enabled: true`? Check `B2_*` in .env |
-| `deploy_revision` returns `pending` and never advances | Device's `MANAGED_APPS` doesn't include this app | `cat /etc/drift-deploy/env` — add the app, `systemctl restart drift-deploy-agent` |
-| Agent log: `[<app>] not in MANAGED_APPS allowlist; skipping` | Same as above | Same as above |
+| `deploy_revision` returns `pending` and never advances | Bundle's compose hit the blocklist (PROTECTED_NAMES) OR bash agent isn't running | `journalctl -u drift-deploy-agent --since=2min -o cat`; look for `REFUSED` lines |
+| Agent log: `REFUSED: bundle would touch a protected service/container` | Compose declares a service or container_name matching the hard-coded blocklist | Pick a different name; or, deliberately, edit PROTECTED_NAMES in `drift-deploy-agent.sh` |
 | Agent log: `sha256 mismatch` | Bundle corrupted in transit (very unlikely) or B2 storing differently | Re-`apply_app_revision`; sha256 will be re-computed |
 | Agent log: `post-up health check failed: {...State: "exited"}` | Container crashed within 30s of starting | `docker compose -f /var/lib/drift-deploy/apps/<app>/<rev>/compose.yaml logs` |
 | Agent log: `another run holds lock; skipping tick` | Previous tick still applying (e.g. slow image pull) | Normal during big pulls; verify on the next tick |
@@ -459,7 +461,7 @@ If you're systematically validating v0, run these in order. Each builds on the p
 3. **Multi-file** — Scenario 3 (tiny-prom). Verifies relative-path bundle extraction.
 4. **Update** — Scenario 4 (hello-world v2). Verifies revision drift + `--remove-orphans`.
 5. **Health probe failure** — Deploy a compose that intentionally crashloops (`command: ["sh", "-c", "exit 1"]`). The agent should report apply failure, deployment_target stays at `pending`, error visible in `last_error` column.
-6. **Allowlist** — Try to deploy an app NOT in MANAGED_APPS. Agent log should show the skip message; target stays `pending` forever (this is correct).
+6. **Blocklist** — Try to deploy a bundle whose compose has `services.drift-agent:` (or any other protected name). Agent log should say `REFUSED: bundle would touch a protected service/container`; target stays `pending` forever (this is correct).
 7. **Multi-device** — Scenario 5 (commission the Pi).
 8. **Real migration** — Scenario 6 (podnot).
 

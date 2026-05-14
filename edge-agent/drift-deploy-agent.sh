@@ -2,13 +2,17 @@
 # Drift Deploy edge agent — v0 (bash + systemd).
 #
 # Loaded from /etc/drift-deploy/env:
-#   DEVICE_NAME, BOOTSTRAP_TOKEN, CP_URL,
-#   MANAGED_APPS (comma-separated allowlist), POLL_INTERVAL (default 30s).
+#   DEVICE_NAME, BOOTSTRAP_TOKEN, CP_URL, POLL_INTERVAL (default 30s).
 #
 # Auth model: bearer-only. The Caddy reverse proxy is configured to NOT
 # basic_auth /drift/api/deploy/agent/* paths because we can't send both
 # Caddy's `Authorization: Basic` and our `Authorization: Bearer` in the
 # same request (HTTP Authorization is single-valued).
+#
+# Safety: PROTECTED_NAMES below is a hard-coded blocklist of service /
+# container names that this agent will REFUSE to deploy under any
+# circumstance — bricking protection. The agent itself, its DB, the
+# frontend, etc. must never be redeployed by this script.
 #
 # Loop: every POLL_INTERVAL seconds, POST /agent/check-in with current
 # revisions, receive desired state with presigned bundle URLs, apply any
@@ -25,8 +29,12 @@ set -euo pipefail
 : "${DEVICE_NAME:?DEVICE_NAME required}"
 : "${BOOTSTRAP_TOKEN:?BOOTSTRAP_TOKEN required}"
 : "${CP_URL:?CP_URL required}"
-: "${MANAGED_APPS:=}"
 : "${POLL_INTERVAL:=30}"
+
+# Bricking protection. Bundles whose compose file declares any of these
+# as a service name OR via container_name: are rejected with apply_error.
+# Extend if you add critical infra that should never be self-redeployed.
+PROTECTED_NAMES=(drift-agent drift-postgres drift-frontend drift-deploy-agent)
 
 STATE_DIR=/var/lib/drift-deploy
 APPS_DIR="$STATE_DIR/apps"
@@ -41,11 +49,26 @@ mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
-is_managed() {
-  case ",${MANAGED_APPS}," in
-    *",$1,"*) return 0 ;;
-    *) return 1 ;;
-  esac
+bundle_touches_protected() {
+  # Returns 0 (true) if the bundle's compose declares a service name or a
+  # container_name that matches PROTECTED_NAMES. Uses `docker compose config`
+  # so we get real YAML parsing — no fragile grepping.
+  local rev_dir=$1
+  local names
+  names=$(cd "$rev_dir" && docker compose config --format json 2>/dev/null \
+    | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
+    | sort -u)
+  if [ -z "$names" ]; then
+    return 1  # can't parse — let docker compose itself surface the error later
+  fi
+  local p
+  for p in "${PROTECTED_NAMES[@]}"; do
+    if printf '%s\n' "$names" | grep -Fxq "$p"; then
+      log "blocklist hit: '$p' appears in compose as service or container_name"
+      return 0
+    fi
+  done
+  return 1
 }
 
 curl_cp() {
@@ -125,6 +148,11 @@ apply_revision() {
     log "[$app] extract failed"; return 1
   fi
 
+  if bundle_touches_protected "$rev_dir"; then
+    log "[$app] REFUSED: bundle would touch a protected service/container — bricking safeguard"
+    return 1
+  fi
+
   if ! ( cd "$rev_dir" && docker compose pull && docker compose up -d --remove-orphans ); then
     log "[$app] docker compose up failed"; return 1
   fi
@@ -165,9 +193,6 @@ reconcile_once() {
     rev=$(echo "$row" | jq -r '.revision_id')
     url=$(echo "$row" | jq -r '.bundle_url')
     sha=$(echo "$row" | jq -r '.bundle_sha256')
-    if ! is_managed "$app"; then
-      log "[$app] not in MANAGED_APPS allowlist; skipping"; continue
-    fi
     if ! apply_revision "$app" "$rev" "$url" "$sha"; then
       log "[$app] apply failed; will retry next tick"
       state_inc apply_error
@@ -179,7 +204,7 @@ reconcile_once() {
 
 main() {
   log "drift-deploy-agent $AGENT_VERSION starting (device=$DEVICE_NAME interval=${POLL_INTERVAL}s)"
-  log "MANAGED_APPS=$MANAGED_APPS"
+  log "blocklist: ${PROTECTED_NAMES[*]}"
   while true; do
     ( flock -n 9 || { log "another run holds lock; skipping tick"; exit 0; }
       reconcile_once

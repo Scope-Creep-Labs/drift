@@ -203,8 +203,9 @@ async def commission_device(_ctx: ToolContext, args: dict) -> dict:
         "guidance": (
             "Paste the install_cmd on the new device as root. The bootstrap_token shown "
             "here is the only credential the agent needs and is shown ONCE — treat it like "
-            "a password. Fill in MANAGED_APPS= with a comma-separated list of apps this "
-            "device is allowed to deploy (e.g. MANAGED_APPS=podnot,reporter)."
+            "a password. The agent will refuse to deploy any bundle whose compose declares "
+            "a protected service/container name (drift-agent, drift-postgres, "
+            "drift-frontend, drift-deploy-agent) as a bricking safeguard."
         ),
     }
 
@@ -230,8 +231,7 @@ def _render_install_cmd(name: str, token: str) -> str:
     return (
         f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
-        f"CP_URL=https://drift.example.com/drift/api/deploy "
-        f"MANAGED_APPS= sudo -E bash"
+        f"CP_URL=https://drift.example.com/drift/api/deploy sudo -E bash"
     )
 
 
