@@ -15,6 +15,14 @@ from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
 from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm_client
 
 
+# Per-investigation conversation history. Keyed by investigation_id, value
+# is the list[dict] of Anthropic message objects accumulated across turns.
+# In-memory only — a server restart loses it. For v0 single-user usage this
+# is fine; the frontend's persisted Zustand store still shows past turns
+# for display, the agent just answers the next prompt fresh on a cold cache.
+_session_history: dict[str, list[dict]] = {}
+
+
 SYSTEM_PROMPT = """\
 You are Drift — an autonomous observability investigation agent for time-series systems.
 
@@ -261,6 +269,7 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     tools = all_tools()
 
     user_content = req.prompt
+    investigation_id: str | None = None
     if req.context:
         ctx_bits = []
         if req.context.asset_id:
@@ -271,8 +280,15 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
             )
         if ctx_bits:
             user_content += "\n\n[context: " + ", ".join(ctx_bits) + "]"
+        investigation_id = req.context.investigation_id
 
-    messages: list[dict] = [{"role": "user", "content": user_content}]
+    # Conversation memory: when the same investigation_id submits multiple
+    # turns, prepend prior assistant/user messages so propose_*/apply_* and
+    # any follow-up "ok" can chain coherently. History lives in process
+    # memory only — a restart loses it; the user sees their visible turns
+    # in localStorage but the agent answers their next prompt fresh.
+    prior = _session_history.get(investigation_id, []) if investigation_id else []
+    messages: list[dict] = [*prior, {"role": "user", "content": user_content}]
 
     yield sse("start", {"engine": settings.model})
 
@@ -313,7 +329,14 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
             tool_uses = [b for b in final.content if b.type == "tool_use"]
 
             if not tool_uses:
-                # No more tools — surface metadata and stop.
+                # No more tools — record the final assistant turn in
+                # session history, surface metadata, and stop.
+                messages.append({
+                    "role": "assistant",
+                    "content": _sanitize_assistant_content(final.content),
+                })
+                if investigation_id:
+                    _session_history[investigation_id] = messages
                 yield sse(
                     "metadata",
                     {

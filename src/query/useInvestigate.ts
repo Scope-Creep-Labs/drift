@@ -33,11 +33,19 @@ export function useInvestigate() {
 
       const ac = new AbortController()
       abortRef.current = ac
-      beginStream(req.prompt)
+      const { investigationId } = beginStream(req.prompt)
+
+      // Pass investigationId so the backend can stitch this turn onto the
+      // session history for that investigation (multi-turn conversation,
+      // including the propose/apply confirmation pattern).
+      const enrichedReq: PromptRequest = {
+        ...req,
+        context: { ...(req.context ?? {}), investigationId },
+      }
 
       try {
         const adapter = getAdapter()
-        for await (const ev of adapter.stream(req, ac.signal)) {
+        for await (const ev of adapter.stream(enrichedReq, ac.signal)) {
           switch (ev.type) {
             case 'thinking':
               appendThinking(ev.text)

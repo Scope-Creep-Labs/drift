@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TimeRange(BaseModel):
@@ -9,9 +9,14 @@ class TimeRange(BaseModel):
 
 
 class PromptContext(BaseModel):
-    asset_id: str | None = None
-    time_range: TimeRange | None = None
-    investigation_id: str | None = None
+    # Accept both camelCase (from the TS frontend) and snake_case wire keys.
+    # The frontend has sent camelCase since day one; these aliases stop the
+    # context from being silently ignored.
+    model_config = ConfigDict(populate_by_name=True)
+
+    asset_id: str | None = Field(default=None, alias="assetId")
+    time_range: TimeRange | None = Field(default=None, alias="timeRange")
+    investigation_id: str | None = Field(default=None, alias="investigationId")
 
 
 class PromptRequest(BaseModel):
