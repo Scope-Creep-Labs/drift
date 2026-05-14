@@ -31,7 +31,9 @@ services:
 
   drift-agent:
     build:
-      context: ./drift-agent
+      # Repo root so we can COPY both drift-agent/ and edge-agent/ in one image.
+      context: .
+      dockerfile: drift-agent/Dockerfile
     image: drift-agent:latest
     env_file: .env
     depends_on:

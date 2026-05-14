@@ -8,7 +8,13 @@ dist/
 .env.*.local
 .git/
 spec/
-drift-agent/
+# drift-agent/ kept in the build context because the drift-agent image's
+# Dockerfile is built with context=. so it can COPY both drift-agent/ and
+# edge-agent/. Specific drift-agent build artifacts are excluded below.
+drift-agent/.venv/
+drift-agent/__pycache__/
+drift-agent/**/__pycache__/
+drift-agent/**/*.egg-info/
 *.log
 coverage/
 .idea/

@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /build
-COPY pyproject.toml ./
+COPY drift-agent/pyproject.toml ./
 RUN pip install --upgrade pip wheel \
  && pip install --prefix=/install \
         "fastapi>=0.115.0" \
@@ -39,10 +39,14 @@ RUN groupadd --system app && useradd --system --gid app --create-home app
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
-COPY app ./app
-COPY alembic.ini ./
-COPY alembic ./alembic
-COPY entrypoint.sh ./
+COPY drift-agent/app ./app
+COPY drift-agent/alembic.ini ./
+COPY drift-agent/alembic ./alembic
+COPY drift-agent/entrypoint.sh ./
+# Edge-agent scripts are served from /api/deploy/agent/* so a fresh box
+# can curl-bootstrap. Lives at the repo top-level under edge-agent/ and
+# is copied in here at build time.
+COPY edge-agent /opt/edge-agent
 RUN chmod +x entrypoint.sh
 
 USER app

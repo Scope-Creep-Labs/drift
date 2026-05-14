@@ -6,11 +6,16 @@ against the device's stored hash.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+EDGE_AGENT_DIR = Path("/opt/edge-agent")
 
 from . import bundles
 from .auth import authenticate_device, extract_bearer
@@ -29,14 +34,27 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 @router.get("/install.sh")
-async def install_script() -> Response:
-    """Placeholder — the real bash agent installer ships in the next step."""
-    body = (
-        "#!/usr/bin/env bash\n"
-        "echo 'drift-deploy-agent install.sh: not yet implemented' >&2\n"
-        "exit 1\n"
-    )
-    return Response(content=body, media_type="text/plain", status_code=503)
+async def install_script() -> FileResponse:
+    """Installer that the operator pipes into `sudo -E bash`."""
+    return _serve_edge_file("install.sh", media_type="text/x-shellscript")
+
+
+@router.get("/agent.sh")
+async def agent_script() -> FileResponse:
+    """The reconciliation loop script the installer drops on the device."""
+    return _serve_edge_file("drift-deploy-agent.sh", media_type="text/x-shellscript")
+
+
+@router.get("/drift-deploy-agent.service")
+async def agent_unit() -> FileResponse:
+    return _serve_edge_file("drift-deploy-agent.service", media_type="text/plain")
+
+
+def _serve_edge_file(name: str, media_type: str) -> FileResponse:
+    path = EDGE_AGENT_DIR / name
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"edge-agent file '{name}' not bundled")
+    return FileResponse(path, media_type=media_type, filename=name)
 
 
 @router.post("/check-in", response_model=AgentCheckInResponse)
