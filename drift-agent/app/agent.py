@@ -10,6 +10,7 @@ from .schemas import PromptRequest
 from .stream import sse
 from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
+from .tools.deploy import DEPLOY_HANDLERS, DEPLOY_TOOLS
 from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
 from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm_client
 
@@ -57,7 +58,20 @@ must NEVER appear in your tool input — pass FILENAMES (e.g. `auth_credentials_
 **Confirm before silencing** anything with a broad matcher (e.g. a bare `severity=warning`) \
 — over-silencing hides real problems.
 
-5. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
+5. **Drive deployments through Drift Deploy when asked.** Discovery: \
+`list_devices`, `get_device`, `list_apps`, `list_app_revisions`, `list_deployments`. \
+Lifecycle: `commission_device` (returns one-time bootstrap token + a curl install \
+command — present the install command verbatim in a `make_markdown` block with a code \
+fence; explain the token is shown only once), `delete_device`. App management: \
+`create_app`, `propose_app_revision` (preview only — ALWAYS call this first when the \
+user wants to create or change an app revision; show the would-be file list + version + \
+sha256 in `make_markdown` for confirmation), `apply_app_revision` (actually packs the \
+bundle + uploads), `deploy_revision` (sets desired state — agent on the device picks it \
+up within 30s). A bundle is a flat filename→contents map. The compose file must use \
+RELATIVE paths for any side-files in the bundle (e.g. `./prometheus.yml`); only \
+real host resources (e.g. `/var/run/docker.sock`) stay absolute.
+
+6. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a scratchpad. The user-visible \
 response — narrative, charts, tables, metrics, timelines — must be assembled by calling \
 `make_markdown`, `make_chart`, `make_table`, `make_metric`, and `make_timeline`. Emit blocks \
@@ -93,11 +107,13 @@ what you tried and what would be needed to answer the question.\
 
 
 def all_tools() -> list[dict]:
-    return [*METRICS_TOOLS, *ALERT_TOOLS, *ANALYSIS_TOOLS, *EMIT_TOOLS]
+    deploy = DEPLOY_TOOLS if settings.deploy_enabled else []
+    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *ANALYSIS_TOOLS, *EMIT_TOOLS]
 
 
 def all_handlers() -> dict:
-    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
+    deploy = DEPLOY_HANDLERS if settings.deploy_enabled else {}
+    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **deploy, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
 
 
 def _sanitize_assistant_content(blocks: Any) -> list[dict]:
@@ -187,6 +203,28 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{result.get('action', '?')} route → {result.get('receiver', '?')}"
     if name == "delete_route":
         return f"deleted route → {result.get('deleted_for', '?')}"
+    if name == "list_devices":
+        return f"{result.get('n', 0)} devices"
+    if name == "get_device":
+        return f"{result.get('device', {}).get('name', '?')} · {len(result.get('deployments') or [])} deploys"
+    if name == "commission_device":
+        return f"commissioned {result.get('device', {}).get('name', '?')}"
+    if name == "delete_device":
+        return f"deleted {result.get('deleted', '?')}"
+    if name == "list_apps":
+        return f"{result.get('n', 0)} apps"
+    if name == "list_app_revisions":
+        return f"{result.get('app', '?')} · {result.get('n', 0)} revisions"
+    if name == "list_deployments":
+        return f"{result.get('n', 0)} deployment targets"
+    if name == "create_app":
+        return f"app {result.get('app', {}).get('name', '?')}"
+    if name == "propose_app_revision":
+        return f"{result.get('app','?')} v{result.get('next_version','?')} · {result.get('bundle_bytes', 0)} bytes"
+    if name == "apply_app_revision":
+        return f"{result.get('app','?')} v{result.get('version','?')} uploaded"
+    if name == "deploy_revision":
+        return f"{result.get('action','?')} → {result.get('device','?')}/{result.get('app','?')} v{result.get('desired_version','?')}"
     if name == "summarize_series":
         return f"{len(result.get('series') or [])} series summarized"
     if name == "detect_anomalies":
