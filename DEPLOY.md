@@ -341,6 +341,12 @@ The agent today doesn't have a `delete_app` tool — it would have to surface th
 
 ---
 
+## Worked examples (full recipes)
+
+| File | What it covers |
+|---|---|
+| [examples/reporter.md](./examples/reporter.md) | Per-host observability stack (vmagent + cAdvisor + node-exporter + Vector) deployed to a group of devices with `deploy_revision_to_group`. |
+
 ## Sample compose files (copy-paste-ready)
 
 ### Hello-world (single container, single file)
