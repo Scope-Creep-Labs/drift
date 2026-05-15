@@ -163,7 +163,7 @@ LOGS_TOOLS: list[dict] = [
                         "LogsQL expression. Examples: 'level:error', "
                         "'level:error AND container_name:vmagent', "
                         "'host:home-pi4-001 AND _msg:\"timeout\"', "
-                        "'_msg:\"OOM\"'. Default: '*' (all).",
+                        "'_msg:\"OOM\"'. Default: '*' (all)."
                     ),
                 },
                 "limit": {
