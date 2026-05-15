@@ -63,12 +63,27 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.2.2"
+AGENT_VERSION="0.2.3"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
 mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
 [ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
+
+# Migrate state.json shapes from older agents (pre-0.2.3 didn't always
+# write apply_errors). Idempotent — only rewrites if the key is missing
+# or the file isn't valid JSON.
+_migrate_tmp=$(mktemp)
+if ! jq -e '.apply_errors' "$STATE_FILE" >/dev/null 2>&1; then
+  if jq '. + {apply_errors: (.apply_errors // {})}' "$STATE_FILE" > "$_migrate_tmp" 2>/dev/null; then
+    mv "$_migrate_tmp" "$STATE_FILE"
+  else
+    # state.json is unreadable; reset rather than crash. Worst case
+    # the device replays applies on the next check-in (idempotent).
+    echo '{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
+  fi
+fi
+rm -f "$_migrate_tmp"
 
 # Log helpers. Each level includes a word Vector's classifier regex
 # matches (error, warn, info) so log_to_metric produces correct
@@ -153,10 +168,13 @@ curl_cp() {
 state_set_current() {
   local app=$1 rev=$2 tmp
   tmp=$(mktemp)
+  # //= ensures the path exists before we delete from it. `(x // {}) |= ...`
+  # fails on a missing key because the LHS of |= must be a writable path.
   jq --arg a "$app" --arg r "$rev" \
-     '.current_revisions[$a] = $r | (.apply_errors // {}) |= (del(.[$a])) ' \
-     "$STATE_FILE" > "$tmp"
-  mv "$tmp" "$STATE_FILE"
+     '.apply_errors //= {} | del(.apply_errors[$a]) | .current_revisions[$a] = $r' \
+     "$STATE_FILE" > "$tmp" \
+     && mv "$tmp" "$STATE_FILE" \
+     || { rm -f "$tmp"; log_warn "state_set_current jq failed for app=$app"; }
 }
 
 state_set_error() {
@@ -165,9 +183,10 @@ state_set_error() {
   # Trim to 500 chars so an exploding stack trace doesn't bloat the check-in body.
   err="${err:0:500}"
   jq --arg a "$app" --arg e "$err" \
-     '(.apply_errors // {}) as $cur | .apply_errors = ($cur | .[$a] = $e)' \
-     "$STATE_FILE" > "$tmp"
-  mv "$tmp" "$STATE_FILE"
+     '.apply_errors //= {} | .apply_errors[$a] = $e' \
+     "$STATE_FILE" > "$tmp" \
+     && mv "$tmp" "$STATE_FILE" \
+     || { rm -f "$tmp"; log_warn "state_set_error jq failed for app=$app"; }
 }
 
 state_inc() {
@@ -291,8 +310,12 @@ apply_revision() {
 
 reconcile_once() {
   local current errors
-  current=$(jq -c '.current_revisions // {}' "$STATE_FILE")
-  errors=$(jq -c '.apply_errors // {}' "$STATE_FILE")
+  current=$(jq -c '.current_revisions // {}' "$STATE_FILE" 2>/dev/null)
+  errors=$(jq -c '.apply_errors // {}' "$STATE_FILE" 2>/dev/null)
+  # Belt-and-suspenders: a corrupted state.json from a pre-migration
+  # agent could leave these empty. Default to '{}' so --argjson is happy.
+  current=${current:-'{}'}
+  errors=${errors:-'{}'}
   local body resp
   body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
               --argjson c "$current" --argjson e "$errors" \
