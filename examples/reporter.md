@@ -32,13 +32,53 @@ agent's `DRIFT_DEVICE_NAME` / `DRIFT_GROUP_ID` injection.
 
 ---
 
+## Two-stage env-var substitution (why both `${...}` and `%{...}` appear)
+
+The bundle uses two different substitution syntaxes, in two different
+stages, expanded by two different runtimes:
+
+| Where | Syntax | Expanded by | When | Source |
+|---|---|---|---|---|
+| `compose.yaml` env values | `${DRIFT_DEVICE_NAME}`, `${DRIFT_GROUP_ID}` | docker compose | At `compose up` time | The edge agent's shell exports |
+| `prometheus.yml` | `%{HOSTNAME}`, `%{GROUP_ID}` | vmagent itself | At config-load time | Env vars on the vmagent container (set by stage 1) |
+
+So `compose.yaml` does:
+
+```yaml
+environment:
+  HOSTNAME: ${DRIFT_DEVICE_NAME}     # stage 1 → HOSTNAME=home-pi4-001
+  GROUP_ID: ${DRIFT_GROUP_ID}        # stage 1 → GROUP_ID=drift_home
+```
+
+…and `prometheus.yml` does:
+
+```yaml
+external_labels:
+  host: %{HOSTNAME}                  # stage 2 → host: home-pi4-001
+  group_id: %{GROUP_ID}              # stage 2 → group_id: drift_home
+```
+
+`%{...}` is vmagent's own substitution feature, enabled by passing
+`-promscrape.config.strictParse=false` in its command list (which the
+bundle does). This is the same pattern the hand-managed reporter on
+`dev-hetzner` has been using — that's why `host="dev-hetzner"` and
+`group_id="dev-cloud"` already show up in VictoriaMetrics queries.
+
+If Drift's agent reviews the bundle and asks *"shouldn't `%{HOSTNAME}`
+be `${HOSTNAME}`?"* — the answer is no, leave it.
+
+---
+
 ## Step 1 — paste this into Drift to create the app + revision
 
 ```text
-Create a new app called `reporter`. Apply v1 with these four files
+Create a new app called `reporter`. Apply v1 with these three files
 exactly as written (don't reformat). The compose references
 ${DRIFT_DEVICE_NAME} and ${DRIFT_GROUP_ID} — the agent will fill them
-in per device at apply time.
+in per device at apply time. The prometheus.yml uses %{HOSTNAME} and
+%{GROUP_ID} — that is vmagent's OWN env-substitution syntax (enabled
+by --promscrape.config.strictParse=false in the command list), NOT a
+typo. Leave the percent-brace form exactly as written.
 
 compose.yaml:
 ---
