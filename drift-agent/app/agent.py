@@ -74,10 +74,15 @@ fence; explain the token is shown only once), `delete_device`. App management: \
 `create_app`, `propose_app_revision` (preview only — ALWAYS call this first when the \
 user wants to create or change an app revision; show the would-be file list + version + \
 sha256 in `make_markdown` for confirmation), `apply_app_revision` (actually packs the \
-bundle + uploads), `deploy_revision` (sets desired state — agent on the device picks it \
-up within 30s). A bundle is a flat filename→contents map. The compose file must use \
-RELATIVE paths for any side-files in the bundle (e.g. `./prometheus.yml`); only \
-real host resources (e.g. `/var/run/docker.sock`) stay absolute.
+bundle + uploads), `deploy_revision` (sets desired state for ONE device — agent on the \
+device picks it up within 30s), `deploy_revision_to_group` (resolves a group_id to all \
+its devices and deploys to each; use this for "deploy X to all <group> devices" prompts). \
+A bundle is a flat filename→contents map. The compose file must use RELATIVE paths for \
+any side-files in the bundle (e.g. `./prometheus.yml`); only real host resources \
+(e.g. `/var/run/docker.sock`) stay absolute. Bundles can reference per-device facts via \
+`${DRIFT_DEVICE_NAME}` and `${DRIFT_GROUP_ID}` in compose env values, labels, container \
+hostnames — the edge agent injects these at apply time, so one revision serves a \
+heterogeneous fleet.
 
 6. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
@@ -238,6 +243,10 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{result.get('app','?')} v{result.get('version','?')} uploaded"
     if name == "deploy_revision":
         return f"{result.get('action','?')} → {result.get('device','?')}/{result.get('app','?')} v{result.get('desired_version','?')}"
+    if name == "deploy_revision_to_group":
+        n = len(result.get("deployed_to") or [])
+        skip = len(result.get("skipped") or [])
+        return f"{result.get('app','?')} v{result.get('desired_version','?')} → {n} device{'s' if n != 1 else ''} ({skip} skipped)"
     if name == "summarize_series":
         return f"{len(result.get('series') or [])} series summarized"
     if name == "detect_anomalies":

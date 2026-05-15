@@ -42,6 +42,7 @@ def _device_dict(d: Device) -> dict:
         "status": d.status,
         "last_seen": d.last_seen.isoformat() if d.last_seen else None,
         "agent_version": d.agent_version,
+        "group_id": d.group_id,
         "created_at": d.created_at.isoformat(),
     }
 
@@ -425,6 +426,91 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
+    """Deploy to every device in a logical group. Resolves group_id → devices,
+    loops deploy_revision per device.
+
+    Skips offline devices unless `include_offline=true`.
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    app_name = args.get("app")
+    group = args.get("group_id")
+    if not app_name or not group:
+        return {"error": "app and group_id are required"}
+    revision_id_str = args.get("revision_id")
+    include_offline = bool(args.get("include_offline", False))
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+
+        rows = await s.execute(select(Device).where(Device.group_id == group))
+        devices = rows.scalars().all()
+        if not devices:
+            return {"error": f"no devices reporting group_id='{group}' (check 'list_devices')"}
+
+        # Resolve revision once (latest unless explicit).
+        rev: AppRevision | None
+        if revision_id_str:
+            try:
+                rev_id = uuid.UUID(revision_id_str)
+            except ValueError:
+                return {"error": f"revision_id is not a valid uuid: {revision_id_str}"}
+            rev = (await s.execute(
+                select(AppRevision).where(AppRevision.id == rev_id, AppRevision.app_id == app.id)
+            )).scalar_one_or_none()
+            if rev is None:
+                return {"error": "revision_id does not belong to that app"}
+        else:
+            rev = (await s.execute(
+                select(AppRevision).where(AppRevision.app_id == app.id).order_by(AppRevision.version.desc()).limit(1)
+            )).scalar_one_or_none()
+            if rev is None:
+                return {"error": f"app '{app_name}' has no revisions yet"}
+
+        results = []
+        skipped = []
+        for device in devices:
+            if device.status != "online" and not include_offline:
+                skipped.append({"device": device.name, "reason": f"status={device.status}"})
+                continue
+
+            existing = (await s.execute(
+                select(DeploymentTarget).where(
+                    DeploymentTarget.device_id == device.id,
+                    DeploymentTarget.app_id == app.id,
+                )
+            )).scalar_one_or_none()
+            if existing is None:
+                existing = DeploymentTarget(
+                    device_id=device.id,
+                    app_id=app.id,
+                    desired_revision_id=rev.id,
+                    status="pending",
+                )
+                s.add(existing)
+                action = "created"
+            else:
+                existing.desired_revision_id = rev.id
+                if existing.current_revision_id != rev.id:
+                    existing.status = "pending"
+                    existing.last_error = None
+                action = "updated"
+            results.append({"device": device.name, "action": action})
+        await s.commit()
+
+    return {
+        "app": app_name,
+        "group_id": group,
+        "desired_version": rev.version,
+        "deployed_to": results,
+        "skipped": skipped,
+        "note": "Each device's edge agent will pick this up on its next check-in (≤30s).",
+    }
+
+
 # ---------- Schemas + handler registry ----------
 
 
@@ -558,6 +644,34 @@ DEPLOY_TOOLS: list[dict] = [
             "required": ["app", "device"],
         },
     },
+    {
+        "name": "deploy_revision_to_group",
+        "description": (
+            "Deploy an app revision to every device in a logical group (group_id). "
+            "Resolves the group to its member devices via the value each agent reports on "
+            "check-in. Offline devices are skipped unless include_offline=true. Use this "
+            "for 'deploy reporter to all home devices' style prompts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "group_id": {
+                    "type": "string",
+                    "description": "Logical group reported by devices (e.g. cloud, edge, drift_home).",
+                },
+                "revision_id": {
+                    "type": "string",
+                    "description": "Optional uuid; defaults to the latest revision.",
+                },
+                "include_offline": {
+                    "type": "boolean",
+                    "description": "Include devices whose status != 'online'. Default false.",
+                },
+            },
+            "required": ["app", "group_id"],
+        },
+    },
 ]
 
 
@@ -573,4 +687,5 @@ DEPLOY_HANDLERS = {
     "propose_app_revision": propose_app_revision,
     "apply_app_revision": apply_app_revision,
     "deploy_revision": deploy_revision,
+    "deploy_revision_to_group": deploy_revision_to_group,
 }

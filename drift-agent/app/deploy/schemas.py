@@ -22,6 +22,7 @@ class DeviceOut(BaseModel):
     status: str
     last_seen: Optional[datetime] = None
     agent_version: Optional[str] = None
+    group_id: Optional[str] = None
     created_at: datetime
 
 
@@ -113,6 +114,9 @@ class AgentCheckIn(BaseModel):
     # Map of app_name → revision_id currently running on the device. May be
     # empty when the device has never applied anything yet.
     current_revisions: dict[str, uuid.UUID] = Field(default_factory=dict)
+    # Logical group this device belongs to (cloud, edge, drift_home, ...).
+    # Stored on the device row so deploy-by-group can resolve targets.
+    group_id: Optional[str] = None
     health: dict = Field(default_factory=dict)
 
 

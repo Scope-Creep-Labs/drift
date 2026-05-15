@@ -84,9 +84,11 @@ async def check_in(
         raise
     check_ins_total.labels(result="ok").inc()
 
-    # Update liveness + agent_version (best-effort).
+    # Update liveness + agent_version + group_id (best-effort).
     device.last_seen = datetime.now(timezone.utc)
     device.agent_version = body.agent_version
+    if body.group_id is not None:
+        device.group_id = body.group_id
     if device.status != "online":
         device.status = "online"
 

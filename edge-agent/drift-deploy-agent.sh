@@ -62,6 +62,43 @@ mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
 
 log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
 
+generate_drift_override() {
+  # Write a compose.override.yaml that injects Drift identity into every
+  # service in the bundle. Docker compose auto-merges override files in the
+  # same directory. Adds env vars (visible to the app) AND container labels
+  # (visible at the Docker / cAdvisor layer for fleet-wide queries like
+  # `container_last_seen{container_label_drift_managed="true"}`).
+  local rev_dir=$1 app=$2 rev_id=$3
+  local override="$rev_dir/compose.override.yaml"
+  local services
+  services=$(cd "$rev_dir" \
+    && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
+       docker compose config --services 2>/dev/null)
+  if [ -z "$services" ]; then
+    log "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
+    return 0
+  fi
+  {
+    printf '# Drift Deploy injected identity. Auto-generated; do not edit.\n'
+    printf 'services:\n'
+    while IFS= read -r svc; do
+      [ -z "$svc" ] && continue
+      printf '  %s:\n' "$svc"
+      printf '    environment:\n'
+      printf '      DRIFT_DEVICE_NAME: "%s"\n' "$DRIFT_DEVICE_NAME"
+      printf '      DRIFT_GROUP_ID: "%s"\n' "$DRIFT_GROUP_ID"
+      printf '      DRIFT_APP: "%s"\n' "$app"
+      printf '    labels:\n'
+      printf '      drift.managed: "true"\n'
+      printf '      drift.device_name: "%s"\n' "$DRIFT_DEVICE_NAME"
+      printf '      drift.group_id: "%s"\n' "$DRIFT_GROUP_ID"
+      printf '      drift.app: "%s"\n' "$app"
+      printf '      drift.revision: "%s"\n' "$rev_id"
+    done <<< "$services"
+  } > "$override"
+}
+
+
 bundle_touches_protected() {
   # Returns 0 (true) if the bundle's compose declares a service name or a
   # container_name that matches PROTECTED_NAMES. Uses `docker compose config`
@@ -168,13 +205,15 @@ apply_revision() {
     return 1
   fi
 
+  generate_drift_override "$rev_dir" "$app" "$rev_id"
+
   # -p <app-name> pins the compose project name to the app, so containers
   # get human-readable names (hello-world-echo-1) instead of UUID-prefixed
   # ones derived from the per-revision parent directory.
-  # DRIFT_DEVICE_NAME / DRIFT_GROUP_ID are exported so bundles can
-  # reference them as ${DRIFT_DEVICE_NAME} in compose for per-device labels.
+  # DRIFT_DEVICE_NAME / DRIFT_GROUP_ID / DRIFT_APP are exported so the
+  # generated compose.override.yaml resolves them at compose-up time.
   if ! ( cd "$rev_dir" \
-       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
        && docker compose -p "$app" pull \
        && docker compose -p "$app" up -d --remove-orphans ); then
     log "[$app] docker compose up failed"; return 1
@@ -183,7 +222,7 @@ apply_revision() {
   sleep 30
   local bad
   bad=$( cd "$rev_dir" \
-       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
@@ -200,8 +239,8 @@ reconcile_once() {
   local current
   current=$(jq -c '.current_revisions // {}' "$STATE_FILE")
   local body resp
-  body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --argjson c "$current" \
-    '{device_name:$n, agent_version:$v, current_revisions:$c, health:{}}')
+  body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" --argjson c "$current" \
+    '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, health:{}}')
 
   if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
     log "check-in failed"; state_inc check_in_error; write_textfile; return

@@ -39,6 +39,9 @@ class Device(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     agent_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Logical group reported by the agent on check-in. Used for fleet-wide
+    # operations like deploy_revision_to_group.
+    group_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now_utc, nullable=False)
 
 
