@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     alertmanager_url: str = ""
     alertmanager_basic_auth: str = ""
 
+    # VictoriaLogs (logs subsystem). Same shape as VM — optional, basic-auth
+    # credentials are usually the same vmauth `reporter` user since logs go
+    # through the same gateway. Leave VL_URL empty to disable the log tools.
+    vl_url: str = ""
+    vl_basic_auth: str = ""
+
     # Path (inside the drift-agent container) where rule files live. The
     # agent reads/writes only `<dir>/drift-managed.yml` to avoid touching
     # hand-edited rule files in the same directory.

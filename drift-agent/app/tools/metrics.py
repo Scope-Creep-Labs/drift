@@ -91,10 +91,11 @@ def _parse_time(s: str | None, now: float, default_offset: float = 0) -> float:
 class ToolContext:
     """Per-request mutable state shared with every tool call."""
 
-    def __init__(self, vm: VMClient, emit, alerts: Any = None):
+    def __init__(self, vm: VMClient, emit, alerts: Any = None, vl: Any = None):
         self.vm = vm
         self.emit = emit  # async fn(event: str, data: dict)
         self.alerts = alerts  # AlertClient | None — optional
+        self.vl = vl          # VLClient | None — optional
         self.data_cache: dict[str, list[dict]] = {}  # ref → Plotly trace list
         self.tags_cache: dict[str, dict] = {}  # ref → metadata for the agent
 

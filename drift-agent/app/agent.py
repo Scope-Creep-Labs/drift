@@ -12,6 +12,7 @@ from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
 from .tools.deploy import DEPLOY_HANDLERS, DEPLOY_TOOLS
 from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
+from .tools.logs import LOGS_HANDLERS, LOGS_TOOLS, make_vl_client
 from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm_client
 
 
@@ -41,10 +42,14 @@ dimensions: `host` (machine identity) and `group_id` (logical grouping — clien
 cloud-vs-edge / environment / fleet). **`host` in metrics is the same string as `device` in \
 Drift Deploy.** `list_hosts` returns the same identifiers as `list_devices` (e.g. \
 `home-synology-001`) — no translation needed when you cross between metrics and deploy. \
-For log-derived signals, each container's stdout/stderr is classified into \
-`container_log_lines_total{container_name, image, level}` (level ∈ error/warning/info) by \
-a per-host Vector collector — use this metric to answer "any container throwing errors?" \
-or "did the cron-x container run in the last 24h?" without needing log search.
+For log-derived signals there are TWO complementary tools: the metric \
+`container_log_lines_total{container_name, image, level}` (level ∈ error/warning/info, \
+emitted by a per-host Vector collector) for COUNTS — "any container throwing errors?" \
+or "did the cron-x container run in the last 24h?" — and `query_logs` (LogsQL over \
+VictoriaLogs) for the actual error TEXT — "show me the error lines from the reporter \
+container in the last hour". Only error-level lines are shipped to VL today; info / \
+warning lines are counted-only via the metric. Prefer the metric for aggregates, \
+`query_logs` for reading actual error content.
 
 2. **Fetch data through `query_range` and `instant_query`.** Range queries return a `ref` (a \
 data handle) plus a compact summary — never raw arrays. Pass refs to analysis tools and emit \
@@ -131,12 +136,14 @@ what you tried and what would be needed to answer the question.\
 
 def all_tools() -> list[dict]:
     deploy = DEPLOY_TOOLS if settings.deploy_enabled else []
-    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *ANALYSIS_TOOLS, *EMIT_TOOLS]
+    logs = LOGS_TOOLS if settings.vl_url else []
+    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *logs, *ANALYSIS_TOOLS, *EMIT_TOOLS]
 
 
 def all_handlers() -> dict:
     deploy = DEPLOY_HANDLERS if settings.deploy_enabled else {}
-    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **deploy, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
+    logs = LOGS_HANDLERS if settings.vl_url else {}
+    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **deploy, **logs, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
 
 
 def _sanitize_assistant_content(blocks: Any) -> list[dict]:
@@ -196,6 +203,8 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{ns} series · {n} pts · ref {result.get('ref','?')}"
     if name == "instant_query":
         return f"{result.get('n', 0)} rows"
+    if name == "query_logs":
+        return f"{result.get('n', 0)} log lines"
     if name == "list_alert_rules":
         return f"{result.get('n', 0)} rules"
     if name == "list_active_alerts":
@@ -280,13 +289,14 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     vm = make_vm_client()
     alerts = make_alert_client()
+    vl = make_vl_client()
 
     events: list[bytes] = []  # outbound buffer for sync emit calls within this scope
 
     async def emit(event: str, data: Any) -> None:
         events.append(sse(event, data))
 
-    ctx = ToolContext(vm=vm, emit=emit, alerts=alerts)
+    ctx = ToolContext(vm=vm, emit=emit, alerts=alerts, vl=vl)
     handlers = all_handlers()
     tools = all_tools()
 
@@ -427,3 +437,5 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     finally:
         await vm.aclose()
         await alerts.aclose()
+        if vl is not None:
+            await vl.aclose()
