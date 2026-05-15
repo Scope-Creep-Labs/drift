@@ -3,11 +3,18 @@
 #
 # Loaded from /etc/drift-deploy/env:
 #   DEVICE_NAME, BOOTSTRAP_TOKEN, CP_URL, POLL_INTERVAL (default 30s).
+#   GROUP_ID (optional) — surfaced to compose as DRIFT_GROUP_ID.
 #
 # Auth model: bearer-only. The Caddy reverse proxy is configured to NOT
 # basic_auth /drift/api/deploy/agent/* paths because we can't send both
 # Caddy's `Authorization: Basic` and our `Authorization: Bearer` in the
 # same request (HTTP Authorization is single-valued).
+#
+# Per-device facts exposed to bundles via compose env-var interpolation:
+#   DRIFT_DEVICE_NAME   — this device's name in the control plane
+#   DRIFT_GROUP_ID      — logical grouping (cloud/edge/client/...) or ""
+# A compose file can reference these as ${DRIFT_DEVICE_NAME} etc. to make
+# one bundle deployable across heterogeneous devices.
 #
 # Safety: PROTECTED_NAMES below is a hard-coded blocklist of service /
 # container names that this agent will REFUSE to deploy under any
@@ -29,7 +36,13 @@ set -euo pipefail
 : "${DEVICE_NAME:?DEVICE_NAME required}"
 : "${BOOTSTRAP_TOKEN:?BOOTSTRAP_TOKEN required}"
 : "${CP_URL:?CP_URL required}"
+: "${GROUP_ID:?GROUP_ID required (set in /etc/drift-deploy/env)}"
 : "${POLL_INTERVAL:=30}"
+
+# Per-device facts the agent exports into every `docker compose` subshell.
+# Bundles reference these via ${DRIFT_DEVICE_NAME} / ${DRIFT_GROUP_ID}.
+DRIFT_DEVICE_NAME="$DEVICE_NAME"
+DRIFT_GROUP_ID="$GROUP_ID"
 
 # Bricking protection. Bundles whose compose file declares any of these
 # as a service name OR via container_name: are rejected with apply_error.
@@ -55,7 +68,9 @@ bundle_touches_protected() {
   # so we get real YAML parsing — no fragile grepping.
   local rev_dir=$1
   local names
-  names=$(cd "$rev_dir" && docker compose config --format json 2>/dev/null \
+  names=$(cd "$rev_dir" && \
+    DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+    docker compose config --format json 2>/dev/null \
     | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
     | sort -u)
   if [ -z "$names" ]; then
@@ -156,13 +171,20 @@ apply_revision() {
   # -p <app-name> pins the compose project name to the app, so containers
   # get human-readable names (hello-world-echo-1) instead of UUID-prefixed
   # ones derived from the per-revision parent directory.
-  if ! ( cd "$rev_dir" && docker compose -p "$app" pull && docker compose -p "$app" up -d --remove-orphans ); then
+  # DRIFT_DEVICE_NAME / DRIFT_GROUP_ID are exported so bundles can
+  # reference them as ${DRIFT_DEVICE_NAME} in compose for per-device labels.
+  if ! ( cd "$rev_dir" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+       && docker compose -p "$app" pull \
+       && docker compose -p "$app" up -d --remove-orphans ); then
     log "[$app] docker compose up failed"; return 1
   fi
 
   sleep 30
   local bad
-  bad=$( cd "$rev_dir" && docker compose -p "$app" ps --format json \
+  bad=$( cd "$rev_dir" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+       && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
     log "[$app] post-up health check failed: $bad"

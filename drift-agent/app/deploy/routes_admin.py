@@ -82,7 +82,8 @@ def _render_install_cmd(name: str, token: str) -> str:
     return (
         f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
-        f"CP_URL=https://drift.example.com/drift/api/deploy sudo -E bash"
+        f"CP_URL=https://drift.example.com/drift/api/deploy "
+        f"GROUP_ID=CHOOSE_ONE_OF=cloud|edge|client-x|prod sudo -E bash"
     )
 
 

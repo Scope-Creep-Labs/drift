@@ -205,9 +205,11 @@ async def commission_device(_ctx: ToolContext, args: dict) -> dict:
             "the agent runs as a container, so no systemd, no jq, no docker compose "
             "plugin needed on the host. Works on Linux VMs, Raspberry Pi, Synology NAS, "
             "anywhere Docker runs. The bootstrap_token is shown ONCE — treat it like a "
-            "password. Protected service/container names (drift-agent, drift-postgres, "
-            "drift-frontend, drift-deploy-agent) are refused by the agent as a bricking "
-            "safeguard."
+            "password. **REPLACE GROUP_ID=** in the one-liner with a logical grouping "
+            "for this device (e.g. cloud, edge, client-x, prod) — required, used as "
+            "${DRIFT_GROUP_ID} in bundles. Protected service/container names "
+            "(drift-agent, drift-postgres, drift-frontend, drift-deploy-agent) are "
+            "refused by the agent as a bricking safeguard."
         ),
     }
 
@@ -233,7 +235,8 @@ def _render_install_cmd(name: str, token: str) -> str:
     return (
         f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
-        f"CP_URL=https://drift.example.com/drift/api/deploy sudo -E bash"
+        f"CP_URL=https://drift.example.com/drift/api/deploy "
+        f"GROUP_ID=CHOOSE_ONE_OF=cloud|edge|client-x|prod sudo -E bash"
     )
 
 

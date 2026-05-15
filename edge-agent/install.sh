@@ -7,7 +7,13 @@
 #
 # Pipe-able from the control plane:
 #   curl -sSL $CP_URL/agent/install.sh | \
-#     DEVICE_NAME=<name> BOOTSTRAP_TOKEN=<token> CP_URL=$CP_URL sudo -E bash
+#     DEVICE_NAME=<name> BOOTSTRAP_TOKEN=<token> \
+#     CP_URL=$CP_URL GROUP_ID=<group> sudo -E bash
+#
+# DEVICE_NAME identifies this device in the control plane.
+# GROUP_ID is the logical grouping (cloud/edge/client/...) — surfaced
+# to compose bundles via ${DRIFT_GROUP_ID} so one bundle can label its
+# metrics per device.
 #
 # Auth model: bearer-only. /drift/api/deploy/agent/* is not gated by
 # Caddy basic_auth — the device's bootstrap token is the credential.
@@ -17,6 +23,9 @@ set -euo pipefail
 : "${DEVICE_NAME:?DEVICE_NAME required}"
 : "${BOOTSTRAP_TOKEN:?BOOTSTRAP_TOKEN required}"
 : "${CP_URL:?CP_URL required}"
+# Logical grouping for this device — surfaced to bundles as
+# ${DRIFT_GROUP_ID}. Common values: cloud, edge, client-x, prod.
+: "${GROUP_ID:?GROUP_ID required (e.g. GROUP_ID=cloud or GROUP_ID=edge)}"
 POLL_INTERVAL=${POLL_INTERVAL:-30}
 
 if [ "$(id -u)" != 0 ]; then
@@ -36,6 +45,7 @@ DEVICE_NAME=$DEVICE_NAME
 BOOTSTRAP_TOKEN=$BOOTSTRAP_TOKEN
 CP_URL=$CP_URL
 POLL_INTERVAL=$POLL_INTERVAL
+GROUP_ID=$GROUP_ID
 EOF
 chmod 600 /etc/drift-deploy/env
 umask 022
