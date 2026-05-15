@@ -55,7 +55,13 @@ STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/agent.lock"
 TEXTFILE_DIR=${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}
 TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
-AGENT_VERSION="0.1.0"
+# Bump on every script change. The check-in payload + textfile metric
+# both report this so the control plane can tell at-a-glance which
+# devices are running which agent. Companion sha256 (12 chars) computed
+# at startup so even if the version is forgotten, the running code can
+# always be identified.
+AGENT_VERSION="0.2.0"
+AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 
 mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
 [ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
@@ -156,7 +162,8 @@ write_textfile() {
   {
     printf '# HELP drift_deploy_agent_info Agent version + identity (constant 1).\n'
     printf '# TYPE drift_deploy_agent_info gauge\n'
-    printf 'drift_deploy_agent_info{device="%s",version="%s"} 1\n' "$DEVICE_NAME" "$AGENT_VERSION"
+    printf 'drift_deploy_agent_info{device="%s",group_id="%s",version="%s",sha="%s"} 1\n' \
+      "$DEVICE_NAME" "$GROUP_ID" "$AGENT_VERSION" "$AGENT_SHA"
 
     printf '# HELP drift_deploy_agent_last_check_in_timestamp_seconds Unix epoch of last successful check-in.\n'
     printf '# TYPE drift_deploy_agent_last_check_in_timestamp_seconds gauge\n'
@@ -275,7 +282,7 @@ reconcile_once() {
 }
 
 main() {
-  log "drift-deploy-agent $AGENT_VERSION starting (device=$DEVICE_NAME interval=${POLL_INTERVAL}s)"
+  log "drift-deploy-agent $AGENT_VERSION (sha:$AGENT_SHA) starting (device=$DEVICE_NAME group=$GROUP_ID interval=${POLL_INTERVAL}s)"
   log "blocklist: ${PROTECTED_NAMES[*]}"
   while true; do
     ( flock -n 9 || { log "another run holds lock; skipping tick"; exit 0; }
