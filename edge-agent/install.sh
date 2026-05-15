@@ -37,6 +37,14 @@ for c in docker curl tar; do
   command -v "$c" >/dev/null || { echo "missing required tool: $c" >&2; exit 1; }
 done
 
+# Discover the host's actual Docker data dir. On vanilla Linux this is
+# /var/lib/docker; on Synology DSM it's /volume1/@docker. Bundles that
+# need cAdvisor-style image/layer visibility reference this via
+# ${DRIFT_DOCKER_DATA_DIR} so a single bundle deploys cleanly across
+# heterogeneous hosts.
+DRIFT_DOCKER_DATA_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
+echo "detected docker data dir: $DRIFT_DOCKER_DATA_DIR"
+
 mkdir -p /etc/drift-deploy /var/lib/drift-deploy/apps /var/lib/node_exporter/textfile_collector
 
 umask 077
@@ -46,6 +54,7 @@ BOOTSTRAP_TOKEN=$BOOTSTRAP_TOKEN
 CP_URL=$CP_URL
 POLL_INTERVAL=$POLL_INTERVAL
 GROUP_ID=$GROUP_ID
+DRIFT_DOCKER_DATA_DIR=$DRIFT_DOCKER_DATA_DIR
 EOF
 chmod 600 /etc/drift-deploy/env
 umask 022

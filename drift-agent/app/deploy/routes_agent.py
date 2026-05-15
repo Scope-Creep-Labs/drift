@@ -92,14 +92,14 @@ async def check_in(
     if device.status != "online":
         device.status = "online"
 
-    # Update current_revision_id for any (device, app) pair the agent reports.
-    if body.current_revisions:
-        # Resolve app names → ids in one go.
-        names = list(body.current_revisions.keys())
-        rows = await db.execute(select(App).where(App.name.in_(names)))
+    # Merge per-app facts the agent reports: current revisions + recent
+    # apply errors. Either or both may be empty.
+    all_apps = set(body.current_revisions) | set(body.apply_errors)
+    if all_apps:
+        rows = await db.execute(select(App).where(App.name.in_(all_apps)))
         name_to_id = {a.name: a.id for a in rows.scalars().all()}
 
-        for app_name, current_rev_id in body.current_revisions.items():
+        for app_name in all_apps:
             app_id = name_to_id.get(app_name)
             if app_id is None:
                 continue
@@ -113,10 +113,24 @@ async def check_in(
             if target is None:
                 continue
             prior_status = target.status
-            target.current_revision_id = current_rev_id
-            if target.desired_revision_id == current_rev_id:
+            current_rev_id = body.current_revisions.get(app_name)
+            err = body.apply_errors.get(app_name)
+
+            if current_rev_id is not None:
+                target.current_revision_id = current_rev_id
+
+            if err:
+                # Agent is reporting an in-flight error for this app.
+                target.status = "failed"
+                if target.last_error != err:
+                    target.attempts += 1
+                target.last_error = err
+            elif current_rev_id is not None and target.desired_revision_id == current_rev_id:
+                # Healthy: agent confirms current == desired and no error.
                 target.status = "healthy"
                 target.last_error = None
+                target.attempts = 0
+
             if prior_status != target.status:
                 apply_transitions_total.labels(
                     from_status=prior_status, to_status=target.status

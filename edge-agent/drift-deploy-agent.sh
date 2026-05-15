@@ -38,11 +38,14 @@ set -euo pipefail
 : "${CP_URL:?CP_URL required}"
 : "${GROUP_ID:?GROUP_ID required (set in /etc/drift-deploy/env)}"
 : "${POLL_INTERVAL:=30}"
+: "${DRIFT_DOCKER_DATA_DIR:=/var/lib/docker}"
 
 # Per-device facts the agent exports into every `docker compose` subshell.
-# Bundles reference these via ${DRIFT_DEVICE_NAME} / ${DRIFT_GROUP_ID}.
+# Bundles reference these via ${DRIFT_DEVICE_NAME}, ${DRIFT_GROUP_ID},
+# ${DRIFT_DOCKER_DATA_DIR}.
 DRIFT_DEVICE_NAME="$DEVICE_NAME"
 DRIFT_GROUP_ID="$GROUP_ID"
+# DRIFT_DOCKER_DATA_DIR is already in env; just make it explicit.
 
 # Bricking protection. Bundles whose compose file declares any of these
 # as a service name OR via container_name: are rejected with apply_error.
@@ -60,12 +63,12 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.2.1"
+AGENT_VERSION="0.2.2"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
 mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
-[ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
+[ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
 
 # Log helpers. Each level includes a word Vector's classifier regex
 # matches (error, warn, info) so log_to_metric produces correct
@@ -85,7 +88,8 @@ generate_drift_override() {
   local override="$rev_dir/compose.override.yaml"
   local services
   services=$(cd "$rev_dir" \
-    && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
+    && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+       DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
        docker compose config --services 2>/dev/null)
   if [ -z "$services" ]; then
     log_warn "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
@@ -120,6 +124,7 @@ bundle_touches_protected() {
   local names
   names=$(cd "$rev_dir" && \
     DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+    DRIFT_APP="" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
     docker compose config --format json 2>/dev/null \
     | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
     | sort -u)
@@ -148,7 +153,20 @@ curl_cp() {
 state_set_current() {
   local app=$1 rev=$2 tmp
   tmp=$(mktemp)
-  jq --arg a "$app" --arg r "$rev" '.current_revisions[$a] = $r' "$STATE_FILE" > "$tmp"
+  jq --arg a "$app" --arg r "$rev" \
+     '.current_revisions[$a] = $r | (.apply_errors // {}) |= (del(.[$a])) ' \
+     "$STATE_FILE" > "$tmp"
+  mv "$tmp" "$STATE_FILE"
+}
+
+state_set_error() {
+  local app=$1 err=$2 tmp
+  tmp=$(mktemp)
+  # Trim to 500 chars so an exploding stack trace doesn't bloat the check-in body.
+  err="${err:0:500}"
+  jq --arg a "$app" --arg e "$err" \
+     '(.apply_errors // {}) as $cur | .apply_errors = ($cur | .[$a] = $e)' \
+     "$STATE_FILE" > "$tmp"
   mv "$tmp" "$STATE_FILE"
 }
 
@@ -201,24 +219,34 @@ apply_revision() {
   local app=$1 rev_id=$2 url=$3 sha=$4
   local rev_dir="$APPS_DIR/$app/$rev_id"
   local bundle="$rev_dir/bundle.tar.gz"
+  local err   # last error message, captured for state_set_error
 
   log_info "[$app] applying revision $rev_id"
   mkdir -p "$rev_dir"
 
-  if ! curl -fsSL --max-time 120 -o "$bundle" "$url"; then
-    log_error "[$app] bundle download failed"; return 1
+  if ! err=$(curl -fsSL --max-time 120 -o "$bundle" "$url" 2>&1); then
+    log_error "[$app] bundle download failed: $err"
+    state_set_error "$app" "bundle download failed: $err"
+    return 1
   fi
   local got
   got=$(sha256sum "$bundle" | awk '{print $1}')
   if [ "$got" != "$sha" ]; then
-    log_error "[$app] sha256 mismatch (got $got, expected $sha)"; return 1
+    err="sha256 mismatch (got $got, expected $sha)"
+    log_error "[$app] $err"
+    state_set_error "$app" "$err"
+    return 1
   fi
-  if ! tar -xzf "$bundle" -C "$rev_dir"; then
-    log_error "[$app] extract failed"; return 1
+  if ! err=$(tar -xzf "$bundle" -C "$rev_dir" 2>&1); then
+    log_error "[$app] extract failed: $err"
+    state_set_error "$app" "extract failed: $err"
+    return 1
   fi
 
   if bundle_touches_protected "$rev_dir"; then
-    log_warn "[$app] REFUSED: bundle would touch a protected service/container — bricking safeguard"
+    err="REFUSED: bundle touches a protected service/container name — bricking safeguard"
+    log_warn "[$app] $err"
+    state_set_error "$app" "$err"
     return 1
   fi
 
@@ -227,23 +255,32 @@ apply_revision() {
   # -p <app-name> pins the compose project name to the app, so containers
   # get human-readable names (hello-world-echo-1) instead of UUID-prefixed
   # ones derived from the per-revision parent directory.
-  # DRIFT_DEVICE_NAME / DRIFT_GROUP_ID / DRIFT_APP are exported so the
-  # generated compose.override.yaml resolves them at compose-up time.
-  if ! ( cd "$rev_dir" \
-       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
-       && docker compose -p "$app" pull \
-       && docker compose -p "$app" up -d --remove-orphans ); then
-    log_error "[$app] docker compose up failed"; return 1
+  # DRIFT_* facts are exported so the generated compose.override.yaml
+  # AND the bundle's compose can interpolate them.
+  if ! err=$( cd "$rev_dir" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+                 DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+       && docker compose -p "$app" pull 2>&1 \
+       && docker compose -p "$app" up -d --remove-orphans 2>&1 ); then
+    # err contains the combined output; take the last few lines for the
+    # control plane, full text stays in journald/docker logs.
+    local err_tail
+    err_tail=$(printf '%s' "$err" | tail -n 5 | tr '\n' ' ')
+    log_error "[$app] docker compose up failed: $err_tail"
+    state_set_error "$app" "compose up failed: $err_tail"
+    return 1
   fi
 
   sleep 30
   local bad
   bad=$( cd "$rev_dir" \
-       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
+       && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+                 DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
     log_error "[$app] post-up health check failed: $bad"
+    state_set_error "$app" "post-up health check failed: $bad"
     return 1
   fi
 
@@ -253,11 +290,13 @@ apply_revision() {
 }
 
 reconcile_once() {
-  local current
+  local current errors
   current=$(jq -c '.current_revisions // {}' "$STATE_FILE")
+  errors=$(jq -c '.apply_errors // {}' "$STATE_FILE")
   local body resp
-  body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" --argjson c "$current" \
-    '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, health:{}}')
+  body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
+              --argjson c "$current" --argjson e "$errors" \
+    '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}}')
 
   if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
     log_error "check-in failed (network)"

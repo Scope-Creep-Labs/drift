@@ -39,7 +39,7 @@ stages, expanded by two different runtimes:
 
 | Where | Syntax | Expanded by | When | Source |
 |---|---|---|---|---|
-| `compose.yaml` env values | `${DRIFT_DEVICE_NAME}`, `${DRIFT_GROUP_ID}` | docker compose | At `compose up` time | The edge agent's shell exports |
+| `compose.yaml` env values / paths | `${DRIFT_DEVICE_NAME}`, `${DRIFT_GROUP_ID}`, `${DRIFT_DOCKER_DATA_DIR}` | docker compose | At `compose up` time | The edge agent's shell exports |
 | `prometheus.yml` | `%{HOSTNAME}`, `%{GROUP_ID}` | vmagent itself | At config-load time | Env vars on the vmagent container (set by stage 1) |
 
 So `compose.yaml` does:
@@ -117,7 +117,10 @@ services:
       - /:/rootfs:ro
       - /var/run:/var/run:rw
       - /sys:/sys:ro
-      - /var/lib/docker/:/var/lib/docker:ro
+      # ${DRIFT_DOCKER_DATA_DIR} resolves to /var/lib/docker on vanilla
+      # Linux and /volume1/@docker on Synology. The agent auto-detects
+      # the host's docker root at install time via `docker info`.
+      - ${DRIFT_DOCKER_DATA_DIR:-/var/lib/docker}:/var/lib/docker:ro
 
   vector:
     image: timberio/vector:0.43.0-alpine

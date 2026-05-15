@@ -117,6 +117,10 @@ class AgentCheckIn(BaseModel):
     # Logical group this device belongs to (cloud, edge, drift_home, ...).
     # Stored on the device row so deploy-by-group can resolve targets.
     group_id: Optional[str] = None
+    # Map of app_name → last apply error. Absent or empty means no
+    # outstanding errors. Backend uses this to flip DeploymentTarget.status
+    # to "failed" and surface last_error in list_deployments.
+    apply_errors: dict[str, str] = Field(default_factory=dict)
     health: dict = Field(default_factory=dict)
 
 
