@@ -60,13 +60,20 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.2.0"
+AGENT_VERSION="0.2.1"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
+LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
 mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
 [ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
 
-log() { printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$*"; }
+# Log helpers. Each level includes a word Vector's classifier regex
+# matches (error, warn, info) so log_to_metric produces correct
+# container_log_lines_total{level=...} counters out of the box.
+log()       { printf '[%s] INFO  %s\n'  "$(date -u +%H:%M:%S)" "$*"; }
+log_info()  { log "$*"; }
+log_warn()  { printf '[%s] WARN  %s\n'  "$(date -u +%H:%M:%S)" "$*" >&2; }
+log_error() { printf '[%s] ERROR %s\n'  "$(date -u +%H:%M:%S)" "$*" >&2; }
 
 generate_drift_override() {
   # Write a compose.override.yaml that injects Drift identity into every
@@ -81,7 +88,7 @@ generate_drift_override() {
     && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
        docker compose config --services 2>/dev/null)
   if [ -z "$services" ]; then
-    log "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
+    log_warn "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
     return 0
   fi
   {
@@ -122,7 +129,7 @@ bundle_touches_protected() {
   local p
   for p in "${PROTECTED_NAMES[@]}"; do
     if printf '%s\n' "$names" | grep -Fxq "$p"; then
-      log "blocklist hit: '$p' appears in compose as service or container_name"
+      log_warn "blocklist hit: '$p' appears in compose as service or container_name"
       return 0
     fi
   done
@@ -130,9 +137,12 @@ bundle_touches_protected() {
 }
 
 curl_cp() {
+  # Aggressive timeouts so a single tick can't run longer than the poll
+  # interval: connect within 5s, total within 25s. Anything beyond is
+  # genuine network distress.
   curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
        -H "Content-Type: application/json" \
-       --connect-timeout 10 --max-time 60 "$@"
+       --connect-timeout 5 --max-time 25 "$@"
 }
 
 state_set_current() {
@@ -192,23 +202,23 @@ apply_revision() {
   local rev_dir="$APPS_DIR/$app/$rev_id"
   local bundle="$rev_dir/bundle.tar.gz"
 
-  log "[$app] applying revision $rev_id"
+  log_info "[$app] applying revision $rev_id"
   mkdir -p "$rev_dir"
 
   if ! curl -fsSL --max-time 120 -o "$bundle" "$url"; then
-    log "[$app] bundle download failed"; return 1
+    log_error "[$app] bundle download failed"; return 1
   fi
   local got
   got=$(sha256sum "$bundle" | awk '{print $1}')
   if [ "$got" != "$sha" ]; then
-    log "[$app] sha256 mismatch (got $got, expected $sha)"; return 1
+    log_error "[$app] sha256 mismatch (got $got, expected $sha)"; return 1
   fi
   if ! tar -xzf "$bundle" -C "$rev_dir"; then
-    log "[$app] extract failed"; return 1
+    log_error "[$app] extract failed"; return 1
   fi
 
   if bundle_touches_protected "$rev_dir"; then
-    log "[$app] REFUSED: bundle would touch a protected service/container — bricking safeguard"
+    log_warn "[$app] REFUSED: bundle would touch a protected service/container — bricking safeguard"
     return 1
   fi
 
@@ -223,7 +233,7 @@ apply_revision() {
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" DRIFT_APP="$app" \
        && docker compose -p "$app" pull \
        && docker compose -p "$app" up -d --remove-orphans ); then
-    log "[$app] docker compose up failed"; return 1
+    log_error "[$app] docker compose up failed"; return 1
   fi
 
   sleep 30
@@ -233,12 +243,12 @@ apply_revision() {
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
-    log "[$app] post-up health check failed: $bad"
+    log_error "[$app] post-up health check failed: $bad"
     return 1
   fi
 
   state_set_current "$app" "$rev_id"
-  log "[$app] healthy at revision $rev_id"
+  log_info "[$app] healthy at revision $rev_id"
   state_inc apply_ok
 }
 
@@ -250,13 +260,14 @@ reconcile_once() {
     '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, health:{}}')
 
   if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
-    log "check-in failed (network)"; state_inc check_in_error; write_textfile; return
+    log_error "check-in failed (network)"
+    state_inc check_in_error; write_textfile; return
   fi
   # Caddy / nginx can return non-JSON HTML on 5xx (control plane restart,
   # auth misconfig). Validate before piping to jq so we get a clear log
   # line instead of a spew of jq parse errors + `[ -gt 0 ]` bash failures.
   if ! echo "$resp" | jq -e '.' >/dev/null 2>&1; then
-    log "check-in returned non-JSON (CP unhealthy?): ${resp:0:160}"
+    log_warn "check-in returned non-JSON (CP unhealthy?): ${resp:0:160}"
     state_inc check_in_error; write_textfile; return
   fi
   state_inc check_in_ok
@@ -264,7 +275,7 @@ reconcile_once() {
   local n
   n=$(echo "$resp" | jq -r '.desired | length' 2>/dev/null)
   n=${n:-0}
-  if [ "$n" -gt 0 ] 2>/dev/null; then log "check-in: $n app(s) drift from desired"; fi
+  if [ "$n" -gt 0 ] 2>/dev/null; then log_info "check-in: $n app(s) drift from desired"; fi
 
   echo "$resp" | jq -c '.desired[]' | while read -r row; do
     local app rev url sha
@@ -273,7 +284,7 @@ reconcile_once() {
     url=$(echo "$row" | jq -r '.bundle_url')
     sha=$(echo "$row" | jq -r '.bundle_sha256')
     if ! apply_revision "$app" "$rev" "$url" "$sha"; then
-      log "[$app] apply failed; will retry next tick"
+      log_error "[$app] apply failed; will retry next tick"
       state_inc apply_error
     fi
   done
@@ -282,12 +293,26 @@ reconcile_once() {
 }
 
 main() {
-  log "drift-deploy-agent $AGENT_VERSION (sha:$AGENT_SHA) starting (device=$DEVICE_NAME group=$GROUP_ID interval=${POLL_INTERVAL}s)"
-  log "blocklist: ${PROTECTED_NAMES[*]}"
+  log_info "drift-deploy-agent $AGENT_VERSION (sha:$AGENT_SHA) starting (device=$DEVICE_NAME group=$GROUP_ID interval=${POLL_INTERVAL}s)"
+  log_info "blocklist: ${PROTECTED_NAMES[*]}"
   while true; do
-    ( flock -n 9 || { log "another run holds lock; skipping tick"; exit 0; }
+    # flock -w 10: wait up to 10s for the lock instead of bailing
+    # immediately. Smooths the case where the previous tick takes a
+    # little longer than POLL_INTERVAL (slow check-in over flaky WAN).
+    # Subshell exit 99 = lock still held after the wait → suppressed
+    # unless the lock has been held for >60s (genuine stall).
+    ( flock -w 10 9 || exit 99
+      date +%s > "$LOCK_ACQUIRED_AT"
       reconcile_once
-    ) 9>"$LOCK_FILE" || true
+    ) 9>"$LOCK_FILE"
+    rc=$?
+    if [ "$rc" -eq 99 ]; then
+      acq=$(cat "$LOCK_ACQUIRED_AT" 2>/dev/null || echo 0)
+      held=$(( $(date +%s) - acq ))
+      if [ "$held" -gt 60 ]; then
+        log_warn "previous tick has been running for ${held}s; this tick skipped"
+      fi
+    fi
     sleep "$POLL_INTERVAL"
   done
 }
