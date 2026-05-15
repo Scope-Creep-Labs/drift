@@ -63,27 +63,36 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.2.3"
+AGENT_VERSION="0.2.5"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
+FRESH_STATE='{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}'
+
 mkdir -p "$APPS_DIR" "$TEXTFILE_DIR"
-[ -f "$STATE_FILE" ] || echo '{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
+
+# If state.json doesn't exist OR has zero bytes (a previous-agent
+# cross-fs mv truncated it), start fresh.
+if [ ! -s "$STATE_FILE" ]; then
+  printf '%s\n' "$FRESH_STATE" > "$STATE_FILE"
+fi
 
 # Migrate state.json shapes from older agents (pre-0.2.3 didn't always
-# write apply_errors). Idempotent — only rewrites if the key is missing
-# or the file isn't valid JSON.
-_migrate_tmp=$(mktemp)
+# write apply_errors). Idempotent — only rewrites if the key is missing.
+# Tmp file is colocated with state.json so the eventual rename is atomic
+# same-fs. Also size-check the tmp before mv so a silent empty-output
+# jq pass can't clobber what we already have.
 if ! jq -e '.apply_errors' "$STATE_FILE" >/dev/null 2>&1; then
-  if jq '. + {apply_errors: (.apply_errors // {})}' "$STATE_FILE" > "$_migrate_tmp" 2>/dev/null; then
+  _migrate_tmp=$(mktemp -p "$STATE_DIR" .state.migrate.XXXXXX)
+  if jq '. + {apply_errors: (.apply_errors // {})}' "$STATE_FILE" > "$_migrate_tmp" 2>/dev/null \
+     && [ -s "$_migrate_tmp" ]; then
     mv "$_migrate_tmp" "$STATE_FILE"
   else
-    # state.json is unreadable; reset rather than crash. Worst case
-    # the device replays applies on the next check-in (idempotent).
-    echo '{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}' > "$STATE_FILE"
+    rm -f "$_migrate_tmp"
+    # state.json is unreadable AND we couldn't migrate; reset.
+    printf '%s\n' "$FRESH_STATE" > "$STATE_FILE"
   fi
 fi
-rm -f "$_migrate_tmp"
 
 # Log helpers. Each level includes a word Vector's classifier regex
 # matches (error, warn, info) so log_to_metric produces correct
@@ -92,6 +101,30 @@ log()       { printf '[%s] INFO  %s\n'  "$(date -u +%H:%M:%S)" "$*"; }
 log_info()  { log "$*"; }
 log_warn()  { printf '[%s] WARN  %s\n'  "$(date -u +%H:%M:%S)" "$*" >&2; }
 log_error() { printf '[%s] ERROR %s\n'  "$(date -u +%H:%M:%S)" "$*" >&2; }
+
+# Atomic-write helper. Creates the tmp file in the SAME directory as the
+# target so the eventual `mv` is a rename(2), not cross-fs copy+unlink.
+# Cross-fs mv is non-atomic and can leave the destination empty if the
+# copy fails mid-stream — that's how Pi devices with slow SD cards ended
+# up with a 0-byte state.json.
+atomic_jq() {
+  local target=$1; shift
+  local dir tmp
+  dir=$(dirname "$target")
+  tmp=$(mktemp -p "$dir" ".$(basename "$target").XXXXXX")
+  # `jq EXPR EMPTY_FILE` exits 0 with empty output — without the size
+  # check, we'd happily clobber state.json with zero bytes the moment
+  # it became invalid even once. Treat empty output as failure so we
+  # leave the existing target alone and let the migration / next call
+  # decide what to do.
+  if jq "$@" "$target" > "$tmp" && [ -s "$tmp" ]; then
+    mv "$tmp" "$target"
+    return 0
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
 
 generate_drift_override() {
   # Write a compose.override.yaml that injects Drift identity into every
@@ -166,40 +199,36 @@ curl_cp() {
 }
 
 state_set_current() {
-  local app=$1 rev=$2 tmp
-  tmp=$(mktemp)
-  # //= ensures the path exists before we delete from it. `(x // {}) |= ...`
-  # fails on a missing key because the LHS of |= must be a writable path.
-  jq --arg a "$app" --arg r "$rev" \
-     '.apply_errors //= {} | del(.apply_errors[$a]) | .current_revisions[$a] = $r' \
-     "$STATE_FILE" > "$tmp" \
-     && mv "$tmp" "$STATE_FILE" \
-     || { rm -f "$tmp"; log_warn "state_set_current jq failed for app=$app"; }
+  local app=$1 rev=$2
+  atomic_jq "$STATE_FILE" \
+    --arg a "$app" --arg r "$rev" \
+    '.apply_errors //= {} | del(.apply_errors[$a]) | .current_revisions[$a] = $r' \
+    || log_warn "state_set_current jq failed for app=$app"
 }
 
 state_set_error() {
-  local app=$1 err=$2 tmp
-  tmp=$(mktemp)
+  local app=$1
   # Trim to 500 chars so an exploding stack trace doesn't bloat the check-in body.
-  err="${err:0:500}"
-  jq --arg a "$app" --arg e "$err" \
-     '.apply_errors //= {} | .apply_errors[$a] = $e' \
-     "$STATE_FILE" > "$tmp" \
-     && mv "$tmp" "$STATE_FILE" \
-     || { rm -f "$tmp"; log_warn "state_set_error jq failed for app=$app"; }
+  local err="${2:0:500}"
+  atomic_jq "$STATE_FILE" \
+    --arg a "$app" --arg e "$err" \
+    '.apply_errors //= {} | .apply_errors[$a] = $e' \
+    || log_warn "state_set_error jq failed for app=$app"
 }
 
 state_inc() {
-  local key=$1 tmp
-  tmp=$(mktemp)
-  jq --arg k "$key" '.metrics[$k] = ((.metrics[$k] // 0) + 1)' "$STATE_FILE" > "$tmp"
-  mv "$tmp" "$STATE_FILE"
+  local key=$1
+  atomic_jq "$STATE_FILE" \
+    --arg k "$key" \
+    '.metrics[$k] = ((.metrics[$k] // 0) + 1)' \
+    || log_warn "state_inc jq failed for key=$key"
 }
 
 write_textfile() {
-  # Atomic textfile write for node-exporter's textfile collector.
+  # Atomic textfile write for node-exporter's textfile collector. Tmp
+  # in the SAME dir so the eventual mv is rename(2), not cross-fs.
   local tmp now ok_ci err_ci ok_ap err_ap current_lines=""
-  tmp=$(mktemp --tmpdir="$TEXTFILE_DIR" .drift_deploy_agent.XXXXXX) || return
+  tmp=$(mktemp -p "$TEXTFILE_DIR" ".drift_deploy_agent.XXXXXX") || return
   now=$(date +%s)
   ok_ci=$(jq -r '.metrics.check_in_ok // 0' "$STATE_FILE")
   err_ci=$(jq -r '.metrics.check_in_error // 0' "$STATE_FILE")
