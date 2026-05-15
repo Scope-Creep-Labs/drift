@@ -79,6 +79,11 @@ services:
       - ${VMALERT_RULES_HOST_DIR:-/root/setup/victoria/alerts}:/etc/alerts:rw
       - ${ALERTMANAGER_CONFIG_HOST_FILE:-/root/setup/victoria/alertmanager.yml}:/etc/alertmanager/alertmanager.yml:rw
       - ${ALERTMANAGER_SECRETS_HOST_DIR:-/root/setup/victoria/am-secrets}:/etc/alertmanager/secrets:ro
+      # Bind-mount edge-agent so /agent/build-context.tar reflects edits
+      # without rebuilding drift-agent. Overrides the COPY in the
+      # Dockerfile (which remains the source of truth for production
+      # builds that don't use this volume).
+      - ./edge-agent:/opt/edge-agent:ro
     networks: [drift]
     restart: unless-stopped
 

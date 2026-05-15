@@ -243,13 +243,21 @@ reconcile_once() {
     '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, health:{}}')
 
   if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
-    log "check-in failed"; state_inc check_in_error; write_textfile; return
+    log "check-in failed (network)"; state_inc check_in_error; write_textfile; return
+  fi
+  # Caddy / nginx can return non-JSON HTML on 5xx (control plane restart,
+  # auth misconfig). Validate before piping to jq so we get a clear log
+  # line instead of a spew of jq parse errors + `[ -gt 0 ]` bash failures.
+  if ! echo "$resp" | jq -e '.' >/dev/null 2>&1; then
+    log "check-in returned non-JSON (CP unhealthy?): ${resp:0:160}"
+    state_inc check_in_error; write_textfile; return
   fi
   state_inc check_in_ok
 
   local n
-  n=$(echo "$resp" | jq '.desired | length')
-  if [ "$n" -gt 0 ]; then log "check-in: $n app(s) drift from desired"; fi
+  n=$(echo "$resp" | jq -r '.desired | length' 2>/dev/null)
+  n=${n:-0}
+  if [ "$n" -gt 0 ] 2>/dev/null; then log "check-in: $n app(s) drift from desired"; fi
 
   echo "$resp" | jq -c '.desired[]' | while read -r row; do
     local app rev url sha
