@@ -153,6 +153,65 @@ async def list_app_revisions(_ctx: ToolContext, args: dict) -> dict:
     return {"app": name, "n": len(revs), "revisions": revs}
 
 
+async def get_app_revision(_ctx: ToolContext, args: dict) -> dict:
+    """Return the full file contents of one app revision. The natural read
+    side of propose/apply_app_revision — let the agent fetch v1, patch
+    one file, ship as v2 without forcing the operator to paste everything
+    back from scratch.
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    name = args.get("app")
+    if not name:
+        return {"error": "app is required"}
+    version = args.get("version")
+    revision_id_str = args.get("revision_id")
+
+    async with session() as s:
+        app = await _app_by_name(s, name)
+        if app is None:
+            return {"error": f"app '{name}' not found"}
+
+        rev: AppRevision | None = None
+        if revision_id_str:
+            try:
+                rev_id = uuid.UUID(revision_id_str)
+            except ValueError:
+                return {"error": f"invalid revision_id: {revision_id_str}"}
+            rev = (await s.execute(
+                select(AppRevision).where(AppRevision.id == rev_id, AppRevision.app_id == app.id)
+            )).scalar_one_or_none()
+        elif version is not None:
+            try:
+                version_int = int(version)
+            except (TypeError, ValueError):
+                return {"error": f"version must be an integer, got: {version!r}"}
+            rev = (await s.execute(
+                select(AppRevision).where(
+                    AppRevision.app_id == app.id, AppRevision.version == version_int
+                )
+            )).scalar_one_or_none()
+        else:
+            rev = (await s.execute(
+                select(AppRevision)
+                .where(AppRevision.app_id == app.id)
+                .order_by(AppRevision.version.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+
+        if rev is None:
+            return {"error": "revision not found"}
+
+    return {
+        "app": name,
+        "version": rev.version,
+        "revision_id": str(rev.id),
+        "files": rev.files,
+        "bundle_sha256": rev.bundle_sha256,
+        "created_at": rev.created_at.isoformat(),
+    }
+
+
 async def list_deployments(_ctx: ToolContext, _args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
@@ -566,6 +625,25 @@ DEPLOY_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "get_app_revision",
+        "description": (
+            "Return the FULL file contents of one app revision. Use this to read the "
+            "current bundle BEFORE proposing a patch — e.g. fetch v1, change one line "
+            "in compose.yaml, call propose_app_revision/apply_app_revision with the "
+            "modified files. Selector: pass `version` (integer) or `revision_id` (uuid). "
+            "If neither is given, returns the latest revision."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "version": {"type": "integer", "description": "Revision version number (1, 2, …)."},
+                "revision_id": {"type": "string", "description": "Revision uuid."},
+            },
+            "required": ["app"],
+        },
+    },
+    {
         "name": "list_deployments",
         "description": "List every (device, app) deployment target: desired version, current status, last error.",
         "input_schema": {"type": "object", "properties": {}},
@@ -682,6 +760,7 @@ DEPLOY_HANDLERS = {
     "delete_device": delete_device,
     "list_apps": list_apps,
     "list_app_revisions": list_app_revisions,
+    "get_app_revision": get_app_revision,
     "list_deployments": list_deployments,
     "create_app": create_app,
     "propose_app_revision": propose_app_revision,

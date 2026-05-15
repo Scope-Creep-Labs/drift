@@ -71,12 +71,15 @@ must NEVER appear in your tool input — pass FILENAMES (e.g. `auth_credentials_
 Lifecycle: `commission_device` (returns one-time bootstrap token + a curl install \
 command — present the install command verbatim in a `make_markdown` block with a code \
 fence; explain the token is shown only once), `delete_device`. App management: \
-`create_app`, `propose_app_revision` (preview only — ALWAYS call this first when the \
-user wants to create or change an app revision; show the would-be file list + version + \
-sha256 in `make_markdown` for confirmation), `apply_app_revision` (actually packs the \
-bundle + uploads), `deploy_revision` (sets desired state for ONE device — agent on the \
-device picks it up within 30s), `deploy_revision_to_group` (resolves a group_id to all \
-its devices and deploys to each; use this for "deploy X to all <group> devices" prompts). \
+`create_app`, `get_app_revision` (read the FULL file contents of an existing revision — \
+use this whenever the user wants to PATCH an existing app rather than re-author it from \
+scratch; fetch v_n, modify the relevant file(s) in-memory, then propose v_{n+1}), \
+`propose_app_revision` (preview only — ALWAYS call this first when the user wants to \
+create or change an app revision; show the would-be file list + version + sha256 in \
+`make_markdown` for confirmation), `apply_app_revision` (actually packs the bundle + \
+uploads), `deploy_revision` (sets desired state for ONE device — agent on the device \
+picks it up within 30s), `deploy_revision_to_group` (resolves a group_id to all its \
+devices and deploys to each; use this for "deploy X to all <group> devices" prompts). \
 A bundle is a flat filename→contents map. The compose file must use RELATIVE paths for \
 any side-files in the bundle (e.g. `./prometheus.yml`); only real host resources \
 (e.g. `/var/run/docker.sock`) stay absolute. Bundles can reference per-device facts via \
@@ -233,6 +236,9 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{result.get('n', 0)} apps"
     if name == "list_app_revisions":
         return f"{result.get('app', '?')} · {result.get('n', 0)} revisions"
+    if name == "get_app_revision":
+        files = result.get("files") or {}
+        return f"{result.get('app', '?')} v{result.get('version', '?')} · {len(files)} file(s)"
     if name == "list_deployments":
         return f"{result.get('n', 0)} deployment targets"
     if name == "create_app":
