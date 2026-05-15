@@ -164,8 +164,19 @@ def _prom_to_traces(result: dict, name_prefix: str = "") -> tuple[list[dict], di
 
 
 async def list_hosts(ctx: ToolContext, _input: dict) -> dict:
-    instances = await ctx.vm.label_values("instance", match='up{job!=""}')
-    return {"hosts": sorted(instances), "n": len(instances)}
+    # `host` is the device-identity external_label set by every reporter
+    # (vmagent --external_labels.host=$DEVICE_NAME). It matches the
+    # device names exposed by Drift Deploy's list_devices, so metric
+    # queries and deploy queries share one identifier.
+    #
+    # `instance` is the scrape TARGET (cadvisor:8080, vector:9598, ...)
+    # and isn't useful for "where is X running" questions. If a host
+    # somehow lacks the host label (legacy data, third-party exporter),
+    # we fall back to instance values to avoid an empty list.
+    hosts = await ctx.vm.label_values("host")
+    if not hosts:
+        hosts = await ctx.vm.label_values("instance", match='up{job!=""}')
+    return {"hosts": sorted(hosts), "n": len(hosts)}
 
 
 async def list_jobs(ctx: ToolContext, _input: dict) -> dict:
@@ -240,7 +251,12 @@ async def instant_query(ctx: ToolContext, args: dict) -> dict:
 METRICS_TOOLS: list[dict] = [
     {
         "name": "list_hosts",
-        "description": "List all hosts (Prometheus 'instance' label values) reporting metrics.",
+        "description": (
+            "List all hosts (devices) reporting metrics. Returns the values of the "
+            "`host` external_label that every reporter attaches. These names match "
+            "the device names in Drift Deploy (list_devices), so you can pivot "
+            "freely between metric queries and deployment state without re-mapping."
+        ),
         "input_schema": {"type": "object", "properties": {}},
     },
     {

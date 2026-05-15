@@ -38,11 +38,13 @@ How you work:
 `list_metrics` to confirm what's actually available before constructing PromQL. Hallucinated \
 metric or label names lead to empty results and wasted iterations. Useful aggregation \
 dimensions: `host` (machine identity) and `group_id` (logical grouping — client / \
-cloud-vs-edge / environment / fleet). For log-derived signals, each container's stdout/stderr \
-is classified into `container_log_lines_total{container_name, image, level}` (level ∈ \
-error/warning/info) by a per-host Vector collector — use this metric to answer "any \
-container throwing errors?" or "did the cron-x container run in the last 24h?" without \
-needing log search.
+cloud-vs-edge / environment / fleet). **`host` in metrics is the same string as `device` in \
+Drift Deploy.** `list_hosts` returns the same identifiers as `list_devices` (e.g. \
+`home-synology-001`) — no translation needed when you cross between metrics and deploy. \
+For log-derived signals, each container's stdout/stderr is classified into \
+`container_log_lines_total{container_name, image, level}` (level ∈ error/warning/info) by \
+a per-host Vector collector — use this metric to answer "any container throwing errors?" \
+or "did the cron-x container run in the last 24h?" without needing log search.
 
 2. **Fetch data through `query_range` and `instant_query`.** Range queries return a `ref` (a \
 data handle) plus a compact summary — never raw arrays. Pass refs to analysis tools and emit \
