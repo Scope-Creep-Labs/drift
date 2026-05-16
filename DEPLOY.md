@@ -52,6 +52,53 @@ What it does *not* update: the agent's Docker image (the Dockerfile or alpine ba
 
 ---
 
+## Releases
+
+drift-agent and the deploy-agent script ship as one image. Whether a release touches the backend Python, the bash script, both, or neither, the release artifact is the same: a tagged `drift-agent` image on GHCR.
+
+**Image:** `ghcr.io/kidproquo/drift-agent`
+**Tag scheme:** `vYYYY.MM.DD-<short-sha>` (e.g. `v2026.05.16-cbf703a`). `:latest` is moved when releasing from `main`; feature branches only publish their dated tag.
+
+### Cutting a release (from the build host)
+
+Prereq, once: `docker login ghcr.io -u <gh-username>` with a PAT that has `write:packages`.
+
+```bash
+# Make sure HEAD is the commit you want to ship; working tree must be clean.
+scripts/release.sh
+```
+
+What it does:
+1. Builds `drift-agent:vYYYY.MM.DD-<sha>` from `drift-agent/Dockerfile` (which `COPY`s `edge-agent/` into `/opt/edge-agent`).
+2. Pushes the dated tag.
+3. If `HEAD` is on `main`, retags and pushes `:latest`.
+
+### Consuming a release (on each drift-agent host)
+
+```bash
+docker compose pull drift-agent
+docker compose up -d drift-agent
+```
+
+That's it. Inside the new container, `_agent_target_sha()` computes the SHA of the freshly-baked `drift-deploy-agent.sh`. Every managed device's next check-in sees the new target, exits cleanly, and Docker brings it back on the new script (see "Edge-agent self-update" above).
+
+### Rolling back
+
+Pin a specific dated tag in `docker-compose.yml`:
+
+```yaml
+image: ghcr.io/kidproquo/drift-agent:v2026.05.15-<oldsha>
+```
+
+`docker compose up -d drift-agent` switches to that image. Fleet picks up the older script's SHA on the next tick. To re-resume tracking `:latest`, change the tag back.
+
+### What is *not* covered by this release flow
+
+- `drift-frontend` and `drift-postgres` still build/pull from their own image lines.
+- The image baseline of the edge-agent container on each device (set at `install.sh` time) is unchanged; only the agent's running script self-updates. Image-baseline updates still require a one-time re-run of `install.sh` per device.
+
+---
+
 ## Scenarios
 
 ### 1. Look at your fleet

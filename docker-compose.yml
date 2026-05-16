@@ -34,7 +34,10 @@ services:
       # Repo root so we can COPY both drift-agent/ and edge-agent/ in one image.
       context: .
       dockerfile: drift-agent/Dockerfile
-    image: drift-agent:latest
+    # GHCR-published tag. `docker compose build` (re-)builds locally and tags
+    # this name; `docker compose pull` fetches from the registry. Releases
+    # are cut by scripts/release.sh (see DEPLOY.md → "Releases").
+    image: ghcr.io/kidproquo/drift-agent:latest
     env_file: .env
     depends_on:
       drift-postgres:
