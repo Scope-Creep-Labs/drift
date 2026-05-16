@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import createPlotlyComponent from 'react-plotly.js/factory'
-import Plotly from 'plotly.js-dist-min'
+import Plotly from 'plotly.js-cartesian-dist-min'
 import { Box, Button, Skeleton, Stack, Typography, useTheme } from '@mui/material'
 import ReplayIcon from '@mui/icons-material/Replay'
 import type { ChartBlock as ChartBlockT } from '../../types/blocks'
@@ -8,7 +8,10 @@ import { useDataRef } from '../../query/useDataRef'
 import { useInvestigate } from '../../query/useInvestigate'
 
 // react-plotly.js/factory accepts the plotly module and returns a React component.
-// Using the factory + plotly.js-dist-min keeps the bundle ~40% smaller than the full plotly.js.
+// Using the cartesian-dist-min subset (~1.4MB) instead of the full bundle
+// (~4.7MB). Covers scatter/bar/heatmap/histogram/box/violin/contour/pie —
+// everything Drift's agent emits. If a future trace type needs scattergl,
+// 3d, or geo, swap back to plotly.js-dist-min or pick a different subset.
 const Plot = createPlotlyComponent(Plotly as unknown as Parameters<typeof createPlotlyComponent>[0])
 
 export default function ChartBlockPlotly({
