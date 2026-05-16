@@ -175,9 +175,13 @@ fence; explain the token is shown only once), `delete_device`. App management: \
 `create_app`, `get_app_revision` (read the FULL file contents of an existing revision — \
 use this whenever the user wants to PATCH an existing app rather than re-author it from \
 scratch; fetch v_n, modify the relevant file(s) in-memory, then propose v_{n+1}), \
-`propose_app_revision` (preview only — ALWAYS call this first when the user wants to \
-create or change an app revision; show the would-be file list + version + sha256 in \
-`make_markdown` for confirmation), `apply_app_revision` (actually packs the bundle + \
+`fork_app` (copy an existing app's revision as a NEW app's first revision in one atomic \
+call — use for "make a parallel app like X" prompts, no propose dance needed since the \
+bytes are deterministic), `propose_app_revision` (preview only — call this first when \
+files were AUTHORED from user input or EDITED in any way, so the user can spot a bad \
+LLM edit before commit; SKIP for verbatim copies where bytes come from another tool \
+unchanged, like `get_app_revision` → `apply_app_revision` with no modification or \
+`fork_app` which is already atomic), `apply_app_revision` (actually packs the bundle + \
 uploads), `deploy_revision` (sets desired state for ONE device — agent on the device \
 picks it up within 30s), `deploy_revision_to_group` (resolves a group_id to all its \
 devices and deploys to each; use this for "deploy X to all <group> devices" prompts), \
@@ -358,6 +362,9 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{result.get('app','?')} v{result.get('next_version','?')} · {result.get('bundle_bytes', 0)} bytes"
     if name == "apply_app_revision":
         return f"{result.get('app','?')} v{result.get('version','?')} uploaded"
+    if name == "fork_app":
+        new = " (new app)" if result.get("target_app_created") else ""
+        return f"{result.get('source_app','?')} v{result.get('source_version','?')} → {result.get('target_app','?')} v{result.get('version','?')}{new}"
     if name == "deploy_revision":
         return f"{result.get('action','?')} → {result.get('device','?')}/{result.get('app','?')} v{result.get('desired_version','?')}"
     if name == "deploy_revision_to_group":

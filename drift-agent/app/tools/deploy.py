@@ -371,6 +371,103 @@ async def propose_app_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def fork_app(_ctx: ToolContext, args: dict) -> dict:
+    """Copy an existing app's revision as a new app's first revision.
+
+    Atomic create_app + apply_app_revision for the common "I want a
+    parallel app like X for purpose Y" case (e.g. reporter →
+    reporter-jetson). No propose dance — the bytes come verbatim from
+    a stored revision; the user can verify via list_app_revisions on
+    the target afterwards.
+
+    Behavior:
+    - If target_app doesn't exist, it's created.
+    - If target_app exists, the copy lands as the next sequential
+      revision on it. (Useful for "make target_app match source_app
+      v_n" without authoring files manually.)
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    source = args.get("source_app")
+    target = args.get("target_app")
+    if not source or not target:
+        return {"error": "source_app and target_app are required"}
+    if source == target:
+        return {"error": "source_app and target_app must differ; use apply_app_revision to add a version to the same app"}
+    source_version_arg = args.get("source_version")
+
+    async with session() as s:
+        src = await _app_by_name(s, source)
+        if src is None:
+            return {"error": f"source app '{source}' not found"}
+
+        if source_version_arg is not None:
+            try:
+                want = int(source_version_arg)
+            except (TypeError, ValueError):
+                return {"error": f"source_version must be an integer, got {source_version_arg!r}"}
+            src_rev = (await s.execute(
+                select(AppRevision).where(
+                    AppRevision.app_id == src.id,
+                    AppRevision.version == want,
+                )
+            )).scalar_one_or_none()
+        else:
+            src_rev = (await s.execute(
+                select(AppRevision)
+                .where(AppRevision.app_id == src.id)
+                .order_by(AppRevision.version.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+        if src_rev is None:
+            return {"error": f"source revision not found in '{source}'"}
+
+        target_app_obj = await _app_by_name(s, target)
+        target_created = False
+        if target_app_obj is None:
+            target_app_obj = App(name=target)
+            s.add(target_app_obj)
+            await s.flush()
+            target_created = True
+
+        latest = await s.execute(
+            select(AppRevision.version)
+            .where(AppRevision.app_id == target_app_obj.id)
+            .order_by(AppRevision.version.desc())
+            .limit(1)
+        )
+        next_version = (latest.scalar_one_or_none() or 0) + 1
+
+        try:
+            data, digest = bundles.pack(src_rev.files)
+            bundle_url = bundles.upload_bundle(target_app_obj.name, next_version, data)
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"bundle pack/upload failed: {e}"}
+
+        new_rev = AppRevision(
+            app_id=target_app_obj.id,
+            version=next_version,
+            files=src_rev.files,
+            bundle_url=bundle_url,
+            bundle_sha256=digest,
+        )
+        s.add(new_rev)
+        await s.commit()
+        await s.refresh(new_rev)
+
+    return {
+        "source_app": source,
+        "source_version": src_rev.version,
+        "source_revision_id": str(src_rev.id),
+        "target_app": target,
+        "target_app_created": target_created,
+        "version": new_rev.version,
+        "revision_id": str(new_rev.id),
+        "bundle_sha256": digest,
+        "files": list(src_rev.files.keys()),
+    }
+
+
 async def apply_app_revision(_ctx: ToolContext, args: dict) -> dict:
     """Pack + upload the bundle, persist the revision."""
     if (err := _ensure_deploy_enabled()):
@@ -804,6 +901,30 @@ DEPLOY_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "fork_app",
+        "description": (
+            "Copy an existing app's revision as a new app's first revision. "
+            "Atomic create_app + apply_app_revision for the 'I want a parallel "
+            "app like X for purpose Y' case (e.g. reporter → reporter-jetson). "
+            "No propose step needed — the bytes come verbatim from the source "
+            "and the user can verify via list_app_revisions on the target. "
+            "If target_app already exists, the copy lands as its next "
+            "sequential revision. source_version defaults to latest."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "source_app": {"type": "string"},
+                "target_app": {"type": "string"},
+                "source_version": {
+                    "type": "integer",
+                    "description": "Source revision version. Defaults to latest.",
+                },
+            },
+            "required": ["source_app", "target_app"],
+        },
+    },
+    {
         "name": "apply_app_revision",
         "description": (
             "Pack the bundle, upload to object storage, and create a new revision row. "
@@ -917,6 +1038,7 @@ DEPLOY_HANDLERS = {
     "create_app": create_app,
     "propose_app_revision": propose_app_revision,
     "apply_app_revision": apply_app_revision,
+    "fork_app": fork_app,
     "deploy_revision": deploy_revision,
     "deploy_revision_to_group": deploy_revision_to_group,
     "delete_deployment": delete_deployment,
