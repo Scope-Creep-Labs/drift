@@ -1,13 +1,21 @@
 import { useEffect, useRef } from 'react'
-import { Box, Chip, Stack, Typography } from '@mui/material'
+import { Box, Button, Chip, Stack, Typography } from '@mui/material'
+import IosShareIcon from '@mui/icons-material/IosShare'
+import CheckBoxOutlinedIcon from '@mui/icons-material/CheckBoxOutlined'
 import { useActiveInvestigation, useInvestigationStore } from '../state/investigationStore'
 import { Turn } from './Turn'
 import { SUGGESTED_PROMPTS } from '../data/scenarios'
 import { useInvestigate } from '../query/useInvestigate'
+import { downloadReport } from '../lib/exportReport'
 
 export function Conversation() {
   const investigation = useActiveInvestigation()
   const streaming = useInvestigationStore((s) => s.streaming)
+  const selectMode = useInvestigationStore((s) => s.selectMode)
+  const selectedTurnIds = useInvestigationStore((s) => s.selectedTurnIds)
+  const enterSelectMode = useInvestigationStore((s) => s.enterSelectMode)
+  const exitSelectMode = useInvestigationStore((s) => s.exitSelectMode)
+  const selectAll = useInvestigationStore((s) => s.selectAllTurnsInActive)
   const { submit, isStreaming } = useInvestigate()
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
@@ -18,30 +26,120 @@ export function Conversation() {
   const turns = investigation?.turns ?? []
   const showStreaming =
     streaming && (!investigation || streaming.investigationId === investigation.id)
+  const selectedTurns = turns.filter((t) => selectedTurnIds.has(t.id))
+
+  const handleExport = () => {
+    if (!investigation || selectedTurns.length === 0) return
+    downloadReport({
+      title: investigation.title,
+      turns: selectedTurns,
+      exportedAt: new Date(),
+    })
+    exitSelectMode()
+  }
 
   return (
-    <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 4, py: 4 }}>
-      {turns.length === 0 && !showStreaming && (
-        <EmptyState onPick={(text) => submit({ prompt: text })} disabled={isStreaming} />
-      )}
-      {turns.map((t) => (
-        <Turn key={t.id} turn={t} />
-      ))}
-      {showStreaming && (
-        <Turn
-          streaming
-          turn={{
-            id: streaming.turnId,
-            prompt: streaming.prompt,
-            trace: streaming.trace,
-            blocks: streaming.blocks,
-            metadata: streaming.metadata,
-            error: streaming.error,
-            createdAt: streaming.startedAt,
+    <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {selectMode && (
+        <Box
+          sx={{
+            px: 4,
+            py: 1.2,
+            borderBottom: 1,
+            borderColor: 'divider',
+            bgcolor: 'rgba(99, 102, 241, 0.05)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
           }}
-        />
+        >
+          <Typography variant="body2" color="text.secondary">
+            Select turns to include in the report. Click a turn or its checkbox.
+          </Typography>
+          <Button size="small" onClick={selectAll} sx={{ textTransform: 'none' }}>
+            Select all
+          </Button>
+        </Box>
       )}
-      <div ref={bottomRef} />
+
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 4, py: 4 }}>
+        {turns.length === 0 && !showStreaming && (
+          <EmptyState onPick={(text) => submit({ prompt: text })} disabled={isStreaming} />
+        )}
+
+        {turns.length > 0 && !selectMode && !showStreaming && (
+          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
+            <Button
+              size="small"
+              startIcon={<IosShareIcon fontSize="small" />}
+              onClick={enterSelectMode}
+              sx={{ textTransform: 'none', color: 'text.secondary' }}
+            >
+              Export report
+            </Button>
+          </Box>
+        )}
+
+        {turns.map((t) => (
+          <Turn key={t.id} turn={t} />
+        ))}
+        {showStreaming && (
+          <Turn
+            streaming
+            turn={{
+              id: streaming.turnId,
+              prompt: streaming.prompt,
+              trace: streaming.trace,
+              blocks: streaming.blocks,
+              metadata: streaming.metadata,
+              error: streaming.error,
+              createdAt: streaming.startedAt,
+            }}
+          />
+        )}
+        <div ref={bottomRef} />
+      </Box>
+
+      {selectMode && (
+        <Box
+          sx={{
+            px: 4,
+            py: 1.4,
+            borderTop: 1,
+            borderColor: 'divider',
+            bgcolor: 'background.paper',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 2,
+          }}
+        >
+          <Stack direction="row" alignItems="center" spacing={1}>
+            <CheckBoxOutlinedIcon fontSize="small" color={selectedTurns.length > 0 ? 'primary' : 'disabled'} />
+            <Typography variant="body2" color="text.secondary">
+              {selectedTurns.length === 0
+                ? 'No turns selected'
+                : `${selectedTurns.length} turn${selectedTurns.length === 1 ? '' : 's'} selected`}
+            </Typography>
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <Button size="small" onClick={exitSelectMode} sx={{ textTransform: 'none' }}>
+              Cancel
+            </Button>
+            <Button
+              size="small"
+              variant="contained"
+              disableElevation
+              startIcon={<IosShareIcon fontSize="small" />}
+              disabled={selectedTurns.length === 0}
+              onClick={handleExport}
+              sx={{ textTransform: 'none' }}
+            >
+              Export HTML
+            </Button>
+          </Stack>
+        </Box>
+      )}
     </Box>
   )
 }

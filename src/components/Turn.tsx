@@ -1,7 +1,8 @@
-import { Avatar, Box, Paper, Stack, Typography } from '@mui/material'
+import { Avatar, Box, Checkbox, Paper, Stack, Typography } from '@mui/material'
 import PersonOutlineIcon from '@mui/icons-material/PersonOutline'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import type { Turn as TurnT, StreamingTurn } from '../state/investigationStore'
+import { useInvestigationStore } from '../state/investigationStore'
 import { BlockRenderer } from './blocks/BlockRenderer'
 import { Scratchpad } from './Scratchpad'
 import { costForUsage, formatUsd } from '../lib/pricing'
@@ -9,9 +10,45 @@ import { costForUsage, formatUsd } from '../lib/pricing'
 type TurnLike = TurnT | (StreamingTurn & { id: string; createdAt: string })
 
 export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: boolean }) {
+  const selectMode = useInvestigationStore((s) => s.selectMode)
+  const isSelected = useInvestigationStore((s) => s.selectedTurnIds.has(turn.id))
+  const toggleSelected = useInvestigationStore((s) => s.toggleTurnSelected)
+  // Streaming turns can't be selected for export — their final shape isn't
+  // committed to history yet.
+  const selectable = selectMode && !streaming
+
   return (
-    <Stack spacing={2.5} sx={{ mb: 4 }}>
+    <Stack
+      spacing={2.5}
+      sx={{
+        mb: 4,
+        ...(selectable
+          ? {
+              border: 1,
+              borderColor: isSelected ? 'primary.main' : 'transparent',
+              borderRadius: 2,
+              p: 1.2,
+              cursor: 'pointer',
+              bgcolor: isSelected ? 'rgba(99, 102, 241, 0.04)' : 'transparent',
+              '&:hover': { borderColor: isSelected ? 'primary.main' : 'divider' },
+            }
+          : {}),
+      }}
+      onClick={selectable ? () => toggleSelected(turn.id) : undefined}
+    >
       <Stack direction="row" spacing={1.5} alignItems="flex-start">
+        {selectable && (
+          <Checkbox
+            checked={isSelected}
+            onChange={(e) => {
+              e.stopPropagation()
+              toggleSelected(turn.id)
+            }}
+            onClick={(e) => e.stopPropagation()}
+            size="small"
+            sx={{ p: 0.4, mt: 0.2 }}
+          />
+        )}
         <Avatar sx={{ width: 28, height: 28, bgcolor: 'transparent', border: 1, borderColor: 'divider' }}>
           <PersonOutlineIcon fontSize="small" />
         </Avatar>

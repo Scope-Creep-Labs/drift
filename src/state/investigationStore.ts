@@ -48,6 +48,10 @@ type Store = {
   activeId: string | null
   streaming: StreamingTurn | null
 
+  // Report-export selection. Ephemeral; not persisted.
+  selectMode: boolean
+  selectedTurnIds: Set<string>
+
   createInvestigation(): string
   setActive(id: string): void
   deleteInvestigation(id: string): void
@@ -63,6 +67,11 @@ type Store = {
   setStreamError(error: string): void
   finalizeStream(): void
   abortStream(): void
+
+  enterSelectMode(): void
+  exitSelectMode(): void
+  toggleTurnSelected(id: string): void
+  selectAllTurnsInActive(): void
 }
 
 function deriveTitle(prompt: string): string {
@@ -88,6 +97,8 @@ export const useInvestigationStore = create<Store>()(
       investigations: [],
       activeId: null,
       streaming: null,
+      selectMode: false,
+      selectedTurnIds: new Set<string>(),
 
       createInvestigation() {
         const id = nanoid(10)
@@ -233,6 +244,30 @@ export const useInvestigationStore = create<Store>()(
 
       abortStream() {
         set({ streaming: null })
+      },
+
+      enterSelectMode() {
+        set({ selectMode: true, selectedTurnIds: new Set<string>() })
+      },
+
+      exitSelectMode() {
+        set({ selectMode: false, selectedTurnIds: new Set<string>() })
+      },
+
+      toggleTurnSelected(id) {
+        set((s) => {
+          const next = new Set(s.selectedTurnIds)
+          if (next.has(id)) next.delete(id)
+          else next.add(id)
+          return { selectedTurnIds: next }
+        })
+      },
+
+      selectAllTurnsInActive() {
+        set((s) => {
+          const active = s.investigations.find((i) => i.id === s.activeId)
+          return { selectedTurnIds: new Set(active?.turns.map((t) => t.id) ?? []) }
+        })
       },
     }),
     {
