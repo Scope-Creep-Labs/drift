@@ -23,6 +23,100 @@ from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm
 # for display, the agent just answers the next prompt fresh on a cold cache.
 _session_history: dict[str, list[dict]] = {}
 
+# Token-saving knobs for the session-history pipeline:
+# - Tool results over this many bytes get truncated when persisted. The
+#   full output was consumed by the assistant on the turn that produced
+#   it; subsequent turns just need a hint. 4 KB ≈ 1k tokens.
+_MAX_TOOL_RESULT_BYTES = 4096
+# - Keep at most this many user-initiated turns per investigation. A
+#   "turn" = one user prompt + all the agent activity that followed it
+#   (assistant + tool_result messages) until the next user prompt.
+_MAX_TURNS = 20
+
+
+def _compact_history_for_save(messages: list[dict]) -> list[dict]:
+    """Cap large tool_result content before persisting to session history.
+
+    The full content was consumed by the assistant on the turn that
+    produced it; later turns just need to remember the call happened.
+    If the agent really needs the raw output again (rare), it can
+    re-invoke the tool.
+    """
+    out: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if msg.get("role") == "user" and isinstance(content, list):
+            new_blocks: list[Any] = []
+            for c in content:
+                if isinstance(c, dict) and c.get("type") == "tool_result":
+                    body = c.get("content")
+                    if isinstance(body, str) and len(body) > _MAX_TOOL_RESULT_BYTES:
+                        truncated = (
+                            body[:_MAX_TOOL_RESULT_BYTES]
+                            + f"\n… [tool result truncated for history: "
+                              f"{len(body)} bytes total. Re-call the tool if "
+                              f"you need the full output.]"
+                        )
+                        new_blocks.append({**c, "content": truncated})
+                    else:
+                        new_blocks.append(c)
+                else:
+                    new_blocks.append(c)
+            out.append({**msg, "content": new_blocks})
+        else:
+            out.append(msg)
+    return out
+
+
+def _trim_to_recent_turns(messages: list[dict], max_turns: int = _MAX_TURNS) -> list[dict]:
+    """Drop older user-initiated turns from the front, keeping the last N.
+
+    Cut at user-prompt boundaries (role=user with string content), not
+    raw message indices, so every kept segment starts with a user prompt
+    and ends with a terminal assistant message — preserving the
+    tool_use ↔ tool_result pairing invariant the Anthropic API requires.
+    """
+    prompt_indices = [
+        i for i, m in enumerate(messages)
+        if m.get("role") == "user" and isinstance(m.get("content"), str)
+    ]
+    if len(prompt_indices) <= max_turns:
+        return messages
+    return messages[prompt_indices[-max_turns]:]
+
+
+def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
+    """Place a cache_control marker on the last content block of the last
+    message. Anthropic's prompt cache keys on the prefix up to a marker,
+    so successive turns within the cache TTL (5 min) re-use the cached
+    history block-for-block instead of re-paying the input cost.
+
+    Only the freshly-appended user message follows the marker, so on the
+    next turn the *new* prior-history's last message gets a marker, and
+    the cache hits up to the previous marker position.
+    """
+    if not messages:
+        return messages
+    out = messages[:-1]
+    last = messages[-1]
+    content = last["content"]
+    if isinstance(content, str):
+        new_last = {
+            **last,
+            "content": [
+                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
+            ],
+        }
+    elif isinstance(content, list) and content:
+        new_content = list(content[:-1]) + [
+            {**content[-1], "cache_control": {"type": "ephemeral"}}
+        ]
+        new_last = {**last, "content": new_content}
+    else:
+        return messages
+    out.append(new_last)
+    return out
+
 
 SYSTEM_PROMPT = """\
 You are Drift — an autonomous observability investigation agent for time-series systems.
@@ -320,6 +414,11 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     # memory only — a restart loses it; the user sees their visible turns
     # in localStorage but the agent answers their next prompt fresh.
     prior = _session_history.get(investigation_id, []) if investigation_id else []
+    # Mark a cache breakpoint at the end of the prior history. Within the
+    # 5-min cache TTL, subsequent turns re-use the cached prefix through
+    # the whole accumulated conversation instead of re-billing it.
+    if prior:
+        prior = _with_cache_breakpoint(prior)
     messages: list[dict] = [*prior, {"role": "user", "content": user_content}]
 
     yield sse("start", {"engine": settings.model})
@@ -368,7 +467,13 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
                     "content": _sanitize_assistant_content(final.content),
                 })
                 if investigation_id:
-                    _session_history[investigation_id] = messages
+                    # Two token-saving passes on the way to disk:
+                    # 1) compact large tool_result bodies — full content
+                    #    was already consumed by the assistant this turn.
+                    # 2) trim to the last N user-initiated turns so a
+                    #    long investigation can't grow unbounded.
+                    compacted = _compact_history_for_save(messages)
+                    _session_history[investigation_id] = _trim_to_recent_turns(compacted)
                 yield sse(
                     "metadata",
                     {
