@@ -11,15 +11,17 @@ agent's `DRIFT_DEVICE_NAME` / `DRIFT_GROUP_ID` injection.
 
 ## Prerequisites
 
-1. **Every target device has `drift-deploy-agent` v0.2.0+ running**, with
+1. **Every target device has `drift-deploy-agent` v0.4.0+ running**, with
    `GROUP_ID` set in `/etc/drift-deploy/env`. Verify with:
 
    ```promql
    count by (version) (drift_deploy_agent_info)
    ```
 
-   If the count of `version="0.2.0"` doesn't match your device count,
-   re-run install on the stragglers.
+   If the count of `version="0.4.0"` doesn't match your device count,
+   re-run `install.sh` on the stragglers — once. After that, the agent's
+   self-update mechanism (DEPLOY.md → "Edge-agent self-update") keeps the
+   script up to date without further intervention.
 
 2. **The control plane is reporting `group_id` for each device.** Ask
    Drift: *"list devices and their group_id"*. Empty group means the
@@ -347,12 +349,20 @@ To change the reporter compose:
 5. Each device picks up v2, runs `compose up -d --remove-orphans` from
    the new bundle dir. Existing containers are recreated in place.
 
-To delete the app from one device only:
+To remove the deployment from one device:
 
-```bash
-# On the device:
-docker compose -p reporter down
-# Then in Drift, ask: "remove the reporter deployment from <device-name>"
-# (Will need a delete_deployment tool — not in v0 yet; until then,
-# remove via SQL on dev-hetzner if needed.)
-```
+> Remove the reporter deployment from home-jetson-001.
+
+Drift calls `delete_deployment(app="reporter", device="home-jetson-001")`.
+This is a soft delete: the deployment target row stays for the audit trail
+(`status="removed"`, `desired_revision_id=NULL`). The edge agent's next
+check-in receives an `action="remove"` instruction, runs
+`docker compose -p reporter down`, and confirms removal on the following
+check-in. To re-deploy later, just `deploy_revision` again — the tombstone
+gets a new `desired_revision_id` and the agent reapplies.
+
+To remove from a whole group at once:
+
+> Remove reporter from all devices in group drift_home.
+
+Calls `delete_deployment_from_group(app="reporter", group_id="drift_home")`.
