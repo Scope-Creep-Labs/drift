@@ -10,7 +10,7 @@ End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devi
 
 **Where to drive Drift Deploy from:** https://drift.example.com/drift/ — same prompt UI you use for observability. The agent has 16 deploy tools registered alongside the metrics/alerts/logs tools.
 
-**Fleet:** ask Drift *"list devices and their groups"* — the live answer beats anything in this doc. As of writing, four devices across two groups: `dev-hetzner` (group `cloud`) and `home-pi4-001` / `home-synology-001` / `home-jetson-001` (group `drift_home`).
+**Fleet:** ask Drift *"list devices and their groups"* — the live answer beats anything in this doc. As of writing, four devices across three groups: `dev-hetzner` (`dev-cloud`), `home-pi4-001` + `home-synology-001` (`drift_home`), and `nvidia-jetson-002` (`dev-work`).
 
 **Blocklist:** `drift-agent`, `drift-postgres`, `drift-frontend`, `drift-deploy-agent` — hard-coded in `PROTECTED_NAMES` in the agent script. Anything else is allowed.
 
@@ -243,9 +243,9 @@ Sometimes you want a near-copy of an existing app under a new name — e.g., a `
 
 **Then deploy it:**
 
-> Deploy reporter-canary v1 to home-jetson-001 only.
+> Deploy reporter-canary v1 to nvidia-jetson-002 only.
 
-Calls `deploy_revision(app="reporter-canary", device="home-jetson-001")`.
+Calls `deploy_revision(app="reporter-canary", device="nvidia-jetson-002")`.
 
 **When to use `fork_app` vs manual create+apply:** use `fork_app` when you want an exact copy. Use the propose/apply pair when you want to change anything (compose, env, config) before the first deploy — the propose flow gives you a sha256-diff against the source.
 
@@ -279,7 +279,7 @@ The `query_logs` tool runs LogsQL against the central VictoriaLogs instance. Vec
 
 **Examples:**
 
-> Show me errors from home-jetson-001 in the last hour.
+> Show me errors from nvidia-jetson-002 in the last hour.
 
 > What containers on the drift_home group have been logging errors most often this week?
 
@@ -287,7 +287,7 @@ The `query_logs` tool runs LogsQL against the central VictoriaLogs instance. Vec
 
 The tool returns a compact result the agent can render as a table. Subsequent prompts can drill in (e.g. "the third row — give me the full message").
 
-**Field shape:** logs carry `host`, `group_id`, `container_name`, `image`, and a parsed `level`. LogsQL filter syntax: `host:home-jetson-001 _time:1h level:error`.
+**Field shape:** logs carry `host`, `group_id`, `container_name`, `image`, and a parsed `level`. LogsQL filter syntax: `host:nvidia-jetson-002 _time:1h level:error`.
 
 ---
 

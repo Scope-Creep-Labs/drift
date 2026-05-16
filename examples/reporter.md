@@ -351,9 +351,9 @@ To change the reporter compose:
 
 To remove the deployment from one device:
 
-> Remove the reporter deployment from home-jetson-001.
+> Remove the reporter deployment from nvidia-jetson-002.
 
-Drift calls `delete_deployment(app="reporter", device="home-jetson-001")`.
+Drift calls `delete_deployment(app="reporter", device="nvidia-jetson-002")`.
 This is a soft delete: the deployment target row stays for the audit trail
 (`status="removed"`, `desired_revision_id=NULL`). The edge agent's next
 check-in receives an `action="remove"` instruction, runs
