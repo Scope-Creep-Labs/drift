@@ -63,7 +63,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.2.5"
+AGENT_VERSION="0.3.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -337,6 +337,35 @@ apply_revision() {
   state_inc apply_ok
 }
 
+remove_app() {
+  local app=$1
+  # Same blocklist guard as apply — refuse to compose-down a protected
+  # service name even if the control plane told us to.
+  local p
+  for p in "${PROTECTED_NAMES[@]}"; do
+    if [ "$app" = "$p" ]; then
+      log_warn "[$app] REFUSED to remove: matches blocklist (bricking safeguard)"
+      state_set_error "$app" "REFUSED: matches blocklist"
+      return 1
+    fi
+  done
+
+  log_info "[$app] removing (docker compose -p $app down --remove-orphans)"
+  # `docker compose -p <project> down` works against the daemon's known
+  # project state — doesn't need a compose file. If the project isn't
+  # running (already torn down on this device), exit code is still 0.
+  if ! docker compose -p "$app" down --remove-orphans >/dev/null 2>&1; then
+    log_warn "[$app] docker compose down had issues; clearing local state anyway"
+  fi
+  # Drop the app from current_revisions + clear any pending error.
+  atomic_jq "$STATE_FILE" --arg a "$app" \
+    'del(.current_revisions[$a]) | (.apply_errors //= {}) | del(.apply_errors[$a])' \
+    || log_warn "remove_app: state update failed for $app"
+  log_info "[$app] removed"
+  state_inc apply_ok
+}
+
+
 reconcile_once() {
   local current errors
   current=$(jq -c '.current_revisions // {}' "$STATE_FILE" 2>/dev/null)
@@ -369,8 +398,18 @@ reconcile_once() {
   if [ "$n" -gt 0 ] 2>/dev/null; then log_info "check-in: $n app(s) drift from desired"; fi
 
   echo "$resp" | jq -c '.desired[]' | while read -r row; do
-    local app rev url sha
+    local app action rev url sha
     app=$(echo "$row" | jq -r '.app')
+    action=$(echo "$row" | jq -r '.action // "deploy"')
+
+    if [ "$action" = "remove" ]; then
+      if ! remove_app "$app"; then
+        log_error "[$app] remove failed; will retry next tick"
+        state_inc apply_error
+      fi
+      continue
+    fi
+
     rev=$(echo "$row" | jq -r '.revision_id')
     url=$(echo "$row" | jq -r '.bundle_url')
     sha=$(echo "$row" | jq -r '.bundle_sha256')

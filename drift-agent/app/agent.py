@@ -180,7 +180,13 @@ create or change an app revision; show the would-be file list + version + sha256
 `make_markdown` for confirmation), `apply_app_revision` (actually packs the bundle + \
 uploads), `deploy_revision` (sets desired state for ONE device — agent on the device \
 picks it up within 30s), `deploy_revision_to_group` (resolves a group_id to all its \
-devices and deploys to each; use this for "deploy X to all <group> devices" prompts). \
+devices and deploys to each; use this for "deploy X to all <group> devices" prompts), \
+`delete_deployment` / `delete_deployment_from_group` (mark a deployment for removal — \
+the edge agent runs `docker compose down` on the next check-in, then the target row is \
+deleted server-side once the agent confirms the stop). **ALWAYS confirm with the user \
+before calling either `delete_*` tool** — list which devices will be affected in a \
+`make_markdown`, then wait for explicit "yes" / "do it" before calling. Running services \
+get stopped; that's hard to undo if the user mistypes the app name. \
 A bundle is a flat filename→contents map. The compose file must use RELATIVE paths for \
 any side-files in the bundle (e.g. `./prometheus.yml`); only real host resources \
 (e.g. `/var/run/docker.sock`) stay absolute. Bundles can reference per-device facts via \
@@ -358,6 +364,11 @@ def _summarize_for_event(name: str, result: Any) -> str:
         n = len(result.get("deployed_to") or [])
         skip = len(result.get("skipped") or [])
         return f"{result.get('app','?')} v{result.get('desired_version','?')} → {n} device{'s' if n != 1 else ''} ({skip} skipped)"
+    if name == "delete_deployment":
+        return f"removing {result.get('app','?')} from {result.get('device','?')}"
+    if name == "delete_deployment_from_group":
+        n = len(result.get("marked_for_removal") or [])
+        return f"removing {result.get('app','?')} from {n} device{'s' if n != 1 else ''}"
     if name == "summarize_series":
         return f"{len(result.get('series') or [])} series summarized"
     if name == "detect_anomalies":

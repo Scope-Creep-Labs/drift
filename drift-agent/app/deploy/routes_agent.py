@@ -136,20 +136,44 @@ async def check_in(
                     from_status=prior_status, to_status=target.status
                 ).inc()
 
-    # Build desired-state response: every target with desired != current.
+    # Walk all targets for this device, deciding per target whether to
+    # emit a deploy or remove instruction, OR delete the row outright
+    # because the removal lifecycle is complete.
     targets_rows = await db.execute(
-        select(DeploymentTarget, App, AppRevision)
+        select(DeploymentTarget, App)
         .join(App, App.id == DeploymentTarget.app_id)
-        .join(AppRevision, AppRevision.id == DeploymentTarget.desired_revision_id)
         .where(DeploymentTarget.device_id == device.id)
     )
     desired: list[DesiredApp] = []
-    for target, app, rev in targets_rows.all():
+    for target, app in targets_rows.all():
+        # Lifecycle: NULL desired_revision_id = "marked for removal".
+        # We keep the target row even after removal completes so the
+        # history of what ran where remains queryable; the `status`
+        # column carries the tombstone (`removing` → `removed`).
+        if target.desired_revision_id is None:
+            if app.name in body.current_revisions:
+                # Server intends removal; agent still has it running.
+                # Tell the agent to stop. No bundle is shipped.
+                desired.append(DesiredApp(app=app.name, action="remove"))
+            else:
+                # Agent confirmed it's no longer running this app
+                # (omitted from current_revisions). Lock in the removed
+                # state but keep the row for audit.
+                if target.status != "removed":
+                    target.status = "removed"
+                    target.current_revision_id = None
+                    target.last_error = None
+            continue
+
+        # Deploy path (existing logic): emit only when desired != current.
         if target.current_revision_id == target.desired_revision_id:
             continue
-        if not rev.bundle_url or not rev.bundle_sha256:
-            # Should not happen — revision creation always uploads — but skip
-            # rather than hand the agent a broken instruction.
+        rev = (await db.execute(
+            select(AppRevision).where(AppRevision.id == target.desired_revision_id)
+        )).scalar_one_or_none()
+        if rev is None or not rev.bundle_url or not rev.bundle_sha256:
+            # Shouldn't happen — revision creation always uploads — but
+            # skip rather than hand the agent a broken instruction.
             continue
         try:
             url = bundles.presign_get(rev.bundle_url, expires_in=600)
@@ -161,6 +185,7 @@ async def check_in(
         desired.append(
             DesiredApp(
                 app=app.name,
+                action="deploy",
                 revision_id=rev.id,
                 bundle_url=url,
                 bundle_sha256=rev.bundle_sha256,

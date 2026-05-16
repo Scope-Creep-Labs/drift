@@ -212,17 +212,23 @@ async def get_app_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def list_deployments(_ctx: ToolContext, _args: dict) -> dict:
+async def list_deployments(_ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
+    include_removed = bool(args.get("include_removed", False))
     async with session() as s:
-        rows = await s.execute(
+        query = (
             select(DeploymentTarget, Device, App, AppRevision)
             .join(Device, Device.id == DeploymentTarget.device_id)
             .join(App, App.id == DeploymentTarget.app_id)
             .join(AppRevision, AppRevision.id == DeploymentTarget.desired_revision_id, isouter=True)
             .order_by(DeploymentTarget.updated_at.desc())
         )
+        if not include_removed:
+            # `removed` is the tombstone status — hide from the active view
+            # but keep the row for audit (re-enable via include_removed=true).
+            query = query.where(DeploymentTarget.status != "removed")
+        rows = await s.execute(query)
         out = []
         for target, device, app, desired_rev in rows.all():
             out.append({
@@ -235,7 +241,7 @@ async def list_deployments(_ctx: ToolContext, _args: dict) -> dict:
                 "last_error": target.last_error,
                 "updated_at": target.updated_at.isoformat(),
             })
-    return {"n": len(out), "deployments": out}
+    return {"n": len(out), "deployments": out, "include_removed": include_removed}
 
 
 # ---------- Lifecycle / commissioning ----------
@@ -485,6 +491,105 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def delete_deployment(_ctx: ToolContext, args: dict) -> dict:
+    """Mark a deployment for removal on one device.
+
+    Sets desired_revision_id = NULL on the target row + status = "removing".
+    On the next check-in the agent runs `docker compose -p <app> down`
+    and drops the app from its local state. Once the agent confirms the
+    stop on its following check-in the row is tombstoned with
+    status = "removed" — the row STAYS so we keep an audit trail of
+    what ever ran where. Deploy the same (app, device) again to
+    resurrect the row to "pending".
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    app_name = args.get("app")
+    device_name = args.get("device")
+    if not app_name or not device_name:
+        return {"error": "app and device are required"}
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+        device = await _device_by_name(s, device_name)
+        if device is None:
+            return {"error": f"device '{device_name}' not found"}
+
+        target = (await s.execute(
+            select(DeploymentTarget).where(
+                DeploymentTarget.device_id == device.id,
+                DeploymentTarget.app_id == app.id,
+            )
+        )).scalar_one_or_none()
+        if target is None:
+            return {"already_absent": True, "device": device_name, "app": app_name}
+
+        target.desired_revision_id = None
+        target.status = "removing"
+        target.last_error = None
+        await s.commit()
+
+    return {
+        "device": device_name,
+        "app": app_name,
+        "status": "removing",
+        "note": (
+            "The device's edge agent will run `docker compose down` for this app "
+            "on the next check-in (≤30s), then the target row is deleted "
+            "server-side. Use list_deployments to watch the transition."
+        ),
+    }
+
+
+async def delete_deployment_from_group(_ctx: ToolContext, args: dict) -> dict:
+    """Mark a deployment for removal across every device in a group."""
+    if (err := _ensure_deploy_enabled()):
+        return err
+    app_name = args.get("app")
+    group = args.get("group_id")
+    if not app_name or not group:
+        return {"error": "app and group_id are required"}
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+
+        devices = (await s.execute(
+            select(Device).where(Device.group_id == group)
+        )).scalars().all()
+        if not devices:
+            return {"error": f"no devices reporting group_id='{group}'"}
+
+        results = []
+        absent = []
+        for device in devices:
+            target = (await s.execute(
+                select(DeploymentTarget).where(
+                    DeploymentTarget.device_id == device.id,
+                    DeploymentTarget.app_id == app.id,
+                )
+            )).scalar_one_or_none()
+            if target is None:
+                absent.append(device.name)
+                continue
+            target.desired_revision_id = None
+            target.status = "removing"
+            target.last_error = None
+            results.append({"device": device.name, "status": "removing"})
+        await s.commit()
+
+    return {
+        "app": app_name,
+        "group_id": group,
+        "marked_for_removal": results,
+        "already_absent": absent,
+        "note": "Each device's edge agent will compose down on next check-in (≤30s).",
+    }
+
+
 async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
     """Deploy to every device in a logical group. Resolves group_id → devices,
     loops deploy_revision per device.
@@ -645,8 +750,20 @@ DEPLOY_TOOLS: list[dict] = [
     },
     {
         "name": "list_deployments",
-        "description": "List every (device, app) deployment target: desired version, current status, last error.",
-        "input_schema": {"type": "object", "properties": {}},
+        "description": (
+            "List every (device, app) deployment target: desired version, current status, "
+            "last error. By default hides `removed` (tombstoned) deployments; pass "
+            "`include_removed: true` to see the full audit log of what ever ran where."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_removed": {
+                    "type": "boolean",
+                    "description": "Also include status='removed' tombstone rows. Default false.",
+                },
+            },
+        },
     },
     {
         "name": "create_app",
@@ -723,6 +840,41 @@ DEPLOY_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "delete_deployment",
+        "description": (
+            "Remove an app from one device. Marks the target for removal on the "
+            "control plane; the edge agent will run `docker compose -p <app> down` "
+            "on its next check-in and the row is deleted server-side once the agent "
+            "confirms the stop. ALWAYS confirm with the user before calling — "
+            "running services WILL be stopped."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "device": {"type": "string"},
+            },
+            "required": ["app", "device"],
+        },
+    },
+    {
+        "name": "delete_deployment_from_group",
+        "description": (
+            "Remove an app from every device in a logical group. Same lifecycle "
+            "as delete_deployment but fans out. ALWAYS confirm with the user first "
+            "AND list the devices that will be affected — group deletes are easy "
+            "to fat-finger."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "group_id": {"type": "string"},
+            },
+            "required": ["app", "group_id"],
+        },
+    },
+    {
         "name": "deploy_revision_to_group",
         "description": (
             "Deploy an app revision to every device in a logical group (group_id). "
@@ -767,4 +919,6 @@ DEPLOY_HANDLERS = {
     "apply_app_revision": apply_app_revision,
     "deploy_revision": deploy_revision,
     "deploy_revision_to_group": deploy_revision_to_group,
+    "delete_deployment": delete_deployment,
+    "delete_deployment_from_group": delete_deployment_from_group,
 }

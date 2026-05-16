@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -126,9 +126,14 @@ class AgentCheckIn(BaseModel):
 
 class DesiredApp(BaseModel):
     app: str
-    revision_id: uuid.UUID
-    bundle_url: str
-    bundle_sha256: str
+    # "deploy" — agent should apply the named revision. revision_id /
+    # bundle_url / bundle_sha256 are populated.
+    # "remove" — agent should stop the running compose project for this
+    # app and drop it from local state. The bundle fields are unused.
+    action: Literal["deploy", "remove"] = "deploy"
+    revision_id: Optional[uuid.UUID] = None
+    bundle_url: Optional[str] = None
+    bundle_sha256: Optional[str] = None
 
 
 class AgentCheckInResponse(BaseModel):
