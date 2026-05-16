@@ -138,6 +138,11 @@ class DesiredApp(BaseModel):
 
 class AgentCheckInResponse(BaseModel):
     desired: list[DesiredApp] = Field(default_factory=list)
+    # 12-char prefix of the canonical drift-deploy-agent.sh's SHA-256.
+    # If the agent's running AGENT_SHA differs, it self-updates by exiting
+    # cleanly; Docker's --restart unless-stopped brings the container back
+    # and the bootstrapper at the top of the script fetches the latest.
+    agent_target_sha: Optional[str] = None
 
 
 class AgentBootstrap(BaseModel):

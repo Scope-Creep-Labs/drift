@@ -40,6 +40,37 @@ set -euo pipefail
 : "${POLL_INTERVAL:=30}"
 : "${DRIFT_DOCKER_DATA_DIR:=/var/lib/docker}"
 
+# ---- Self-update bootstrap ----
+# Runs once at container start (and on demand mid-loop after the agent
+# `exit 0`s for self-update). Fetches the latest agent.sh from the
+# control plane, validates with `bash -n`, execs into it if it differs
+# from this script. Network/parse failures fall through to the in-image
+# baseline; the image's baked-in script is the last-known-good fallback.
+#
+# Guarded by DRIFT_SKIP_BOOTSTRAP=1 to prevent infinite exec loops if
+# the new script keeps re-running this block.
+if [ -z "${DRIFT_SKIP_BOOTSTRAP:-}" ]; then
+  _DRIFT_NEW_SH=$(mktemp /tmp/drift-deploy-agent.XXXXXX.sh)
+  if curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+          --connect-timeout 5 --max-time 20 \
+          "$CP_URL/agent/agent.sh" -o "$_DRIFT_NEW_SH" 2>/dev/null \
+     && [ -s "$_DRIFT_NEW_SH" ] \
+     && bash -n "$_DRIFT_NEW_SH" 2>/dev/null; then
+    _MY_SHA=$(sha256sum "$0" 2>/dev/null | cut -c1-12)
+    _NEW_SHA=$(sha256sum "$_DRIFT_NEW_SH" | cut -c1-12)
+    if [ "$_MY_SHA" != "$_NEW_SHA" ]; then
+      chmod +x "$_DRIFT_NEW_SH"
+      # Set the skip flag so the re-execed script doesn't re-bootstrap.
+      # Persist the script at a stable path so the AGENT_SHA computed
+      # inside matches what the control plane expects.
+      cp "$_DRIFT_NEW_SH" /usr/local/bin/drift-deploy-agent.sh
+      rm -f "$_DRIFT_NEW_SH"
+      DRIFT_SKIP_BOOTSTRAP=1 exec /usr/local/bin/drift-deploy-agent.sh
+    fi
+  fi
+  rm -f "$_DRIFT_NEW_SH"
+fi
+
 # Per-device facts the agent exports into every `docker compose` subshell.
 # Bundles reference these via ${DRIFT_DEVICE_NAME}, ${DRIFT_GROUP_ID},
 # ${DRIFT_DOCKER_DATA_DIR}.
@@ -63,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.3.0"
+AGENT_VERSION="0.4.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -391,6 +422,17 @@ reconcile_once() {
     state_inc check_in_error; write_textfile; return
   fi
   state_inc check_in_ok
+
+  # Self-update: if CP says a newer agent.sh is canonical, exit cleanly.
+  # Docker's --restart unless-stopped brings us back, and the
+  # bootstrapper at the top of the script fetches the new version.
+  local target_sha
+  target_sha=$(echo "$resp" | jq -r '.agent_target_sha // empty' 2>/dev/null)
+  if [ -n "$target_sha" ] && [ "$target_sha" != "$AGENT_SHA" ]; then
+    log_info "self-update available: $AGENT_SHA → $target_sha; exiting for Docker restart"
+    write_textfile
+    exit 0
+  fi
 
   local n
   n=$(echo "$resp" | jq -r '.desired | length' 2>/dev/null)

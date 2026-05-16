@@ -5,6 +5,7 @@ against the device's stored hash.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import tarfile
 from datetime import datetime, timezone
@@ -22,6 +23,25 @@ EDGE_AGENT_DIR = Path("/opt/edge-agent")
 # Files included in the build context the device pulls to docker build the
 # agent image locally. Tiny — keeps install.sh dependency-free of a registry.
 BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh")
+
+
+_agent_target_sha_cache: str | None = None
+
+
+def _agent_target_sha() -> str:
+    """12-char prefix of the canonical drift-deploy-agent.sh's SHA-256.
+    Computed once at first call; the value is baked into the image so it
+    only changes when drift-agent is rebuilt (which is when a new
+    agent.sh ships)."""
+    global _agent_target_sha_cache
+    if _agent_target_sha_cache is None:
+        path = EDGE_AGENT_DIR / "drift-deploy-agent.sh"
+        if path.is_file():
+            with open(path, "rb") as f:
+                _agent_target_sha_cache = hashlib.sha256(f.read()).hexdigest()[:12]
+        else:
+            _agent_target_sha_cache = ""
+    return _agent_target_sha_cache
 
 from . import bundles
 from .auth import authenticate_device, extract_bearer
@@ -44,6 +64,15 @@ async def install_script() -> FileResponse:
     """Installer the operator pipes into `sudo -E bash`. Runs docker build
     + docker run; no systemd, no host-side compose plugin required."""
     return _serve_edge_file("install.sh", media_type="text/x-shellscript")
+
+
+@router.get("/agent.sh")
+async def agent_script() -> FileResponse:
+    """Latest reconcile-loop script. Agents fetch this at container start
+    (the bootstrapper at the top of the script) and exec into it if it
+    differs from the in-image baseline. Powers the self-update mechanism;
+    no Caddy basic_auth on this path so devices can pull it cleanly."""
+    return _serve_edge_file("drift-deploy-agent.sh", media_type="text/x-shellscript")
 
 
 @router.get("/build-context.tar")
@@ -193,4 +222,4 @@ async def check_in(
         )
 
     await db.commit()
-    return AgentCheckInResponse(desired=desired)
+    return AgentCheckInResponse(desired=desired, agent_target_sha=_agent_target_sha())

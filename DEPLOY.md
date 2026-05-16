@@ -2,7 +2,7 @@
 
 End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devices using Drift's prompt UI. Pair this with [ALERTING.md](./ALERTING.md) (for monitoring deployed apps) and [spec/deploy.md](./spec/deploy.md) (for the full architectural spec).
 
-> **Scope of v0.** Two-device support (this Hetzner box + planned Pi). No groups. No rollback button. No Monaco-style file editor — you paste compose contents into prompts. Receivers and routes are managed via the alert tools; deploys are managed via the deploy tools.
+> **Scope of v0.** Multi-device fleet (4 devices on the current setup), grouped by an operator-chosen `group_id` (`cloud`, `edge`, `drift_home`, …). No Monaco-style file editor yet — you paste compose contents into prompts, but the agent can read existing bundles back with `get_app_revision` so patches don't require re-pasting from scratch. Deploy / fork / delete / group-deploy / query_logs all available as tools. Soft-delete preserves the audit trail.
 
 ---
 
