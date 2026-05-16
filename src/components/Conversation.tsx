@@ -13,7 +13,6 @@ export function Conversation() {
   const streaming = useInvestigationStore((s) => s.streaming)
   const selectMode = useInvestigationStore((s) => s.selectMode)
   const selectedTurnIds = useInvestigationStore((s) => s.selectedTurnIds)
-  const enterSelectMode = useInvestigationStore((s) => s.enterSelectMode)
   const exitSelectMode = useInvestigationStore((s) => s.exitSelectMode)
   const selectAll = useInvestigationStore((s) => s.selectAllTurnsInActive)
   const { submit, isStreaming } = useInvestigate()
@@ -65,19 +64,6 @@ export function Conversation() {
       <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 4, py: 4 }}>
         {turns.length === 0 && !showStreaming && (
           <EmptyState onPick={(text) => submit({ prompt: text })} disabled={isStreaming} />
-        )}
-
-        {turns.length > 0 && !selectMode && !showStreaming && (
-          <Box sx={{ display: 'flex', justifyContent: 'flex-end', mb: 2 }}>
-            <Button
-              size="small"
-              startIcon={<IosShareIcon fontSize="small" />}
-              onClick={enterSelectMode}
-              sx={{ textTransform: 'none', color: 'text.secondary' }}
-            >
-              Export report
-            </Button>
-          </Box>
         )}
 
         {turns.map((t) => (

@@ -1,7 +1,8 @@
 import { useState, useCallback, useRef, ChangeEvent, KeyboardEvent } from 'react'
-import { Box, IconButton, Paper, TextField, Tooltip, CircularProgress, Typography } from '@mui/material'
+import { Box, Button, IconButton, Paper, TextField, Tooltip, CircularProgress, Typography } from '@mui/material'
 import SendIcon from '@mui/icons-material/Send'
 import StopIcon from '@mui/icons-material/Stop'
+import IosShareIcon from '@mui/icons-material/IosShare'
 import { useInvestigate } from '../query/useInvestigate'
 import { useActiveInvestigation, useInvestigationStore } from '../state/investigationStore'
 import { costForUsage, formatUsd, sumUsage, totalTokens } from '../lib/pricing'
@@ -12,8 +13,11 @@ export function PromptInput() {
   const { submit, cancel, isStreaming, error } = useInvestigate()
   const investigation = useActiveInvestigation()
   const streaming = useInvestigationStore((s) => s.streaming)
+  const selectMode = useInvestigationStore((s) => s.selectMode)
+  const enterSelectMode = useInvestigationStore((s) => s.enterSelectMode)
 
   const turns = investigation?.turns ?? []
+  const canExportReport = turns.length > 0 && !selectMode && !isStreaming
   const liveTurn =
     streaming && (!investigation || streaming.investigationId === investigation.id)
       ? [{ metadata: streaming.metadata }]
@@ -98,15 +102,31 @@ export function PromptInput() {
 
   return (
     <Box sx={{ position: 'sticky', bottom: 0, pt: 2, pb: 2.5, bgcolor: 'background.default' }}>
-      {totalTok > 0 && (
-        <Typography
-          variant="caption"
-          color="text.secondary"
-          sx={{ display: 'block', mb: 0.6, textTransform: 'lowercase' }}
-          title={`input ${aggregate.input_tokens?.toLocaleString()} · output ${aggregate.output_tokens?.toLocaleString()} · cache hit ${aggregate.cache_read_input_tokens?.toLocaleString()} · cache write ${aggregate.cache_creation_input_tokens?.toLocaleString()}`}
-        >
-          session: {totalTok.toLocaleString()} tok · {formatUsd(totalCost)}
-        </Typography>
+      {(totalTok > 0 || canExportReport) && (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.6, gap: 1 }}>
+          {totalTok > 0 ? (
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ textTransform: 'lowercase' }}
+              title={`input ${aggregate.input_tokens?.toLocaleString()} · output ${aggregate.output_tokens?.toLocaleString()} · cache hit ${aggregate.cache_read_input_tokens?.toLocaleString()} · cache write ${aggregate.cache_creation_input_tokens?.toLocaleString()}`}
+            >
+              session: {totalTok.toLocaleString()} tok · {formatUsd(totalCost)}
+            </Typography>
+          ) : (
+            <span />
+          )}
+          {canExportReport && (
+            <Button
+              size="small"
+              startIcon={<IosShareIcon fontSize="small" />}
+              onClick={enterSelectMode}
+              sx={{ textTransform: 'none', color: 'text.secondary', py: 0, minHeight: 0 }}
+            >
+              Export report
+            </Button>
+          )}
+        </Box>
       )}
       <Paper
         variant="outlined"
