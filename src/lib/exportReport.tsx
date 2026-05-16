@@ -20,7 +20,13 @@ import type {
 } from '../types/blocks'
 import { dataRegistry } from '../data/registry'
 
-const PLOTLY_CDN = 'https://cdn.plot.ly/plotly-2.35.2.min.js'
+// Plotly's "cartesian" bundle covers scatter / bar / heatmap / histogram /
+// box / violin / contour / pie / table — i.e. everything Drift's agent
+// emits (verified via grep over emit.py + scenarios). 1.3MB vs the 4.4MB
+// full bundle. If a future trace type needs more (scattergl, geo, 3d),
+// either switch this to the full bundle or detect the type and pick at
+// build time.
+const PLOTLY_CDN = 'https://cdn.plot.ly/plotly-cartesian-2.35.2.min.js'
 
 export type ExportInputs = {
   title: string
