@@ -11,15 +11,17 @@ agent's `DRIFT_DEVICE_NAME` / `DRIFT_GROUP_ID` injection.
 
 ## Prerequisites
 
-1. **Every target device has `drift-deploy-agent` v0.4.0+ running**, with
+1. **Every target device has `drift-deploy-agent` v0.5.0+ running**, with
    `GROUP_ID` set in `/etc/drift-deploy/env`. Verify with:
 
    ```promql
    count by (version) (drift_deploy_agent_info)
    ```
 
-   If the count of `version="0.4.0"` doesn't match your device count,
-   re-run `install.sh` on the stragglers — once. After that, the agent's
+   If the count of `version="0.5.0"` doesn't match your device count,
+   re-run `install.sh` (fresh devices) or `docker restart
+   drift-deploy-agent` on the device (existing v0.4.0 install, one-time
+   to clear the self-update bug fixed in 0.5.0). After that, the agent's
    self-update mechanism (DEPLOY.md → "Edge-agent self-update") keeps the
    script up to date without further intervention.
 

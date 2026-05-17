@@ -42,13 +42,48 @@ If the agent skips propose and jumps straight to apply, **stop and ask it to sho
 
 ---
 
-## Edge-agent self-update (v0.4.0+)
+## Edge-agent self-update (v0.5.0+)
 
 The `drift-deploy-agent.sh` script self-updates on every check-in. The control plane includes the current canonical script's 12-char SHA in each `/check-in` response (`agent_target_sha`). When the running agent's SHA differs, the container exits cleanly; Docker's `--restart unless-stopped` brings it back; a bootstrapper at the top of the script fetches `/api/deploy/agent/agent.sh`, `bash -n` checks it, and `exec`s into it. Worst-case downtime per device per update: one poll cycle + container restart, ~20–30s.
 
 What this means in practice: **after the initial `install.sh` on a device, you never need to re-run install just to ship a new agent script.** Push a new `drift-deploy-agent.sh`, rebuild drift-agent, and the fleet picks it up. The in-image baseline is the fallback if the control plane is unreachable at container start.
 
 What it does *not* update: the agent's Docker image (the Dockerfile or alpine baseline). Those still require a one-time re-install per device. In v0 those rarely change.
+
+> **v0.4.0 had a self-update bug** that silently swallowed the exit signal inside the `flock` subshell — agents would log "exiting for Docker restart" every poll cycle without ever actually restarting. v0.5.0 fixes it (exit code 100 sentinel propagated by `main()`). Devices stuck at v0.4.0 need a one-time `docker restart drift-deploy-agent` on the device; after that the bootstrap pulls v0.5.0+ and all future self-updates work.
+
+---
+
+## Apps UI (sidebar create/edit modal)
+
+Creating or editing apps from the chat means pasting multi-file YAML into a textbox while the LLM sits in the data path — easy to fat-finger, easy for the LLM to paraphrase silently. The **APPS** section in the sidebar bypasses all of that:
+
+- **+ New app**: opens a modal with a name field, drag-drop file zone, multi-tab editor (one tab per file), inline rename, delete, "+ Blank". POSTs directly to `/api/deploy/apps` + `/api/deploy/revisions` — no LLM, no paraphrase risk.
+- **Click an existing app**: same modal pre-populated from `get_app_revision(app, "latest")`. Save → creates a new revision.
+
+Compose-file presence is validated client-side (the bundle must include `compose.yaml`, `compose.yml`, or `docker-compose.yml`). Each file is capped at 256KB to prevent a stray binary from locking the UI.
+
+The chat surface stays for *operations* (deploy / update / delete / query). Apps are *artifacts* — the modal is the right shape for them.
+
+---
+
+## Registry credentials (private images)
+
+Apps whose compose references images on private registries (e.g. `ghcr.io/<you>/*`) need each device's docker daemon to authenticate. Drift handles this end-to-end:
+
+- **Sidebar footer → 🔑 icon** opens the credentials modal.
+- Operator enters `registry`, `username`, `password` (a PAT for GHCR). Saved as Fernet ciphertext in Postgres (key = `DRIFT_SECRET_KEY` env var).
+- Every agent check-in returns the decrypted creds as a docker `auths` map. The agent writes them atomically to `/root/.docker/config.json` inside its container. From the next `docker compose pull` onwards, private pulls authenticate.
+- To rotate: re-paste the new PAT and click Save. Password is never echoed back from the server — every save replaces both fields.
+- To revoke: delete the row in the modal. The agents' `config.json` files are *not* automatically rotated; restart the agent container or wait for the next bundle apply.
+
+**Operator setup, once:**
+1. Set `DRIFT_SECRET_KEY` in `.env` to a Fernet key (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`). Rebuild + restart `drift-agent`.
+2. Enter credentials in the UI modal.
+
+Without `DRIFT_SECRET_KEY` set, the `/registry-creds` endpoints return 503 and the modal surfaces the disabled state.
+
+> **Threat model:** secrets at rest are encrypted with `DRIFT_SECRET_KEY` (Fernet/AES-128 + HMAC). In transit they ride over Caddy-terminated TLS to the agent. They're decrypted on the CP per check-in (no cache) and written `chmod 600` to the agent container's filesystem. A DB dump alone doesn't expose them; an attacker would also need the key from `.env`.
 
 ---
 
@@ -385,7 +420,9 @@ The installer detects the existing container and replaces it in place.
 
 ### 6. Migrate an existing stack from Arcane
 
-The flow that lets you stop using Arcane for one app. Worked example: `podnot`.
+The flow that lets you stop using Arcane for one app. Worked example: `podnot` — see [examples/podnot.md](./examples/podnot.md) for the full recipe including the registry-credentials setup (the images are on private GHCR) and the named-volume pattern that keeps state portable across devices.
+
+Quick version for the simplest case (no private images, no state separation needed):
 
 **Pre-work (out of band):**
 - Open Arcane; **stop** the podnot project (don't delete it yet — we want it as a fallback if Drift Deploy has issues). This frees port 32191.
@@ -483,6 +520,7 @@ A tombstoned target is just a row with `desired_revision_id=NULL`. Run `deploy_r
 | File | What it covers |
 |---|---|
 | [examples/reporter.md](./examples/reporter.md) | Per-host observability stack (vmagent + cAdvisor + node-exporter + Vector) deployed to a group of devices with `deploy_revision_to_group`. |
+| [examples/podnot.md](./examples/podnot.md) | Private GHCR images (registry credentials flow end-to-end) + portable state via named volumes. Canonical example of a small real-world app. |
 
 ## Sample compose files (copy-paste-ready)
 
@@ -558,7 +596,6 @@ When you paste a bundle like this to Drift, the agent should set `files = {"comp
 ## v0 known limitations
 
 - **No `delete_app` tool.** Removing a deployment target is supported (`delete_deployment`, soft-delete tombstone). Removing an app's *definition* (all its revisions, bundle history) still requires SQL — intentional, since this is the destructive case.
-- **No registry credentials in the system.** Private images require `docker login` to be done out-of-band on each device.
 - **No rollback button.** To roll back: re-deploy the previous revision (`deploy_revision` with an explicit older `revision_id`). The agent will run the older bundle on the next check-in.
 - **No compose-editor block in the UI.** You paste YAML into the prompt textbox. `get_app_revision` lets you patch from current state instead of re-pasting whole bundles. Monaco editor still planned for v1.
 - **Blocklist is host-file-level.** Extending the protected name list requires editing `PROTECTED_NAMES` in `drift-deploy-agent.sh`. Rare and intentional; self-update will roll the change to the fleet on the next check-in.
@@ -635,6 +672,8 @@ If you're systematically validating v0, run these in order. Each builds on the p
 11. **Group rollout** — Scenario 4c. Deploy a small app to `drift_home`; verify all three home devices come up healthy on the same revision.
 12. **Logs** — Scenario 4d. Crashloop a container and confirm `query_logs` returns the error lines.
 13. **Soft-delete** — Scenario 8. Tombstone a deployment, confirm `list_deployments(include_removed=true)` shows it with `status="removed"`.
-14. **Self-update** — Change a comment in `edge-agent/drift-deploy-agent.sh`, rebuild drift-agent. Within ~30s every device should log a "self-update available" line and restart on the new SHA. (See commit `99126a1` for the verification sequence.)
+14. **Self-update** — Change a comment in `edge-agent/drift-deploy-agent.sh`, rebuild drift-agent. Within ~30s every device should log a "self-update available" line and restart on the new SHA. (See commits `99126a1` for the original plumbing and `096f10c` for the subshell-exit fix that made it actually work.)
+15. **Registry credentials** — Set fake `example.test` creds in the UI modal. Wait one tick. On any device: `sudo docker exec drift-deploy-agent cat /root/.docker/config.json` should show the auths map. Delete the credential; the file is left as-is (operator can wipe it manually if needed).
+16. **Apps UI** — Create an app from the sidebar modal (drag-drop a file, type into a blank tab, save). Verify via chat: *"list apps"* should show it; *"get the latest revision of <app>"* should return the same files you typed.
 
 Each takes ~5 minutes once you have prompts ready. Drop any failures or surprises into a list and we'll triage.
