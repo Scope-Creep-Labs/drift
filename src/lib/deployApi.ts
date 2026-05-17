@@ -27,6 +27,15 @@ export type AppRevisionDetail = AppRevision & {
   files: Record<string, string>
 }
 
+export type RegistryCredential = {
+  id: string
+  registry: string
+  username: string
+  // Password is never returned by the API — write-only.
+  created_at: string
+  updated_at: string
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${DEPLOY_BASE}${path}`, {
     ...init,
@@ -64,4 +73,18 @@ export const deployApi = {
       method: 'POST',
       body: JSON.stringify({ files }),
     }),
+
+  // Registry credentials. Upsert is PUT (idempotent): every save replaces
+  // both username and password because the server never decrypts to
+  // compare — operators re-paste the PAT to change anything.
+  listRegistryCreds: () => api<RegistryCredential[]>('/registry-creds'),
+
+  upsertRegistryCreds: (registry: string, username: string, password: string) =>
+    api<RegistryCredential>('/registry-creds', {
+      method: 'PUT',
+      body: JSON.stringify({ registry, username, password }),
+    }),
+
+  deleteRegistryCreds: (registry: string) =>
+    api<void>(`/registry-creds/${encodeURIComponent(registry)}`, { method: 'DELETE' }),
 }

@@ -5,6 +5,7 @@ against the device's stored hash.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import tarfile
@@ -43,12 +44,14 @@ def _agent_target_sha() -> str:
             _agent_target_sha_cache = ""
     return _agent_target_sha_cache
 
-from . import bundles
+from . import bundles, secrets as crypto
 from .auth import authenticate_device, extract_bearer
 from .db import session
-from .models import App, AppRevision, DeploymentTarget
+from .models import App, AppRevision, DeploymentTarget, RegistryCredential
 from .observability import apply_transitions_total, check_ins_total
 from .schemas import AgentCheckIn, AgentCheckInResponse, DesiredApp
+
+from ..config import settings as _settings
 
 
 router = APIRouter(prefix="/api/deploy/agent", tags=["deploy-agent"])
@@ -221,5 +224,27 @@ async def check_in(
             )
         )
 
+    # Registry credentials: stored encrypted per registry on the CP.
+    # Decrypt + repackage into the docker config.json auths shape so the
+    # agent can drop the value into /root/.docker/config.json verbatim.
+    # Only emitted when the secrets subsystem is configured (key present).
+    creds_map: dict[str, dict[str, str]] = {}
+    if _settings.secrets_enabled:
+        creds_rows = (await db.execute(select(RegistryCredential))).scalars().all()
+        for c in creds_rows:
+            try:
+                password = crypto.decrypt(c.password_encrypted)
+            except RuntimeError:
+                # Stale row encrypted under a rotated key. Skip rather
+                # than crashing the whole check-in; operator can
+                # re-enter the credential via the UI.
+                continue
+            auth = base64.b64encode(f"{c.username}:{password}".encode()).decode()
+            creds_map[c.registry] = {"auth": auth}
+
     await db.commit()
-    return AgentCheckInResponse(desired=desired, agent_target_sha=_agent_target_sha())
+    return AgentCheckInResponse(
+        desired=desired,
+        agent_target_sha=_agent_target_sha(),
+        registry_credentials=creds_map,
+    )

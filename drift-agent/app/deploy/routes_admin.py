@@ -14,10 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from . import bundles, security
+from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
-from .models import App, AppRevision, Device, DeploymentTarget
+from .models import App, AppRevision, Device, DeploymentTarget, RegistryCredential
 from .schemas import (
     AppCreate,
     AppOut,
@@ -29,6 +29,8 @@ from .schemas import (
     DeviceCreate,
     DeviceCreated,
     DeviceOut,
+    RegistryCredentialOut,
+    RegistryCredentialSet,
 )
 
 
@@ -246,3 +248,75 @@ async def _app_by_name(db: AsyncSession, name: str) -> App:
     if app is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"app '{name}' not found")
     return app
+
+
+# ---------- Registry credentials ----------
+
+
+def _require_secrets_enabled() -> None:
+    if not settings.secrets_enabled:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "secrets subsystem disabled — set DRIFT_SECRET_KEY",
+        )
+
+
+@router.get("/registry-creds", response_model=list[RegistryCredentialOut])
+async def list_registry_creds(
+    db: AsyncSession = Depends(get_db),
+) -> list[RegistryCredentialOut]:
+    rows = await db.execute(
+        select(RegistryCredential).order_by(RegistryCredential.registry)
+    )
+    return [
+        RegistryCredentialOut.model_validate(c, from_attributes=True)
+        for c in rows.scalars().all()
+    ]
+
+
+@router.put("/registry-creds", response_model=RegistryCredentialOut)
+async def upsert_registry_creds(
+    body: RegistryCredentialSet, db: AsyncSession = Depends(get_db)
+) -> RegistryCredentialOut:
+    _require_secrets_enabled()
+    encrypted = crypto.encrypt(body.password)
+    existing = (
+        await db.execute(
+            select(RegistryCredential).where(RegistryCredential.registry == body.registry)
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        row = RegistryCredential(
+            registry=body.registry,
+            username=body.username,
+            password_encrypted=encrypted,
+        )
+        db.add(row)
+    else:
+        existing.username = body.username
+        existing.password_encrypted = encrypted
+        row = existing
+    await db.commit()
+    await db.refresh(row)
+    return RegistryCredentialOut.model_validate(row, from_attributes=True)
+
+
+# `registry:path` lets the registry name contain slashes (e.g. an
+# index URL like "https://index.docker.io/v1/"). The client should
+# still URL-encode the value to keep the router happy with unusual
+# characters.
+@router.delete("/registry-creds/{registry:path}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_registry_creds(
+    registry: str, db: AsyncSession = Depends(get_db)
+) -> None:
+    row = (
+        await db.execute(
+            select(RegistryCredential).where(RegistryCredential.registry == registry)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND, f"no credentials for registry '{registry}'"
+        )
+    await db.delete(row)
+    await db.commit()

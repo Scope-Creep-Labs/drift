@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.4.0"
+AGENT_VERSION="0.5.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -422,6 +422,29 @@ reconcile_once() {
     state_inc check_in_error; write_textfile; return
   fi
   state_inc check_in_ok
+
+  # Registry credentials: the CP returns a docker config.json `auths`
+  # map; we write it verbatim so docker compose pull (inside this
+  # container's CLI) can authenticate against private registries. An
+  # empty/missing object means "no creds configured" — leave any
+  # existing file alone rather than clobbering it, so operators can
+  # still hand-edit if they need a registry the CP doesn't know about.
+  local auths
+  auths=$(echo "$resp" | jq -c '.registry_credentials // {}' 2>/dev/null)
+  if [ -n "$auths" ] && [ "$auths" != "{}" ] && [ "$auths" != "null" ]; then
+    mkdir -p /root/.docker
+    # Atomic write: jsonify into the parent dir then mv, so a partial
+    # write never leaves the file truncated mid-tick.
+    local tmp
+    tmp=$(mktemp -p /root/.docker config.json.XXXXXX)
+    if jq -n --argjson auths "$auths" '{auths: $auths}' > "$tmp" && [ -s "$tmp" ]; then
+      chmod 600 "$tmp"
+      mv "$tmp" /root/.docker/config.json
+    else
+      rm -f "$tmp"
+      log_warn "could not materialize docker config.json from CP-supplied creds"
+    fi
+  fi
 
   # Self-update: if CP says a newer agent.sh is canonical, exit cleanly.
   # Docker's --restart unless-stopped brings us back, and the

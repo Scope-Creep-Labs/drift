@@ -49,10 +49,22 @@ class Settings(BaseSettings):
     b2_bucket: str = ""
     b2_prefix: str = "drift-bundles"
 
+    # Fernet symmetric key (urlsafe base64, 44 chars). Required for the
+    # secrets subsystem — registry credentials, future env-var secrets.
+    # Generate once with: python -c "from cryptography.fernet import
+    # Fernet; print(Fernet.generate_key().decode())". Empty value disables
+    # the secrets endpoints (they return 503).
+    drift_secret_key: str = ""
+
     @property
     def deploy_enabled(self) -> bool:
         """Deploy subsystem requires both Postgres and B2 storage."""
         return bool(self.drift_pg_url) and bool(self.b2_bucket)
+
+    @property
+    def secrets_enabled(self) -> bool:
+        """Secrets subsystem additionally requires an encryption key."""
+        return self.deploy_enabled and bool(self.drift_secret_key)
 
     allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

@@ -24,7 +24,8 @@ RUN pip install --upgrade pip wheel \
         "asyncpg>=0.29" \
         "alembic>=1.13" \
         "boto3>=1.34" \
-        "prometheus-client>=0.20"
+        "prometheus-client>=0.20" \
+        "cryptography>=43.0"
 
 # ---- Runtime ----
 FROM python:3.12-slim AS runtime

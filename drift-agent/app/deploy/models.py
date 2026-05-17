@@ -104,3 +104,25 @@ class DeploymentTarget(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc, onupdate=_now_utc, nullable=False
     )
+
+
+class RegistryCredential(Base):
+    """Per-registry pull credentials. password_encrypted is Fernet
+    ciphertext (see deploy.secrets). One row per registry — operator
+    sets it once via the UI, every device picks it up at its next
+    check-in (as a docker config.json auths entry)."""
+
+    __tablename__ = "registry_credentials"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # "ghcr.io", "docker.io", "registry.gitlab.com", … whatever the
+    # auths-key of docker config.json expects. Unique so upsert by name.
+    registry: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
+    username: Mapped[str] = mapped_column(String(256), nullable=False)
+    password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, onupdate=_now_utc, nullable=False
+    )

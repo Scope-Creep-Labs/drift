@@ -151,6 +151,12 @@ class AgentCheckInResponse(BaseModel):
     # cleanly; Docker's --restart unless-stopped brings the container back
     # and the bootstrapper at the top of the script fetches the latest.
     agent_target_sha: Optional[str] = None
+    # Docker config.json auths map. Shape: {"ghcr.io": {"auth": "<b64>"}}.
+    # Set by the CP from registry_credentials, decrypted per check-in. The
+    # agent writes this verbatim under /root/.docker/config.json so the
+    # CLI inside the agent container picks it up for compose pull. Empty
+    # map = no creds configured; agent leaves the file alone (no clobber).
+    registry_credentials: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 class AgentBootstrap(BaseModel):
@@ -159,3 +165,28 @@ class AgentBootstrap(BaseModel):
     device_name: str
     bootstrap_token: str
     agent_version: str
+
+
+# ---------- Registry credentials ----------
+
+
+class RegistryCredentialOut(BaseModel):
+    """Returned to the operator. Password is intentionally not in this
+    shape — once set, it can be updated (overwrite) or deleted, but never
+    read back. Matches how the docker CLI surfaces stored credentials."""
+
+    id: uuid.UUID
+    registry: str
+    username: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RegistryCredentialSet(BaseModel):
+    """Upsert payload from the UI. The password is required even on
+    'update' because the server never decrypts to compare — every PUT
+    replaces both fields. Operators re-paste the PAT to change anything."""
+
+    registry: str = Field(min_length=1, max_length=256)
+    username: str = Field(min_length=1, max_length=256)
+    password: str = Field(min_length=1, max_length=4096)

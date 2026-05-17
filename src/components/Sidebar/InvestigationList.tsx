@@ -13,8 +13,10 @@ import {
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
+import KeyIcon from '@mui/icons-material/Key'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { AppModal, type AppModalMode } from '../AppModal'
+import { RegistryCredsModal } from '../RegistryCredsModal'
 import { deployApi, type App } from '../../lib/deployApi'
 
 export function InvestigationList() {
@@ -30,6 +32,7 @@ export function InvestigationList() {
   const [apps, setApps] = useState<App[] | null>(null)
   const [appsError, setAppsError] = useState<string | null>(null)
   const [modal, setModal] = useState<AppModalMode | null>(null)
+  const [credsModalOpen, setCredsModalOpen] = useState(false)
 
   const refreshApps = () => {
     setAppsError(null)
@@ -181,10 +184,25 @@ export function InvestigationList() {
         </List>
       </Box>
 
-      <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
+      <Box
+        sx={{
+          px: 1.5,
+          py: 1,
+          borderTop: 1,
+          borderColor: 'divider',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
         <Typography variant="caption" color="text.secondary">
           engine: <code>{import.meta.env.VITE_ENGINE ?? 'mock'}</code>
         </Typography>
+        <Tooltip title="Registry credentials">
+          <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
+            <KeyIcon sx={{ fontSize: 14 }} />
+          </IconButton>
+        </Tooltip>
       </Box>
 
       {modal && (
@@ -195,6 +213,8 @@ export function InvestigationList() {
           onSaved={refreshApps}
         />
       )}
+
+      <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
     </Stack>
   )
 }
