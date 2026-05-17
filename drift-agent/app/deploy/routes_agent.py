@@ -152,11 +152,26 @@ async def check_in(
                 target.current_revision_id = current_rev_id
 
             if err:
-                # Agent is reporting an in-flight error for this app.
-                target.status = "failed"
-                if target.last_error != err:
+                # Don't double-count once the target is already paused.
+                # The edge agent's state.json holds apply_errors stickily
+                # — every check-in re-reports the same error until a
+                # successful apply or an explicit remove clears it. If we
+                # incremented unconditionally, paused_retries targets
+                # would climb attempts to infinity while never actually
+                # being retried.
+                if target.status == "paused_retries":
+                    target.last_error = err
+                else:
+                    # Fresh failure — increment. Previous "only when error
+                    # TEXT changes" guard was wrong (Docker's error wording
+                    # varies slightly between identical underlying failures,
+                    # which once let attempts grow past 800).
                     target.attempts += 1
-                target.last_error = err
+                    target.last_error = err
+                    if target.attempts >= target.max_retries:
+                        target.status = "paused_retries"
+                    else:
+                        target.status = "failed"
             elif current_rev_id is not None and target.desired_revision_id == current_rev_id:
                 # Healthy: agent confirms current == desired and no error.
                 target.status = "healthy"
@@ -199,6 +214,14 @@ async def check_in(
 
         # Deploy path (existing logic): emit only when desired != current.
         if target.current_revision_id == target.desired_revision_id:
+            continue
+
+        # Retry-budget gate: once attempts hit max_retries, the target is
+        # paused and we don't ship the bundle anymore. The agent stops
+        # retrying because it never sees the desired state. To resume,
+        # operator calls retry_deployment (resets attempts) or pushes a
+        # new revision (also resets attempts in the admin endpoint).
+        if target.status == "paused_retries":
             continue
         rev = (await db.execute(
             select(AppRevision).where(AppRevision.id == target.desired_revision_id)

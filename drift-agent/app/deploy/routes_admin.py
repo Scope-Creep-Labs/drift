@@ -226,14 +226,26 @@ async def set_deployment(
             app_id=body.app_id,
             desired_revision_id=body.revision_id,
             status="pending",
+            # If the caller specified a cap, use it; otherwise let the
+            # column default (5) take effect.
+            **({"max_retries": body.max_retries} if body.max_retries else {}),
         )
         db.add(target)
     else:
+        prior_revision = target.desired_revision_id
         target.desired_revision_id = body.revision_id
-        # Only flip status to pending when desired actually changed.
-        if target.current_revision_id != body.revision_id:
+        if body.max_retries is not None:
+            target.max_retries = body.max_retries
+        # Push to a fresh deploy attempt when: revision changed OR caller
+        # set a new max_retries (presumably operator is bumping the cap
+        # to give a previously-paused deployment more chances) OR target
+        # is paused_retries (this PUT counts as an explicit resume).
+        revision_changed = prior_revision != body.revision_id
+        is_paused = target.status == "paused_retries"
+        if revision_changed or is_paused:
             target.status = "pending"
             target.last_error = None
+            target.attempts = 0
     await db.commit()
     await db.refresh(target)
     return DeploymentTargetOut.model_validate(target, from_attributes=True)

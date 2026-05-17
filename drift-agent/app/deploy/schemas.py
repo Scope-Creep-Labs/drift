@@ -101,6 +101,7 @@ class DeploymentTargetOut(BaseModel):
     current_revision_id: Optional[uuid.UUID]
     status: str
     attempts: int
+    max_retries: int
     last_error: Optional[str]
     updated_at: datetime
 
@@ -109,6 +110,10 @@ class DeploymentTargetSet(BaseModel):
     device_id: uuid.UUID
     app_id: uuid.UUID
     revision_id: uuid.UUID
+    # Optional override of the per-target retry cap. If unset, falls back
+    # to the existing row's value (on update) or the model default (on
+    # first deploy, currently 5).
+    max_retries: Optional[int] = Field(default=None, ge=1, le=100)
 
 
 # ---------- Agent surface ----------

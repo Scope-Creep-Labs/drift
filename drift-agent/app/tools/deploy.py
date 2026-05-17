@@ -114,6 +114,7 @@ async def get_device(_ctx: ToolContext, args: dict) -> dict:
                 "desired_version": rev.version if rev else None,
                 "current_revision_id": str(target.current_revision_id) if target.current_revision_id else None,
                 "attempts": target.attempts,
+                "max_retries": target.max_retries,
                 "last_error": target.last_error,
                 "updated_at": target.updated_at.isoformat(),
             })
@@ -238,6 +239,7 @@ async def list_deployments(_ctx: ToolContext, args: dict) -> dict:
                 "current_revision_id": str(target.current_revision_id) if target.current_revision_id else None,
                 "status": target.status,
                 "attempts": target.attempts,
+                "max_retries": target.max_retries,
                 "last_error": target.last_error,
                 "updated_at": target.updated_at.isoformat(),
             })
@@ -527,6 +529,15 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
     if not app_name or not device_name:
         return {"error": "app and device are required"}
     revision_id_str = args.get("revision_id")
+    max_retries_raw = args.get("max_retries")
+    max_retries: int | None = None
+    if max_retries_raw is not None:
+        try:
+            max_retries = int(max_retries_raw)
+            if max_retries < 1 or max_retries > 100:
+                return {"error": "max_retries must be between 1 and 100"}
+        except (TypeError, ValueError):
+            return {"error": f"max_retries must be an integer, got {max_retries_raw!r}"}
 
     async with session() as s:
         app = await _app_by_name(s, app_name)
@@ -566,14 +577,24 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
                 app_id=app.id,
                 desired_revision_id=rev.id,
                 status="pending",
+                **({"max_retries": max_retries} if max_retries is not None else {}),
             )
             s.add(existing)
             action = "created"
         else:
+            prior_revision = existing.desired_revision_id
             existing.desired_revision_id = rev.id
-            if existing.current_revision_id != rev.id:
+            if max_retries is not None:
+                existing.max_retries = max_retries
+            # Reset retry counter on revision change OR explicit resume
+            # from paused_retries (this counts as an operator-initiated
+            # retry attempt regardless of revision change).
+            revision_changed = prior_revision != rev.id
+            is_paused = existing.status == "paused_retries"
+            if revision_changed or is_paused:
                 existing.status = "pending"
                 existing.last_error = None
+                existing.attempts = 0
             action = "updated"
         await s.commit()
         await s.refresh(existing)
@@ -584,7 +605,77 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
         "app": app_name,
         "desired_version": rev.version,
         "status": existing.status,
+        "max_retries": existing.max_retries,
         "note": "The device's edge agent will pick this up on the next check-in (≤30s).",
+    }
+
+
+async def retry_deployment(_ctx: ToolContext, args: dict) -> dict:
+    """Resume a paused_retries deployment without changing the revision.
+
+    When attempts hits max_retries the target is paused (CP stops shipping
+    the bundle, agent stops retrying). retry_deployment clears attempts +
+    last_error and flips status back to pending, so the next check-in
+    re-issues the bundle. Use this after fixing the underlying problem
+    (e.g. set registry credentials, fix a typo in the compose) — you
+    don't need to bump the revision just to get one more attempt.
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    app_name = args.get("app")
+    device_name = args.get("device")
+    if not app_name or not device_name:
+        return {"error": "app and device are required"}
+    max_retries_raw = args.get("max_retries")
+    new_cap: int | None = None
+    if max_retries_raw is not None:
+        try:
+            new_cap = int(max_retries_raw)
+            if new_cap < 1 or new_cap > 100:
+                return {"error": "max_retries must be between 1 and 100"}
+        except (TypeError, ValueError):
+            return {"error": f"max_retries must be an integer, got {max_retries_raw!r}"}
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+        device = await _device_by_name(s, device_name)
+        if device is None:
+            return {"error": f"device '{device_name}' not found"}
+
+        target = (await s.execute(
+            select(DeploymentTarget).where(
+                DeploymentTarget.device_id == device.id,
+                DeploymentTarget.app_id == app.id,
+            )
+        )).scalar_one_or_none()
+        if target is None:
+            return {"error": f"no deployment target for {device_name}/{app_name} — call deploy_revision first"}
+        if target.desired_revision_id is None:
+            return {
+                "error": f"deployment is in removal lifecycle (status={target.status}); call deploy_revision to redeploy instead of retry",
+            }
+
+        prior_status = target.status
+        prior_attempts = target.attempts
+        target.status = "pending"
+        target.attempts = 0
+        target.last_error = None
+        if new_cap is not None:
+            target.max_retries = new_cap
+        await s.commit()
+        await s.refresh(target)
+
+    return {
+        "device": device_name,
+        "app": app_name,
+        "prior_status": prior_status,
+        "prior_attempts": prior_attempts,
+        "status": target.status,
+        "attempts": target.attempts,
+        "max_retries": target.max_retries,
+        "note": "Edge agent will reattempt the deploy on its next check-in (≤30s).",
     }
 
 
@@ -701,6 +792,15 @@ async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
         return {"error": "app and group_id are required"}
     revision_id_str = args.get("revision_id")
     include_offline = bool(args.get("include_offline", False))
+    max_retries_raw = args.get("max_retries")
+    max_retries: int | None = None
+    if max_retries_raw is not None:
+        try:
+            max_retries = int(max_retries_raw)
+            if max_retries < 1 or max_retries > 100:
+                return {"error": "max_retries must be between 1 and 100"}
+        except (TypeError, ValueError):
+            return {"error": f"max_retries must be an integer, got {max_retries_raw!r}"}
 
     async with session() as s:
         app = await _app_by_name(s, app_name)
@@ -750,14 +850,21 @@ async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
                     app_id=app.id,
                     desired_revision_id=rev.id,
                     status="pending",
+                    **({"max_retries": max_retries} if max_retries is not None else {}),
                 )
                 s.add(existing)
                 action = "created"
             else:
+                prior_revision = existing.desired_revision_id
                 existing.desired_revision_id = rev.id
-                if existing.current_revision_id != rev.id:
+                if max_retries is not None:
+                    existing.max_retries = max_retries
+                revision_changed = prior_revision != rev.id
+                is_paused = existing.status == "paused_retries"
+                if revision_changed or is_paused:
                     existing.status = "pending"
                     existing.last_error = None
+                    existing.attempts = 0
                 action = "updated"
             results.append({"device": device.name, "action": action})
         await s.commit()
@@ -945,7 +1052,9 @@ DEPLOY_TOOLS: list[dict] = [
         "description": (
             "Set desired state: device should run a specific revision of an app. If "
             "revision_id is omitted, the latest revision is used. The device's edge agent "
-            "applies it on the next check-in (≤30s)."
+            "applies it on the next check-in (≤30s). Optional max_retries overrides the "
+            "per-target retry cap (default 5) — useful for finicky deploys that may need "
+            "more attempts (large images, slow networks)."
         ),
         "input_schema": {
             "type": "object",
@@ -955,6 +1064,36 @@ DEPLOY_TOOLS: list[dict] = [
                 "revision_id": {
                     "type": "string",
                     "description": "Optional uuid; defaults to the latest revision.",
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Cap on consecutive apply failures before the target is paused (1–100). Defaults to the existing value or 5 for new targets.",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            "required": ["app", "device"],
+        },
+    },
+    {
+        "name": "retry_deployment",
+        "description": (
+            "Resume a paused_retries deployment. Resets attempts to 0 and flips status "
+            "back to pending so the edge agent re-applies on its next check-in. Use this "
+            "AFTER fixing the underlying cause (set credentials, fix compose typo, etc.) "
+            "— there's no point retrying if the failure mode hasn't changed. Optional "
+            "max_retries simultaneously bumps the cap for the resumed attempts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "device": {"type": "string"},
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Optional: also raise the retry cap to this value (1–100).",
+                    "minimum": 1,
+                    "maximum": 100,
                 },
             },
             "required": ["app", "device"],
@@ -1001,7 +1140,8 @@ DEPLOY_TOOLS: list[dict] = [
             "Deploy an app revision to every device in a logical group (group_id). "
             "Resolves the group to its member devices via the value each agent reports on "
             "check-in. Offline devices are skipped unless include_offline=true. Use this "
-            "for 'deploy reporter to all home devices' style prompts."
+            "for 'deploy reporter to all home devices' style prompts. Optional max_retries "
+            "applies to every target in the group."
         ),
         "input_schema": {
             "type": "object",
@@ -1018,6 +1158,12 @@ DEPLOY_TOOLS: list[dict] = [
                 "include_offline": {
                     "type": "boolean",
                     "description": "Include devices whose status != 'online'. Default false.",
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Cap on consecutive apply failures before each target is paused (1–100).",
+                    "minimum": 1,
+                    "maximum": 100,
                 },
             },
             "required": ["app", "group_id"],
@@ -1041,6 +1187,7 @@ DEPLOY_HANDLERS = {
     "fork_app": fork_app,
     "deploy_revision": deploy_revision,
     "deploy_revision_to_group": deploy_revision_to_group,
+    "retry_deployment": retry_deployment,
     "delete_deployment": delete_deployment,
     "delete_deployment_from_group": delete_deployment_from_group,
 }

@@ -8,7 +8,7 @@ End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devi
 
 ## Quick reference
 
-**Where to drive Drift Deploy from:** https://drift.example.com/drift/ — same prompt UI you use for observability. The agent has 16 deploy tools registered alongside the metrics/alerts/logs tools.
+**Where to drive Drift Deploy from:** https://drift.example.com/drift/ — same prompt UI you use for observability. The agent has 17 deploy tools registered alongside the metrics/alerts/logs tools.
 
 **Fleet:** ask Drift *"list devices and their groups"* — the live answer beats anything in this doc. As of writing, four devices across three groups: `dev-hetzner` (`dev-cloud`), `home-pi4-001` + `home-synology-001` (`drift_home`), and `nvidia-jetson-002` (`dev-work`).
 
@@ -64,6 +64,28 @@ Creating or editing apps from the chat means pasting multi-file YAML into a text
 Compose-file presence is validated client-side (the bundle must include `compose.yaml`, `compose.yml`, or `docker-compose.yml`). Each file is capped at 256KB to prevent a stray binary from locking the UI.
 
 The chat surface stays for *operations* (deploy / update / delete / query). Apps are *artifacts* — the modal is the right shape for them.
+
+---
+
+## Retry budget (max_retries)
+
+Every deployment target tracks an `attempts` counter and a `max_retries` cap. Each time the edge agent reports an apply failure on a check-in, the CP increments `attempts`; once it hits `max_retries`, the target flips to status `paused_retries` and the CP stops shipping the bundle. The agent stops retrying because it never sees the desired state for that app anymore.
+
+Where the tracking lives: **CP only.** The edge agent doesn't know about `max_retries` — it just reports failures and acts on what the CP tells it to. Gating happens at the bundle-delivery boundary in the check-in response.
+
+Default cap: 5 attempts. Override per deployment:
+
+> deploy podnot to home-synology-001 with max_retries=10
+
+Tool args: `deploy_revision(app, device, max_retries=10)` or `deploy_revision_to_group(app, group_id, max_retries=10)`. Range 1–100.
+
+After fixing the underlying cause (typo in compose, missing credential, image build), resume with:
+
+> retry podnot on home-synology-001
+
+Tool: `retry_deployment(app, device)` — resets `attempts` to 0 and flips status back to `pending`. Optional `max_retries` to also bump the cap. The agent re-applies on its next check-in.
+
+At fleet scale (100 devices, 5 failures): each device's counter is independent — the 95 healthy targets settle within one tick of the rollout; the 5 failing ones each exhaust their independent budget over `max_retries × POLL_INTERVAL` (≈75s with defaults) then go quiet. `list_deployments` surfaces all 100 with their per-row `attempts/max_retries`; you scan for `paused_retries` rows and resume them once the cause is fixed.
 
 ---
 
@@ -599,7 +621,7 @@ When you paste a bundle like this to Drift, the agent should set `files = {"comp
 - **No rollback button.** To roll back: re-deploy the previous revision (`deploy_revision` with an explicit older `revision_id`). The agent will run the older bundle on the next check-in.
 - **No compose-editor block in the UI.** You paste YAML into the prompt textbox. `get_app_revision` lets you patch from current state instead of re-pasting whole bundles. Monaco editor still planned for v1.
 - **Blocklist is host-file-level.** Extending the protected name list requires editing `PROTECTED_NAMES` in `drift-deploy-agent.sh`. Rare and intentional; self-update will roll the change to the fleet on the next check-in.
-- **No retry budget.** A repeatedly-failing apply will keep retrying every poll. The bash agent logs `apply failed; will retry next tick` but doesn't back off.
+- **No retry backoff** — only a hard cap. The bash agent retries every `POLL_INTERVAL` until the CP's `max_retries` cap is hit (default 5; per-deployment override via `deploy_revision(..., max_retries=N)`). At the cap, status flips to `paused_retries` and the CP stops shipping the bundle. Operator resumes with `retry_deployment(app, device)` (per-device) after fixing the underlying cause. There's no exponential backoff between attempts.
 - **Bundle size unbounded.** No upper limit on file size or count in `apply_app_revision`. Don't ship gigabytes of binary blobs in a compose bundle — that's what container images are for.
 - **The agent might paraphrase your YAML.** When you paste compose, the LLM is the intermediary. Always check the `propose_app_revision` output against what you intended — the sha256 + file list make this easy to verify. (`fork_app` skips the LLM round-trip entirely for verbatim copies.)
 
@@ -675,5 +697,6 @@ If you're systematically validating v0, run these in order. Each builds on the p
 14. **Self-update** — Change a comment in `edge-agent/drift-deploy-agent.sh`, rebuild drift-agent. Within ~30s every device should log a "self-update available" line and restart on the new SHA. (See commits `99126a1` for the original plumbing and `096f10c` for the subshell-exit fix that made it actually work.)
 15. **Registry credentials** — Set fake `example.test` creds in the UI modal. Wait one tick. On any device: `sudo docker exec drift-deploy-agent cat /root/.docker/config.json` should show the auths map. Delete the credential; the file is left as-is (operator can wipe it manually if needed).
 16. **Apps UI** — Create an app from the sidebar modal (drag-drop a file, type into a blank tab, save). Verify via chat: *"list apps"* should show it; *"get the latest revision of <app>"* should return the same files you typed.
+17. **Retry budget** — Deploy an app with `image: this-image-does-not-exist/nope:v0` and `max_retries=3`. Within ~45s the target reports status=`paused_retries` and attempts=3/3. Stays there. Call `retry_deployment` → attempts back to 0, status=pending, agent retries (and fails again, paused again). Update the image to a real one + `retry_deployment` → succeeds.
 
 Each takes ~5 minutes once you have prompts ready. Drop any failures or surprises into a list and we'll triage.

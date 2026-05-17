@@ -100,6 +100,12 @@ class DeploymentTarget(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Hard cap on consecutive apply failures before the target is paused.
+    # When attempts hits this value, status flips to 'paused_retries' and
+    # the CP stops shipping the bundle to the agent — operator has to
+    # explicitly resume (retry_deployment) or push a new desired revision
+    # to retry. Default 5 = ~75–150s of retrying at POLL_INTERVAL=15–30s.
+    max_retries: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc, onupdate=_now_utc, nullable=False
