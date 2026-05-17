@@ -300,3 +300,55 @@ podnot-downloads`).
   combined. On a Raspberry Pi over WiFi, pulling them for the first
   time takes ~30s. Subsequent revisions reuse cached layers; only the
   app-layer diff downloads.
+
+## Failure modes for this app specifically
+
+### "denied" on first deploy → credentials missing or wrong
+
+If you deploy podnot to a device before registering the GHCR credential
+(or after rotating the PAT without re-saving), the device will start
+retrying and report:
+
+```
+last_error=Error response from daemon: Head "https://ghcr.io/v2/...": denied
+```
+
+With the default `max_retries=5` and the device's 15s poll interval, the
+deployment exhausts its retry budget after ~75s and flips to
+`paused_retries 5/5`. Resolution:
+
+1. Confirm via `list_deployments` that the only error is auth-denied.
+2. Open the credentials modal (sidebar → 🔑), re-enter `ghcr.io` + GH
+   user + PAT, click Save.
+3. Wait one tick (~15s) for every agent to write its
+   `/root/.docker/config.json`.
+4. Resume the paused target: *"retry podnot on home-synology-001"*.
+5. Next tick: agent re-applies, pull succeeds, containers come up
+   healthy.
+
+### Device drops offline mid-deploy
+
+If the device's network dies (WiFi blip, router reboot) partway through
+the retry budget, **the CP counter freezes at its last-reported value**.
+The agent loops trying to reach the CP every 15s but does *not* attempt
+any apply while it has no desired state in hand — no registry hits, no
+log spam during the outage. When connectivity returns, the deferred
+report is delivered on the first successful check-in and the remaining
+budget plays out at normal cadence. See DEPLOY.md → "Retry budget" →
+"Behavior when a device goes offline mid-failure" for the full trace.
+
+### Pull keeps failing on one specific device only
+
+If 3 of 4 devices succeed and one keeps failing past `max_retries`, the
+diagnosis usually splits into:
+- **Network-path differences**: that one device can't reach
+  `ghcr.io` (try `ssh <device> sudo docker pull alpine:3.20` — works
+  cleanly? then it's not a general network issue).
+- **Docker daemon storage exhausted**: `ssh <device> df -h
+  /var/lib/docker` or `/volume1/@docker` on Synology. Pulls fail
+  cryptically when there's no disk for the new layers.
+- **The credentials never reached this specific device**: `ssh
+  <device> sudo docker exec drift-deploy-agent cat
+  /root/.docker/config.json` — should show the auths map. If empty,
+  the agent might be stuck at v0.4.0 (pre-credential support); check
+  `agent_version` for that device with `list_devices`.

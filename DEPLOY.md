@@ -87,6 +87,27 @@ Tool: `retry_deployment(app, device)` — resets `attempts` to 0 and flips statu
 
 At fleet scale (100 devices, 5 failures): each device's counter is independent — the 95 healthy targets settle within one tick of the rollout; the 5 failing ones each exhaust their independent budget over `max_retries × POLL_INTERVAL` (≈75s with defaults) then go quiet. `list_deployments` surfaces all 100 with their per-row `attempts/max_retries`; you scan for `paused_retries` rows and resume them once the cause is fixed.
 
+### Behavior when a device goes offline mid-failure
+
+The retry budget counts **real apply attempts that get reported back to the CP**, not wall-clock time and not poll-loop iterations. This matters when devices drop offline:
+
+- **While the device can't reach the CP** — no check-ins succeed, so the CP receives no `apply_errors`. The `attempts` counter is frozen at whatever value it had when the device went dark. The edge agent loops every `POLL_INTERVAL` trying to reach the CP, but **without a desired state from a successful check-in it doesn't have anything to apply** — no `docker compose pull`, no registry hits, no activity at all. The deployment is dormant by absence of instructions, not by an active "pause" state on the CP.
+- **When the device comes back online** — first successful check-in reports any deferred `apply_errors` from before the outage; `attempts` increments by one. Apply runs in the same tick (CP has returned a fresh desired list); failure is recorded for the next tick to report. The remaining budget gets consumed at normal cadence (one tick per attempt) until either the apply succeeds or `attempts` hits `max_retries` and the target flips to `paused_retries`.
+
+Concrete example — device fails apply attempts 1 and 2, then loses network for 10 minutes:
+
+| Time | What happens | CP `attempts` |
+|---|---|---|
+| `t=30s` | Apply 2 fails, reported to CP | 2 |
+| `t=45s → t=600s` | Network down. No check-ins. No applies. | 2 (frozen) |
+| `t=615s` | Network back. Check-in reports the deferred apply 3 result; applies #4 in the same tick. | 3 |
+| `t=630s` | Reports #4; applies #5. | 4 |
+| `t=645s` | Reports #5. Cap hit. | `paused_retries 5/5` |
+
+This is the load-bearing reason retry tracking lives on the CP rather than the edge: an edge-side counter would have chewed through the budget during the 10-minute outage, exhausting retries against an unreachable network. CP tracking ensures `max_retries=5` means "5 real apply attempts" — not "5 attempts to do anything."
+
+While the device is offline the CP target shows the last-reported state (`status=failed, attempts=2/5` in the example above). Device freshness is a separate signal — `get_device <name>` shows `last_seen` ageing; a stale `last_seen` with a `failed` deployment is the operator's signal that "this counter isn't moving because the device is gone, not because the cap was hit."
+
 ---
 
 ## Registry credentials (private images)
