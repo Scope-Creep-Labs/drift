@@ -454,7 +454,12 @@ reconcile_once() {
   if [ -n "$target_sha" ] && [ "$target_sha" != "$AGENT_SHA" ]; then
     log_info "self-update available: $AGENT_SHA → $target_sha; exiting for Docker restart"
     write_textfile
-    exit 0
+    # 100 is the self-update sentinel: reconcile_once runs inside the
+    # flock subshell, so a plain `exit 0` only exits the subshell — PID 1
+    # stays at the same SHA forever. main() looks for this code and exits
+    # the outer process, which lets Docker's --restart unless-stopped do
+    # its job and the bootstrap fetch the new script.
+    exit 100
   fi
 
   local n
@@ -501,6 +506,12 @@ main() {
       reconcile_once
     ) 9>"$LOCK_FILE"
     rc=$?
+    if [ "$rc" -eq 100 ]; then
+      # Self-update signal from reconcile_once. Exit PID 1 with 0 so
+      # Docker's --restart unless-stopped brings us back fresh; the
+      # bootstrap at the top of the script then fetches the new agent.
+      exit 0
+    fi
     if [ "$rc" -eq 99 ]; then
       acq=$(cat "$LOCK_ACQUIRED_AT" 2>/dev/null || echo 0)
       held=$(( $(date +%s) - acq ))
