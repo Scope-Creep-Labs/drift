@@ -58,6 +58,14 @@ class AppRevisionOut(BaseModel):
     created_at: datetime
 
 
+class AppRevisionDetail(AppRevisionOut):
+    """Same as AppRevisionOut but with the full file map. Used by the UI's
+    edit-app modal to pre-populate from the latest revision. Listing
+    endpoints stay on AppRevisionOut so we don't ship file blobs in bulk."""
+
+    files: dict[str, str]
+
+
 COMPOSE_FILE_CANDIDATES = ("compose.yaml", "compose.yml", "docker-compose.yml")
 
 

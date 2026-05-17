@@ -22,6 +22,7 @@ from .schemas import (
     AppCreate,
     AppOut,
     AppRevisionCreate,
+    AppRevisionDetail,
     AppRevisionOut,
     DeploymentTargetOut,
     DeploymentTargetSet,
@@ -118,6 +119,29 @@ async def list_revisions(name: str, db: AsyncSession = Depends(get_db)) -> list[
         select(AppRevision).where(AppRevision.app_id == app.id).order_by(AppRevision.version.desc())
     )
     return [AppRevisionOut.model_validate(r, from_attributes=True) for r in rows.scalars().all()]
+
+
+@router.get("/apps/{name}/revisions/{version}", response_model=AppRevisionDetail)
+async def get_revision(
+    name: str, version: str, db: AsyncSession = Depends(get_db)
+) -> AppRevisionDetail:
+    """Single revision including its full file map. The list endpoint above
+    strips files for bulk-fetch efficiency; this one is intentionally
+    detailed for the edit-app modal. `version` accepts an integer or the
+    literal 'latest'."""
+    app = await _app_by_name(db, name)
+    q = select(AppRevision).where(AppRevision.app_id == app.id)
+    if version == "latest":
+        q = q.order_by(AppRevision.version.desc()).limit(1)
+    else:
+        try:
+            q = q.where(AppRevision.version == int(version))
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"version must be an integer or 'latest', got '{version}'")
+    rev = (await db.execute(q)).scalar_one_or_none()
+    if rev is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"revision '{version}' of '{name}' not found")
+    return AppRevisionDetail.model_validate(rev, from_attributes=True)
 
 
 @router.post(

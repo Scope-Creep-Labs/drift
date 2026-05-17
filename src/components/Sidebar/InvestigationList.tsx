@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import {
   Box,
   Button,
@@ -11,7 +12,10 @@ import {
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import { useInvestigationStore } from '../../state/investigationStore'
+import { AppModal, type AppModalMode } from '../AppModal'
+import { deployApi, type App } from '../../lib/deployApi'
 
 export function InvestigationList() {
   const investigations = useInvestigationStore((s) => s.investigations)
@@ -19,6 +23,25 @@ export function InvestigationList() {
   const setActive = useInvestigationStore((s) => s.setActive)
   const create = useInvestigationStore((s) => s.createInvestigation)
   const remove = useInvestigationStore((s) => s.deleteInvestigation)
+
+  // Apps section state. Lives here (not in the global investigation store)
+  // because it's narrowly scoped to the sidebar list — and the source of
+  // truth is the server.
+  const [apps, setApps] = useState<App[] | null>(null)
+  const [appsError, setAppsError] = useState<string | null>(null)
+  const [modal, setModal] = useState<AppModalMode | null>(null)
+
+  const refreshApps = () => {
+    setAppsError(null)
+    deployApi
+      .listApps()
+      .then(setApps)
+      .catch((e: Error) => setAppsError(e.message))
+  }
+
+  useEffect(() => {
+    refreshApps()
+  }, [])
 
   return (
     <Stack
@@ -95,11 +118,83 @@ export function InvestigationList() {
         ))}
       </List>
 
+      <Box
+        sx={{
+          borderTop: 1,
+          borderColor: 'divider',
+          maxHeight: '38%',
+          display: 'flex',
+          flexDirection: 'column',
+          minHeight: 0,
+        }}
+      >
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          sx={{ px: 1.6, pt: 1.2, pb: 0.6 }}
+        >
+          <Stack direction="row" alignItems="center" spacing={0.8}>
+            <InventoryIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+            <Typography
+              variant="caption"
+              color="text.secondary"
+              sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}
+            >
+              Apps
+            </Typography>
+          </Stack>
+          <Tooltip title="New app">
+            <IconButton
+              size="small"
+              onClick={() => setModal({ kind: 'create' })}
+              sx={{ p: 0.3 }}
+            >
+              <AddIcon sx={{ fontSize: 16 }} />
+            </IconButton>
+          </Tooltip>
+        </Stack>
+
+        <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}>
+          {appsError && (
+            <Typography variant="caption" color="error.main" sx={{ px: 2, display: 'block' }}>
+              {appsError}
+            </Typography>
+          )}
+          {apps !== null && apps.length === 0 && !appsError && (
+            <Typography variant="caption" color="text.secondary" sx={{ px: 2, display: 'block' }}>
+              No apps yet.
+            </Typography>
+          )}
+          {(apps ?? []).map((a) => (
+            <ListItemButton
+              key={a.id}
+              onClick={() => setModal({ kind: 'edit', appName: a.name })}
+              sx={{ borderRadius: 1, mx: 0.5, mb: 0.2, py: 0.4 }}
+            >
+              <ListItemText
+                primary={a.name}
+                primaryTypographyProps={{ fontSize: '0.82rem', noWrap: true }}
+              />
+            </ListItemButton>
+          ))}
+        </List>
+      </Box>
+
       <Box sx={{ p: 1.5, borderTop: 1, borderColor: 'divider' }}>
         <Typography variant="caption" color="text.secondary">
           engine: <code>{import.meta.env.VITE_ENGINE ?? 'mock'}</code>
         </Typography>
       </Box>
+
+      {modal && (
+        <AppModal
+          open
+          mode={modal}
+          onClose={() => setModal(null)}
+          onSaved={refreshApps}
+        />
+      )}
     </Stack>
   )
 }

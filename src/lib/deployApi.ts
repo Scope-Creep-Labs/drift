@@ -1,0 +1,67 @@
+// Typed client for the Drift Deploy admin endpoints. Mirrors the agent's
+// base-URL handling so the same component works under `/drift/` in prod.
+// All endpoints expect Caddy basic_auth at the edge — the browser sends
+// the cached credentials automatically; we don't supply them here.
+
+const API_BASE: string =
+  import.meta.env.VITE_API_BASE || `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`
+
+const DEPLOY_BASE = `${API_BASE}/deploy`
+
+export type App = {
+  id: string
+  name: string
+  created_at: string
+}
+
+export type AppRevision = {
+  id: string
+  app_id: string
+  version: number
+  bundle_url: string | null
+  bundle_sha256: string | null
+  created_at: string
+}
+
+export type AppRevisionDetail = AppRevision & {
+  files: Record<string, string>
+}
+
+async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${DEPLOY_BASE}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`${res.status} ${res.statusText}${text ? `: ${text}` : ''}`)
+  }
+  if (res.status === 204) return undefined as T
+  return res.json() as Promise<T>
+}
+
+export const deployApi = {
+  listApps: () => api<App[]>('/apps'),
+
+  createApp: (name: string) =>
+    api<App>('/apps', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  listRevisions: (appName: string) =>
+    api<AppRevision[]>(`/apps/${encodeURIComponent(appName)}/revisions`),
+
+  // Special-case `version === 'latest'` is supported server-side; mirror it
+  // here so callers can hand-roll the URL without thinking.
+  getRevision: (appName: string, version: number | 'latest') =>
+    api<AppRevisionDetail>(
+      `/apps/${encodeURIComponent(appName)}/revisions/${version}`,
+    ),
+
+  createRevision: (appName: string, files: Record<string, string>) =>
+    api<AppRevision>(`/apps/${encodeURIComponent(appName)}/revisions`, {
+      method: 'POST',
+      body: JSON.stringify({ files }),
+    }),
+}
