@@ -396,8 +396,13 @@ def _summarize_for_event(name: str, result: Any) -> str:
     return "ok"
 
 
-async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
-    """Run the tool-use loop and yield SSE bytes for the response stream."""
+async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[bytes, None]:
+    """Run the tool-use loop and yield SSE bytes for the response stream.
+
+    `user` is the UserContext of the authenticated operator (None in
+    test contexts). Tools that mutate deploy state consult user.role
+    and user.groups; observability tools are role-agnostic.
+    """
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     vm = make_vm_client()
     alerts = make_alert_client()
@@ -408,7 +413,7 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
     async def emit(event: str, data: Any) -> None:
         events.append(sse(event, data))
 
-    ctx = ToolContext(vm=vm, emit=emit, alerts=alerts, vl=vl)
+    ctx = ToolContext(vm=vm, emit=emit, alerts=alerts, vl=vl, user=user)
     handlers = all_handlers()
     tools = all_tools()
 
@@ -425,6 +430,29 @@ async def run_agent(req: PromptRequest) -> AsyncGenerator[bytes, None]:
         if ctx_bits:
             user_content += "\n\n[context: " + ", ".join(ctx_bits) + "]"
         investigation_id = req.context.investigation_id
+
+    # Identity envelope: tell the LLM who's driving this turn and what they
+    # can do, so it can politely refuse mutation requests for observe-only
+    # users instead of trying a tool and getting a permission error. Goes
+    # in the user message (not the system prompt) to preserve prompt cache
+    # stability — system prompt + tools list must be byte-stable across
+    # turns for the cache hit to register.
+    if user is not None:
+        role = user.role
+        groups = sorted(user.groups) if user.groups else []
+        if user.is_admin:
+            cap = "admin (full access to deploy, observe, manage users, and registry credentials)"
+            grp = "all groups"
+        elif user.is_deploy:
+            cap = "deploy (can deploy/update/delete apps and manage alerts)"
+            grp = f"{', '.join(groups) or 'none'}"
+        else:
+            cap = "observe (read-only on deploys; can manage alert rules)"
+            grp = f"{', '.join(groups) or 'none'}"
+        user_content = (
+            f"[operator: {user.username} · role={role} · access={grp} · {cap}]\n\n"
+            + user_content
+        )
 
     # Conversation memory: when the same investigation_id submits multiple
     # turns, prepend prior assistant/user messages so propose_*/apply_* and

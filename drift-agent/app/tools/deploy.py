@@ -77,19 +77,74 @@ def _ensure_deploy_enabled() -> dict | None:
     return None
 
 
+def _require_deploy_role(ctx: ToolContext) -> dict | None:
+    """Defense-in-depth: even though the /investigate HTTP endpoint
+    enforces auth, the tools call into the DB directly and could be
+    invoked by an observe-role user through the LLM. Returning an error
+    here means the LLM sees a permission-denied response, which it can
+    relay back to the operator cleanly."""
+    user = getattr(ctx, "user", None)
+    if user is None:
+        # Test/dev context — allow.
+        return None
+    if not user.is_deploy:
+        return {
+            "error": (
+                f"permission denied: operator '{user.username}' has role '{user.role}', "
+                f"which cannot deploy. Required role: 'deploy' or 'admin'."
+            )
+        }
+    return None
+
+
+def _require_admin_role(ctx: ToolContext) -> dict | None:
+    user = getattr(ctx, "user", None)
+    if user is None:
+        return None
+    if not user.is_admin:
+        return {
+            "error": (
+                f"permission denied: operator '{user.username}' has role '{user.role}', "
+                "which can't manage admin-only settings (registry credentials, users)."
+            )
+        }
+    return None
+
+
+def _check_group_access(ctx: ToolContext, group_id: str | None) -> dict | None:
+    """Return an error dict if the operator isn't allowed to act on
+    devices in this group. Admins bypass; observe role doesn't reach
+    this check (caller should _require_deploy_role first)."""
+    user = getattr(ctx, "user", None)
+    if user is None or user.is_admin:
+        return None
+    if group_id is None or not user.has_group(group_id):
+        return {
+            "error": (
+                f"permission denied: operator '{user.username}' doesn't have access to "
+                f"group '{group_id or '<none>'}' (allowed: {sorted(user.groups)})"
+            )
+        }
+    return None
+
+
 # ---------- Discovery ----------
 
 
-async def list_devices(_ctx: ToolContext, _args: dict) -> dict:
+async def list_devices(ctx: ToolContext, _args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
+    user = getattr(ctx, "user", None)
     async with session() as s:
-        rows = await s.execute(select(Device).order_by(Device.created_at.desc()))
+        q = select(Device).order_by(Device.created_at.desc())
+        if user is not None and not user.is_admin:
+            q = q.where(Device.group_id.in_(user.groups))
+        rows = await s.execute(q)
         devices = [_device_dict(d) for d in rows.scalars().all()]
     return {"n": len(devices), "devices": devices}
 
 
-async def get_device(_ctx: ToolContext, args: dict) -> dict:
+async def get_device(ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
     name = args.get("name")
@@ -99,6 +154,8 @@ async def get_device(_ctx: ToolContext, args: dict) -> dict:
         device = await _device_by_name(s, name)
         if device is None:
             return {"error": f"device '{name}' not found"}
+        if (err := _check_group_access(ctx, device.group_id)):
+            return err
         # Deployments on this device.
         rows = await s.execute(
             select(DeploymentTarget, App, AppRevision)
@@ -213,9 +270,10 @@ async def get_app_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def list_deployments(_ctx: ToolContext, args: dict) -> dict:
+async def list_deployments(ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
+    user = getattr(ctx, "user", None)
     include_removed = bool(args.get("include_removed", False))
     async with session() as s:
         query = (
@@ -225,6 +283,9 @@ async def list_deployments(_ctx: ToolContext, args: dict) -> dict:
             .join(AppRevision, AppRevision.id == DeploymentTarget.desired_revision_id, isouter=True)
             .order_by(DeploymentTarget.updated_at.desc())
         )
+        if user is not None and not user.is_admin:
+            # Filter to the user's groups by joining through Device.
+            query = query.where(Device.group_id.in_(user.groups))
         if not include_removed:
             # `removed` is the tombstone status — hide from the active view
             # but keep the row for audit (re-enable via include_removed=true).
@@ -249,7 +310,9 @@ async def list_deployments(_ctx: ToolContext, args: dict) -> dict:
 # ---------- Lifecycle / commissioning ----------
 
 
-async def commission_device(_ctx: ToolContext, args: dict) -> dict:
+async def commission_device(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     if (err := _ensure_deploy_enabled()):
         return err
     name = args.get("name")
@@ -282,7 +345,9 @@ async def commission_device(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def delete_device(_ctx: ToolContext, args: dict) -> dict:
+async def delete_device(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     if (err := _ensure_deploy_enabled()):
         return err
     name = args.get("name")
@@ -311,7 +376,9 @@ def _render_install_cmd(name: str, token: str) -> str:
 # ---------- App + revision ----------
 
 
-async def create_app(_ctx: ToolContext, args: dict) -> dict:
+async def create_app(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     if (err := _ensure_deploy_enabled()):
         return err
     name = args.get("name")
@@ -338,7 +405,9 @@ def _validate_files(files: dict[str, str]) -> str | None:
     return None
 
 
-async def propose_app_revision(_ctx: ToolContext, args: dict) -> dict:
+async def propose_app_revision(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Pure preview of what apply_app_revision would do. No side effect."""
     if (err := _ensure_deploy_enabled()):
         return err
@@ -373,7 +442,9 @@ async def propose_app_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def fork_app(_ctx: ToolContext, args: dict) -> dict:
+async def fork_app(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Copy an existing app's revision as a new app's first revision.
 
     Atomic create_app + apply_app_revision for the common "I want a
@@ -470,7 +541,9 @@ async def fork_app(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def apply_app_revision(_ctx: ToolContext, args: dict) -> dict:
+async def apply_app_revision(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Pack + upload the bundle, persist the revision."""
     if (err := _ensure_deploy_enabled()):
         return err
@@ -520,7 +593,9 @@ async def apply_app_revision(_ctx: ToolContext, args: dict) -> dict:
 # ---------- Deployment ----------
 
 
-async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
+async def deploy_revision(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Set desired state: device should run a specific revision (default: latest)."""
     if (err := _ensure_deploy_enabled()):
         return err
@@ -546,6 +621,8 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
         device = await _device_by_name(s, device_name)
         if device is None:
             return {"error": f"device '{device_name}' not found"}
+        if (err := _check_group_access(ctx, device.group_id)):
+            return err
 
         rev: AppRevision | None
         if revision_id_str:
@@ -610,7 +687,9 @@ async def deploy_revision(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def retry_deployment(_ctx: ToolContext, args: dict) -> dict:
+async def retry_deployment(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Resume a paused_retries deployment without changing the revision.
 
     When attempts hits max_retries the target is paused (CP stops shipping
@@ -679,7 +758,9 @@ async def retry_deployment(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def delete_deployment(_ctx: ToolContext, args: dict) -> dict:
+async def delete_deployment(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Mark a deployment for removal on one device.
 
     Sets desired_revision_id = NULL on the target row + status = "removing".
@@ -731,7 +812,9 @@ async def delete_deployment(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def delete_deployment_from_group(_ctx: ToolContext, args: dict) -> dict:
+async def delete_deployment_from_group(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Mark a deployment for removal across every device in a group."""
     if (err := _ensure_deploy_enabled()):
         return err
@@ -739,6 +822,8 @@ async def delete_deployment_from_group(_ctx: ToolContext, args: dict) -> dict:
     group = args.get("group_id")
     if not app_name or not group:
         return {"error": "app and group_id are required"}
+    if (err := _check_group_access(ctx, group)):
+        return err
 
     async with session() as s:
         app = await _app_by_name(s, app_name)
@@ -778,7 +863,9 @@ async def delete_deployment_from_group(_ctx: ToolContext, args: dict) -> dict:
     }
 
 
-async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
+async def deploy_revision_to_group(ctx: ToolContext, args: dict) -> dict:
+    if (err := _require_deploy_role(ctx)):
+        return err
     """Deploy to every device in a logical group. Resolves group_id → devices,
     loops deploy_revision per device.
 
@@ -790,6 +877,8 @@ async def deploy_revision_to_group(_ctx: ToolContext, args: dict) -> dict:
     group = args.get("group_id")
     if not app_name or not group:
         return {"error": "app and group_id are required"}
+    if (err := _check_group_access(ctx, group)):
+        return err
     revision_id_str = args.get("revision_id")
     include_offline = bool(args.get("include_offline", False))
     max_retries_raw = args.get("max_retries")

@@ -1,8 +1,13 @@
 """Admin surface for Drift Deploy.
 
-Mounted at /api/deploy. Used by the LLM tools layer; protected upstream by
-Caddy basic_auth (no app-level auth in v0). The shape mirrors the
-spec's data model: devices, apps, app_revisions, deployment_targets.
+Mounted at /api/deploy. Auth: every endpoint requires an authenticated
+user (session cookie via the /api/auth surface). Role checks per
+endpoint:
+  - GET (reads): require user (observe sufficient). Lists filter by
+    user's allowed groups; admins see all.
+  - POST/DELETE deploy-state mutations: require role >= deploy AND the
+    target must be in the user's groups (admins bypass).
+  - Registry creds: admin-only (fleet-wide secrets).
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..users.deps import UserContext, get_current_user, require_role
 from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
@@ -37,6 +43,17 @@ from .schemas import (
 router = APIRouter(prefix="/api/deploy", tags=["deploy-admin"])
 
 
+def _check_group_access(user: UserContext, group_id: str | None) -> None:
+    """Raise 403 if the user can't act on the given group. Admins bypass."""
+    if user.is_admin:
+        return
+    if group_id is None or not user.has_group(group_id):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"you don't have access to group '{group_id or '<none>'}'",
+        )
+
+
 async def get_db() -> AsyncIterator[AsyncSession]:
     async with session() as s:
         yield s
@@ -46,13 +63,27 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 @router.get("/devices", response_model=list[DeviceOut])
-async def list_devices(db: AsyncSession = Depends(get_db)) -> list[DeviceOut]:
-    rows = await db.execute(select(Device).order_by(Device.created_at.desc()))
+async def list_devices(
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[DeviceOut]:
+    q = select(Device).order_by(Device.created_at.desc())
+    if not user.is_admin:
+        # Filter to the user's groups. Devices with no group are hidden
+        # for non-admins; admins always see them.
+        q = q.where(Device.group_id.in_(user.groups))
+    rows = await db.execute(q)
     return [DeviceOut.model_validate(d, from_attributes=True) for d in rows.scalars().all()]
 
 
 @router.post("/devices", response_model=DeviceCreated, status_code=status.HTTP_201_CREATED)
-async def create_device(body: DeviceCreate, db: AsyncSession = Depends(get_db)) -> DeviceCreated:
+async def create_device(
+    body: DeviceCreate,
+    user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
+) -> DeviceCreated:
+    # Note: device.group_id isn't on DeviceCreate (set later by the agent
+    # via check-in). Deploy-role users can commission; admins can too.
     existing = await db.execute(select(Device).where(Device.name == body.name))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"device '{body.name}' already exists")
@@ -69,11 +100,16 @@ async def create_device(body: DeviceCreate, db: AsyncSession = Depends(get_db)) 
 
 
 @router.delete("/devices/{name}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_device(name: str, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_device(
+    name: str,
+    user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
+) -> None:
     row = await db.execute(select(Device).where(Device.name == name))
     device = row.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"device '{name}' not found")
+    _check_group_access(user, device.group_id)
     await db.delete(device)
     await db.commit()
 
@@ -94,13 +130,20 @@ def _render_install_cmd(name: str, token: str) -> str:
 
 
 @router.get("/apps", response_model=list[AppOut])
-async def list_apps(db: AsyncSession = Depends(get_db)) -> list[AppOut]:
+async def list_apps(
+    _user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[AppOut]:
     rows = await db.execute(select(App).order_by(App.created_at.desc()))
     return [AppOut.model_validate(a, from_attributes=True) for a in rows.scalars().all()]
 
 
 @router.post("/apps", response_model=AppOut, status_code=status.HTTP_201_CREATED)
-async def create_app(body: AppCreate, db: AsyncSession = Depends(get_db)) -> AppOut:
+async def create_app(
+    body: AppCreate,
+    _user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
+) -> AppOut:
     existing = await db.execute(select(App).where(App.name == body.name))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"app '{body.name}' already exists")
@@ -115,7 +158,11 @@ async def create_app(body: AppCreate, db: AsyncSession = Depends(get_db)) -> App
 
 
 @router.get("/apps/{name}/revisions", response_model=list[AppRevisionOut])
-async def list_revisions(name: str, db: AsyncSession = Depends(get_db)) -> list[AppRevisionOut]:
+async def list_revisions(
+    name: str,
+    _user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[AppRevisionOut]:
     app = await _app_by_name(db, name)
     rows = await db.execute(
         select(AppRevision).where(AppRevision.app_id == app.id).order_by(AppRevision.version.desc())
@@ -125,7 +172,10 @@ async def list_revisions(name: str, db: AsyncSession = Depends(get_db)) -> list[
 
 @router.get("/apps/{name}/revisions/{version}", response_model=AppRevisionDetail)
 async def get_revision(
-    name: str, version: str, db: AsyncSession = Depends(get_db)
+    name: str,
+    version: str,
+    _user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> AppRevisionDetail:
     """Single revision including its full file map. The list endpoint above
     strips files for bulk-fetch efficiency; this one is intentionally
@@ -152,7 +202,10 @@ async def get_revision(
     status_code=status.HTTP_201_CREATED,
 )
 async def create_revision(
-    name: str, body: AppRevisionCreate, db: AsyncSession = Depends(get_db)
+    name: str,
+    body: AppRevisionCreate,
+    _user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
 ) -> AppRevisionOut:
     if not settings.b2_bucket:
         raise HTTPException(
@@ -190,8 +243,20 @@ async def create_revision(
 
 
 @router.get("/deployments", response_model=list[DeploymentTargetOut])
-async def list_deployments(db: AsyncSession = Depends(get_db)) -> list[DeploymentTargetOut]:
-    rows = await db.execute(select(DeploymentTarget).order_by(DeploymentTarget.updated_at.desc()))
+async def list_deployments(
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[DeploymentTargetOut]:
+    q = select(DeploymentTarget).order_by(DeploymentTarget.updated_at.desc())
+    if not user.is_admin:
+        # Join to Device to filter by the device's group.
+        q = (
+            select(DeploymentTarget)
+            .join(Device, Device.id == DeploymentTarget.device_id)
+            .where(Device.group_id.in_(user.groups))
+            .order_by(DeploymentTarget.updated_at.desc())
+        )
+    rows = await db.execute(q)
     return [DeploymentTargetOut.model_validate(t, from_attributes=True) for t in rows.scalars().all()]
 
 
@@ -201,12 +266,15 @@ async def list_deployments(db: AsyncSession = Depends(get_db)) -> list[Deploymen
     status_code=status.HTTP_201_CREATED,
 )
 async def set_deployment(
-    body: DeploymentTargetSet, db: AsyncSession = Depends(get_db)
+    body: DeploymentTargetSet,
+    user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
 ) -> DeploymentTargetOut:
     # Validate references.
     device = (await db.execute(select(Device).where(Device.id == body.device_id))).scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "device not found")
+    _check_group_access(user, device.group_id)
     rev = (await db.execute(select(AppRevision).where(AppRevision.id == body.revision_id))).scalar_one_or_none()
     if rev is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "revision not found")
@@ -275,6 +343,7 @@ def _require_secrets_enabled() -> None:
 
 @router.get("/registry-creds", response_model=list[RegistryCredentialOut])
 async def list_registry_creds(
+    _user: UserContext = Depends(require_role("admin")),
     db: AsyncSession = Depends(get_db),
 ) -> list[RegistryCredentialOut]:
     rows = await db.execute(
@@ -288,7 +357,9 @@ async def list_registry_creds(
 
 @router.put("/registry-creds", response_model=RegistryCredentialOut)
 async def upsert_registry_creds(
-    body: RegistryCredentialSet, db: AsyncSession = Depends(get_db)
+    body: RegistryCredentialSet,
+    _user: UserContext = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
 ) -> RegistryCredentialOut:
     _require_secrets_enabled()
     encrypted = crypto.encrypt(body.password)
@@ -319,7 +390,9 @@ async def upsert_registry_creds(
 # characters.
 @router.delete("/registry-creds/{registry:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_registry_creds(
-    registry: str, db: AsyncSession = Depends(get_db)
+    registry: str,
+    _user: UserContext = Depends(require_role("admin")),
+    db: AsyncSession = Depends(get_db),
 ) -> None:
     row = (
         await db.execute(

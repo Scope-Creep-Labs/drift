@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
@@ -97,14 +97,36 @@ async def healthz() -> dict:
     }
 
 
-@app.post("/investigate")
-async def investigate(req: PromptRequest) -> StreamingResponse:
-    return StreamingResponse(
-        run_agent(req),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",  # disable nginx response buffering
-            "Connection": "keep-alive",
-        },
-    )
+# Investigate endpoint: when the deploy subsystem (and thus the user
+# system) is enabled, require an authenticated user. In pure-observability
+# deploys, the endpoint is open and the surrounding layer (e.g. Caddy
+# basic_auth) is expected to gate access.
+if settings.drift_pg_url:
+    from .users.deps import UserContext, get_current_user
+
+    @app.post("/investigate")
+    async def investigate(
+        req: PromptRequest,
+        user: UserContext = Depends(get_current_user),
+    ) -> StreamingResponse:
+        return StreamingResponse(
+            run_agent(req, user=user),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",  # disable nginx response buffering
+                "Connection": "keep-alive",
+            },
+        )
+else:
+    @app.post("/investigate")
+    async def investigate(req: PromptRequest) -> StreamingResponse:
+        return StreamingResponse(
+            run_agent(req),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
+        )
