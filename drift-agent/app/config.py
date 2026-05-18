@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     # the secrets endpoints (they return 503).
     drift_secret_key: str = ""
 
+    # Bootstrap admin user — created/updated on every startup. The first
+    # operator account; required at least once so the system isn't
+    # locked out. Subsequent admins managed via the user CRUD endpoints.
+    drift_admin_username: str = ""
+    drift_admin_password: str = ""
+
+    # When true, session cookies are sent without Secure so plain-http
+    # localhost dev works. Production should leave this false (default)
+    # so cookies require HTTPS.
+    dev_mode: bool = False
+
     @property
     def deploy_enabled(self) -> bool:
         """Deploy subsystem requires both Postgres and B2 storage."""

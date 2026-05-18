@@ -112,6 +112,66 @@ class DeploymentTarget(Base):
     )
 
 
+class User(Base):
+    """An operator account. Authenticates with username + bcrypt password.
+    Role determines coarse capability tier; user_groups (separate table)
+    determines which device groups they can act on.
+
+    Roles form a strict containment order:
+      observe ⊂ deploy ⊂ admin
+    Permission checks use >= so anything `observe` can do, `deploy` can
+    do too. Alert-management tools intentionally require only `observe`
+    since the observability domain encompasses alert configuration.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 'observe' | 'deploy' | 'admin'. Validated at the app layer; no enum
+    # constraint at the DB to keep migrations cheap.
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="observe")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class UserGroup(Base):
+    """Join table: which device groups can a user manage. Composite PK so
+    re-assigning is an idempotent upsert. Admin users get implicit access
+    to all groups regardless of this table's contents (checked in the
+    auth layer)."""
+
+    __tablename__ = "user_groups"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+
+
+class Session(Base):
+    """Opaque session token → user mapping. Cookie value is the session
+    id (uuid4). expires_at is bumped on each authenticated request to
+    keep active users logged in; idle sessions cleaned up by a periodic
+    job (or just left to age — we look at expires_at on every check)."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+
+
 class RegistryCredential(Base):
     """Per-registry pull credentials. password_encrypted is Fernet
     ciphertext (see deploy.secrets). One row per registry — operator

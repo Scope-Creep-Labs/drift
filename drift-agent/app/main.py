@@ -17,7 +17,10 @@ app = FastAPI(title="drift-agent", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.origins,
-    allow_credentials=False,
+    # User auth uses a cookie, which means credentialed requests. Required
+    # only for browsers that hit /api/* across origins (rare with same-
+    # origin SPA-via-nginx setup, but still correct).
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,12 +38,16 @@ if settings.drift_pg_url:
     )
     from .deploy.routes_admin import router as deploy_admin_router
     from .deploy.routes_agent import router as deploy_agent_router
+    from .users.bootstrap import ensure_bootstrap_admin
+    from .users.routes import router as auth_router
 
+    app.include_router(auth_router)
     app.include_router(deploy_admin_router)
     app.include_router(deploy_agent_router)
 
     @app.on_event("startup")
     async def _on_startup() -> None:
+        await ensure_bootstrap_admin()
         start_background_refresh()
 
     @app.on_event("shutdown")

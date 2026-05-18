@@ -25,7 +25,8 @@ RUN pip install --upgrade pip wheel \
         "alembic>=1.13" \
         "boto3>=1.34" \
         "prometheus-client>=0.20" \
-        "cryptography>=43.0"
+        "cryptography>=43.0" \
+        "bcrypt>=4.2"
 
 # ---- Runtime ----
 FROM python:3.12-slim AS runtime
