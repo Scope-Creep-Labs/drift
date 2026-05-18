@@ -17,6 +17,7 @@ type AuthValue = AuthState & {
   refresh: () => Promise<void>
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>
 }
 
 const AuthCtx = createContext<AuthValue | null>(null)
@@ -98,12 +99,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const changePassword = useCallback(
+    async (currentPassword: string, newPassword: string): Promise<void> => {
+      const res = await fetch(`${API_BASE}/auth/me/password`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        let msg = res.statusText
+        try {
+          const j = JSON.parse(text)
+          msg = j.detail || msg
+        } catch {
+          /* not JSON */
+        }
+        throw new Error(msg)
+      }
+    },
+    [],
+  )
+
   useEffect(() => {
     refresh()
   }, [refresh])
 
   return (
-    <AuthCtx.Provider value={{ ...state, refresh, login, logout }}>{children}</AuthCtx.Provider>
+    <AuthCtx.Provider value={{ ...state, refresh, login, logout, changePassword }}>
+      {children}
+    </AuthCtx.Provider>
   )
 }
 

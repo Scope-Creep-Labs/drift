@@ -39,6 +39,11 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=256)
+    new_password: str = Field(min_length=8, max_length=256)
+
+
 class UserOut(BaseModel):
     id: uuid.UUID
     username: str
@@ -139,6 +144,33 @@ async def me(user: UserContext = Depends(get_current_user)) -> UserOut:
         role=user.role,
         groups=sorted(user.groups),
     )
+
+
+@router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    body: PasswordChangeRequest,
+    actor: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """Self-serve password change. Verifies the caller's current password,
+    then updates the hash. Existing sessions stay valid — the caller is
+    still authenticated under their current cookie."""
+    if body.new_password == body.current_password:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "new password must differ from current"
+        )
+    user = (
+        await db.execute(select(User).where(User.id == actor.id))
+    ).scalar_one_or_none()
+    if user is None:
+        # Should be impossible — the dep guard already loaded the user.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
+    if not verify_password(body.current_password, user.password_hash):
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, "current password is incorrect"
+        )
+    user.password_hash = hash_password(body.new_password)
+    await db.commit()
 
 
 # ---------- Admin: user CRUD ----------

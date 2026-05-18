@@ -72,6 +72,10 @@ Drift owns its own login. Caddy basic_auth used to gate `/drift/*` site-wide; th
 - `PATCH /api/auth/users/{username}` — update password / role / groups
 - `DELETE /api/auth/users/{username}` — remove
 
+LLM-tool equivalents (admin-only): `list_users`, `create_user`, `set_user_role`, `set_user_groups`, `reset_user_password`, `delete_user`. The create/reset paths return a server-generated password once in the tool response — that text ends up in the chat trace, so hand it to the user out-of-band and clear the investigation afterwards if it's sensitive.
+
+**Self-serve password change** (any role): sidebar footer → 🔁 icon → enter current + new + confirm. POSTs to `/api/auth/me/password`. Verifies the current password server-side; existing sessions are preserved (the user stays logged in afterwards). Min length 8 characters. Cannot reuse the same password. Importantly, **this flow keeps the password off the chat surface entirely** — it never enters the LLM context.
+
 Last-admin protection: the system refuses to demote or delete the only admin so it can't lock itself out.
 
 **Session shape:** server-side, in the `sessions` table. Cookie value is an opaque UUID; HttpOnly, SameSite=Lax, Secure in production. 30-day rolling expiry — every authenticated request bumps `expires_at` so active users don't get logged out.

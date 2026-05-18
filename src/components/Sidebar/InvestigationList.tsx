@@ -16,11 +16,13 @@ import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import KeyIcon from '@mui/icons-material/Key'
+import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
 import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { AppModal, type AppModalMode } from '../AppModal'
+import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
 import { deployApi, type App, type DeploymentTarget } from '../../lib/deployApi'
 
@@ -104,6 +106,7 @@ export function InvestigationList() {
   const [appsError, setAppsError] = useState<string | null>(null)
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -372,6 +375,11 @@ export function InvestigationList() {
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Change password">
+            <IconButton size="small" onClick={() => setPasswordModalOpen(true)} sx={{ p: 0.4 }}>
+              <LockResetIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Sign out">
             <IconButton size="small" onClick={() => auth.logout()} sx={{ p: 0.4 }}>
               <LogoutIcon sx={{ fontSize: 14 }} />
@@ -390,6 +398,7 @@ export function InvestigationList() {
       )}
 
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
+      <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
     </Stack>
   )
 }
