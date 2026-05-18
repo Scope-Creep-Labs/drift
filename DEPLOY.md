@@ -42,6 +42,42 @@ If the agent skips propose and jumps straight to apply, **stop and ask it to sho
 
 ---
 
+## Authentication and authorization
+
+Drift owns its own login. Caddy basic_auth used to gate `/drift/*` site-wide; that's gone. Anonymous requests to `/api/*` get a 401 from drift-agent's session middleware; the SPA root serves a login page that hits `POST /api/auth/login`.
+
+**Bootstrap:** `DRIFT_ADMIN_USERNAME` and `DRIFT_ADMIN_PASSWORD` in `.env`. The first time drift-agent starts after this is set, it creates an admin user with those creds; subsequent restarts update the password idempotently if it changed. If both vars are unset *and* no admin row exists in the DB, drift-agent logs a clear warning — operator has to set the vars and restart.
+
+**Roles** (one per user, strict containment `observe < deploy < admin`):
+
+| Capability | observe | deploy | admin |
+|---|---|---|---|
+| Query metrics / logs / alerts | ✓ | ✓ | ✓ |
+| Manage alert rules + Alertmanager config | ✓ | ✓ | ✓ |
+| Read devices / apps / deployments | ✓ (scoped to their groups) | ✓ (scoped) | ✓ (all) |
+| Run investigations (chat) | ✓ | ✓ | ✓ |
+| Create apps / propose+apply revisions | ✗ | ✓ | ✓ |
+| Deploy / retry / delete deployments | ✗ | ✓ (their groups) | ✓ (any group) |
+| Commission / delete devices | ✗ | ✓ | ✓ |
+| Manage registry credentials | ✗ | ✗ | ✓ |
+| Manage users + groups | ✗ | ✗ | ✓ |
+
+**Groups:** each user has zero or more device groups (`drift_home`, `dev-cloud`, etc.). Non-admin users only see/act on devices in their groups. Admins always see everything. Apps and revisions are global — anyone can see them, but deploying still requires `deploy` role + group access on the target device.
+
+**Enforcement:** both at the HTTP boundary (FastAPI dependencies on every `/api/deploy/*` endpoint) and inside the LLM tool layer (`_require_deploy_role`, `_check_group_access` at the top of every mutation tool). Defense in depth — a chat user with `observe` role asking the LLM to "deploy podnot" gets a permission-denied response from the tool, not a successful unintended deploy.
+
+**User management** (admin only):
+- `POST /api/auth/users` — create with role + groups
+- `GET /api/auth/users` — list
+- `PATCH /api/auth/users/{username}` — update password / role / groups
+- `DELETE /api/auth/users/{username}` — remove
+
+Last-admin protection: the system refuses to demote or delete the only admin so it can't lock itself out.
+
+**Session shape:** server-side, in the `sessions` table. Cookie value is an opaque UUID; HttpOnly, SameSite=Lax, Secure in production. 30-day rolling expiry — every authenticated request bumps `expires_at` so active users don't get logged out.
+
+---
+
 ## Edge-agent self-update (v0.5.0+)
 
 The `drift-deploy-agent.sh` script self-updates on every check-in. The control plane includes the current canonical script's 12-char SHA in each `/check-in` response (`agent_target_sha`). When the running agent's SHA differs, the container exits cleanly; Docker's `--restart unless-stopped` brings it back; a bootstrapper at the top of the script fetches `/api/deploy/agent/agent.sh`, `bash -n` checks it, and `exec`s into it. Worst-case downtime per device per update: one poll cycle + container restart, ~20–30s.
