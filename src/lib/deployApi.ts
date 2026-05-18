@@ -36,6 +36,19 @@ export type RegistryCredential = {
   updated_at: string
 }
 
+export type DeploymentTarget = {
+  id: string
+  device_id: string
+  app_id: string
+  desired_revision_id: string | null
+  current_revision_id: string | null
+  status: 'pending' | 'healthy' | 'failed' | 'paused_retries' | 'removing' | 'removed' | string
+  attempts: number
+  max_retries: number
+  last_error: string | null
+  updated_at: string
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${DEPLOY_BASE}${path}`, {
     ...init,
@@ -74,6 +87,8 @@ export const deployApi = {
       method: 'POST',
       body: JSON.stringify({ files }),
     }),
+
+  listDeployments: () => api<DeploymentTarget[]>('/deployments'),
 
   // Registry credentials. Upsert is PUT (idempotent): every save replaces
   // both username and password because the server never decrypts to

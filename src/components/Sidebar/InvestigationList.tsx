@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Box,
   Button,
   IconButton,
+  InputAdornment,
   List,
   ListItemButton,
   ListItemText,
   Stack,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
@@ -15,11 +17,77 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import KeyIcon from '@mui/icons-material/Key'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
+import SearchIcon from '@mui/icons-material/SearchOutlined'
 import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
-import { deployApi, type App } from '../../lib/deployApi'
+import { deployApi, type App, type DeploymentTarget } from '../../lib/deployApi'
+
+// Roll-up of a single app's deployment state across the whole fleet.
+// "worst wins" so a single failing target colors the row attention-y.
+type AppRollup = {
+  total: number             // active (non-removed) deployment count
+  state: 'healthy' | 'paused' | 'pending' | 'idle'
+  lastTouchedAt: number     // unix-ms; for recency sort
+}
+
+function rollupFromDeployments(
+  apps: App[],
+  deployments: DeploymentTarget[],
+): Map<string, AppRollup> {
+  const out = new Map<string, AppRollup>()
+  for (const a of apps) {
+    out.set(a.id, {
+      total: 0,
+      state: 'idle',
+      lastTouchedAt: new Date(a.created_at).getTime(),
+    })
+  }
+  for (const d of deployments) {
+    const cur = out.get(d.app_id)
+    if (!cur) continue
+    const touched = new Date(d.updated_at).getTime()
+    if (touched > cur.lastTouchedAt) cur.lastTouchedAt = touched
+    // Ignore tombstones for the rollup state — they still bump
+    // lastTouchedAt because they're real activity.
+    if (d.status === 'removed') continue
+    cur.total += 1
+    if (d.status === 'paused_retries') cur.state = 'paused'
+    else if (cur.state !== 'paused' && d.status !== 'healthy') cur.state = 'pending'
+    else if (cur.state === 'idle' && d.status === 'healthy') cur.state = 'healthy'
+  }
+  return out
+}
+
+function StatusDot({ state }: { state: AppRollup['state'] }) {
+  const colors: Record<AppRollup['state'], string> = {
+    healthy: '#2ea66c',
+    paused: '#e15454',
+    pending: '#f0a040',
+    idle: 'rgba(255,255,255,0.18)',
+  }
+  const labels: Record<AppRollup['state'], string> = {
+    healthy: 'All deployments healthy',
+    paused: 'One or more deployments are paused (max retries hit)',
+    pending: 'One or more deployments are pending or failing',
+    idle: 'No active deployments',
+  }
+  return (
+    <Tooltip title={labels[state]} placement="left">
+      <Box
+        sx={{
+          width: 7,
+          height: 7,
+          borderRadius: '50%',
+          bgcolor: colors[state],
+          flexShrink: 0,
+          mr: 1,
+        }}
+      />
+    </Tooltip>
+  )
+}
 
 export function InvestigationList() {
   const investigations = useInvestigationStore((s) => s.investigations)
@@ -32,9 +100,11 @@ export function InvestigationList() {
   // because it's narrowly scoped to the sidebar list — and the source of
   // truth is the server.
   const [apps, setApps] = useState<App[] | null>(null)
+  const [deployments, setDeployments] = useState<DeploymentTarget[]>([])
   const [appsError, setAppsError] = useState<string | null>(null)
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
+  const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
   const canDeploy = isDeploy(user)
@@ -42,15 +112,39 @@ export function InvestigationList() {
 
   const refreshApps = () => {
     setAppsError(null)
-    deployApi
-      .listApps()
-      .then(setApps)
+    // Parallel fetch of apps + deployments — both feed the sidebar's
+    // rollup view (status badges + recency sort).
+    Promise.all([deployApi.listApps(), deployApi.listDeployments()])
+      .then(([a, d]) => {
+        setApps(a)
+        setDeployments(d)
+      })
       .catch((e: Error) => setAppsError(e.message))
   }
 
   useEffect(() => {
     refreshApps()
   }, [])
+
+  // Derived: filter + sort the apps for display. Recomputed when any of
+  // the inputs change. Sort key is "most recent deployment activity"
+  // (lastTouchedAt) so apps you're working on float to the top; the
+  // filter is case-insensitive substring on the name.
+  const visibleApps = useMemo(() => {
+    if (apps === null) return null
+    const rollups = rollupFromDeployments(apps, deployments)
+    const needle = filter.trim().toLowerCase()
+    const filtered = needle
+      ? apps.filter((a) => a.name.toLowerCase().includes(needle))
+      : apps.slice()
+    filtered.sort((a, b) => {
+      const ra = rollups.get(a.id)?.lastTouchedAt ?? 0
+      const rb = rollups.get(b.id)?.lastTouchedAt ?? 0
+      if (ra !== rb) return rb - ra
+      return a.name.localeCompare(b.name)
+    })
+    return filtered.map((a) => ({ app: a, rollup: rollups.get(a.id)! }))
+  }, [apps, deployments, filter])
 
   return (
     <Stack
@@ -166,6 +260,27 @@ export function InvestigationList() {
           )}
         </Stack>
 
+        {apps !== null && apps.length > 5 && (
+          <Box sx={{ px: 1, pb: 0.4 }}>
+            <TextField
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter apps…"
+              size="small"
+              fullWidth
+              variant="outlined"
+              InputProps={{
+                startAdornment: (
+                  <InputAdornment position="start">
+                    <SearchIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                  </InputAdornment>
+                ),
+                sx: { fontSize: '0.78rem', '& input': { py: 0.6 } },
+              }}
+            />
+          </Box>
+        )}
+
         <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}>
           {appsError && (
             <Typography variant="caption" color="error.main" sx={{ px: 2, display: 'block' }}>
@@ -177,17 +292,44 @@ export function InvestigationList() {
               No apps yet.
             </Typography>
           )}
-          {(apps ?? []).map((a) => (
+          {visibleApps !== null && visibleApps.length === 0 && filter && (
+            <Typography variant="caption" color="text.secondary" sx={{ px: 2, display: 'block' }}>
+              No apps match "{filter}".
+            </Typography>
+          )}
+          {(visibleApps ?? []).map(({ app: a, rollup }) => (
             <ListItemButton
               key={a.id}
               onClick={canDeploy ? () => setModal({ kind: 'edit', appName: a.name }) : undefined}
               disabled={!canDeploy}
-              sx={{ borderRadius: 1, mx: 0.5, mb: 0.2, py: 0.4 }}
+              sx={{
+                borderRadius: 1,
+                mx: 0.5,
+                mb: 0.2,
+                py: 0.4,
+                display: 'flex',
+                alignItems: 'center',
+              }}
             >
+              <StatusDot state={rollup.state} />
               <ListItemText
                 primary={a.name}
                 primaryTypographyProps={{ fontSize: '0.82rem', noWrap: true }}
+                sx={{ flex: 1, minWidth: 0 }}
               />
+              {rollup.total > 0 && (
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontSize: '0.66rem',
+                    color: 'text.disabled',
+                    ml: 0.8,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}
+                >
+                  ×{rollup.total}
+                </Typography>
+              )}
             </ListItemButton>
           ))}
         </List>
