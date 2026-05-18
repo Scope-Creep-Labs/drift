@@ -11,6 +11,7 @@ from .stream import sse
 from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
 from .tools.deploy import DEPLOY_HANDLERS, DEPLOY_TOOLS
+from .tools.users import USER_HANDLERS, USER_TOOLS
 from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
 from .tools.logs import LOGS_HANDLERS, LOGS_TOOLS, make_vl_client
 from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm_client
@@ -239,15 +240,27 @@ what you tried and what would be needed to answer the question.\
 
 
 def all_tools() -> list[dict]:
+    # User management tools come on the same flag as deploy — they share
+    # the Postgres + auth subsystem and don't make sense in pure-VM mode.
     deploy = DEPLOY_TOOLS if settings.deploy_enabled else []
+    users = USER_TOOLS if settings.deploy_enabled else []
     logs = LOGS_TOOLS if settings.vl_url else []
-    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *logs, *ANALYSIS_TOOLS, *EMIT_TOOLS]
+    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *users, *logs, *ANALYSIS_TOOLS, *EMIT_TOOLS]
 
 
 def all_handlers() -> dict:
     deploy = DEPLOY_HANDLERS if settings.deploy_enabled else {}
+    users = USER_HANDLERS if settings.deploy_enabled else {}
     logs = LOGS_HANDLERS if settings.vl_url else {}
-    return {**METRICS_HANDLERS, **ALERT_HANDLERS, **deploy, **logs, **ANALYSIS_HANDLERS, **EMIT_HANDLERS}
+    return {
+        **METRICS_HANDLERS,
+        **ALERT_HANDLERS,
+        **deploy,
+        **users,
+        **logs,
+        **ANALYSIS_HANDLERS,
+        **EMIT_HANDLERS,
+    }
 
 
 def _sanitize_assistant_content(blocks: Any) -> list[dict]:
