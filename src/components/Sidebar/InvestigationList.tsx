@@ -14,6 +14,8 @@ import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import KeyIcon from '@mui/icons-material/Key'
+import LogoutIcon from '@mui/icons-material/LogoutOutlined'
+import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
@@ -33,6 +35,10 @@ export function InvestigationList() {
   const [appsError, setAppsError] = useState<string | null>(null)
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
+  const auth = useAuth()
+  const user = auth.status === 'authenticated' ? auth.user : undefined
+  const canDeploy = isDeploy(user)
+  const isAdminUser = isAdmin(user)
 
   const refreshApps = () => {
     setAppsError(null)
@@ -147,15 +153,17 @@ export function InvestigationList() {
               Apps
             </Typography>
           </Stack>
-          <Tooltip title="New app">
-            <IconButton
-              size="small"
-              onClick={() => setModal({ kind: 'create' })}
-              sx={{ p: 0.3 }}
-            >
-              <AddIcon sx={{ fontSize: 16 }} />
-            </IconButton>
-          </Tooltip>
+          {canDeploy && (
+            <Tooltip title="New app">
+              <IconButton
+                size="small"
+                onClick={() => setModal({ kind: 'create' })}
+                sx={{ p: 0.3 }}
+              >
+                <AddIcon sx={{ fontSize: 16 }} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
 
         <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}>
@@ -172,7 +180,8 @@ export function InvestigationList() {
           {(apps ?? []).map((a) => (
             <ListItemButton
               key={a.id}
-              onClick={() => setModal({ kind: 'edit', appName: a.name })}
+              onClick={canDeploy ? () => setModal({ kind: 'edit', appName: a.name }) : undefined}
+              disabled={!canDeploy}
               sx={{ borderRadius: 1, mx: 0.5, mb: 0.2, py: 0.4 }}
             >
               <ListItemText
@@ -193,16 +202,40 @@ export function InvestigationList() {
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
+          gap: 1,
         }}
       >
-        <Typography variant="caption" color="text.secondary">
-          engine: <code>{import.meta.env.VITE_ENGINE ?? 'mock'}</code>
-        </Typography>
-        <Tooltip title="Registry credentials">
-          <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
-            <KeyIcon sx={{ fontSize: 14 }} />
-          </IconButton>
-        </Tooltip>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          {user && (
+            <>
+              <Typography
+                variant="caption"
+                sx={{ fontSize: '0.75rem', fontWeight: 600, display: 'block', lineHeight: 1.2 }}
+                noWrap
+              >
+                {user.username}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.66rem' }}>
+                {user.role}
+                {user.role !== 'admin' && user.groups.length > 0 && ` · ${user.groups.join(', ')}`}
+              </Typography>
+            </>
+          )}
+        </Box>
+        <Stack direction="row" spacing={0.2}>
+          {isAdminUser && (
+            <Tooltip title="Registry credentials">
+              <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
+                <KeyIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip title="Sign out">
+            <IconButton size="small" onClick={() => auth.logout()} sx={{ p: 0.4 }}>
+              <LogoutIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
+        </Stack>
       </Box>
 
       {modal && (

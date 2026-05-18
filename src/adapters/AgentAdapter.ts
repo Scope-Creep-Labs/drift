@@ -16,6 +16,7 @@ export class AgentAdapter implements EngineAdapter {
   async *stream(req: PromptRequest, signal?: AbortSignal): AsyncIterable<AgentEvent> {
     const res = await fetch(`${this.base}/investigate`, {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(req),
       signal,
