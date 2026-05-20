@@ -111,23 +111,29 @@ if docker ps -a --format '{{.Names}}' | grep -qx drift-deploy-agent; then
 fi
 
 echo "starting drift-deploy-agent..."
-# Note: $DNS_ARGS is intentionally unquoted so Docker sees each `--dns X`
-# as a separate flag pair.
+# --network host puts the agent in the host's network namespace, which:
+#   - lets collect_facts() see the host's real interfaces + IPs (without
+#     this, `ip addr` only shows the container's docker0 bridge IP)
+#   - lets `hostname` return the host's hostname instead of the
+#     container ID
+#   - inherits the host's resolv.conf directly, so the corp-DNS-blocks-
+#     1.1.1.1 issue we hit on the jetson never recurs (no need for
+#     /etc/docker/daemon.json --dns workaround)
+# The agent doesn't bind any ports, so network isolation isn't doing
+# real work for us anyway. The $DNS_ARGS computed above only applies to
+# the bridge-network fallback path; --network host bypasses it.
 #
-# Host /etc/hostname and /etc/os-release are bind-mounted read-only into
-# /host/etc/ so the agent's collect_facts() reports the HOST's identity,
-# not the container's (`hostname` inside a container returns the container
-# ID, /etc/os-release describes alpine instead of the host OS).
+# /etc/os-release is bind-mounted from the host so collect_facts() can
+# read the host's OS string instead of the alpine container's.
 # shellcheck disable=SC2086
 docker run -d \
   --name drift-deploy-agent \
   --restart unless-stopped \
+  --network host \
   --env-file /etc/drift-deploy/env \
-  $DNS_ARGS \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
-  -v /etc/hostname:/host/etc/hostname:ro \
   -v /etc/os-release:/host/etc/os-release:ro \
   drift-deploy-agent:latest
 
