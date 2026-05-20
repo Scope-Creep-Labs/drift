@@ -22,6 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+import yaml
 from sqlalchemy import func, select
 
 from ..config import settings
@@ -109,6 +110,68 @@ def _require_admin_role(ctx: ToolContext) -> dict | None:
             )
         }
     return None
+
+
+def _container_names_from_compose(files: dict[str, str]) -> set[str]:
+    """Extract every explicit `container_name:` declaration from the compose
+    file in this bundle. Returns the set of names. Quiet on parse errors
+    — a malformed compose is the apply layer's problem, not ours."""
+    for candidate in COMPOSE_FILE_CANDIDATES:
+        if candidate in files:
+            try:
+                parsed = yaml.safe_load(files[candidate]) or {}
+            except yaml.YAMLError:
+                return set()
+            services = (parsed.get("services") or {}) if isinstance(parsed, dict) else {}
+            names: set[str] = set()
+            if isinstance(services, dict):
+                for svc in services.values():
+                    if isinstance(svc, dict):
+                        cn = svc.get("container_name")
+                        if isinstance(cn, str) and cn.strip():
+                            names.add(cn.strip())
+            return names
+    return set()
+
+
+async def _container_name_conflicts(
+    s,
+    device_id: uuid.UUID,
+    new_files: dict[str, str],
+    this_app_id: uuid.UUID,
+) -> list[dict]:
+    """Cross-check the new revision's explicit container_names against
+    every currently-deployed (non-removed) app on this device. Returns
+    a list of conflict descriptors: {container_name, conflicting_app}.
+
+    Empty list means no conflict — caller can proceed unconditionally.
+    """
+    new_names = _container_names_from_compose(new_files)
+    if not new_names:
+        return []
+
+    # Other apps deployed to this device that still have a desired
+    # revision (i.e. not in the removal lifecycle). Exclude this app
+    # itself — replacing yourself doesn't conflict.
+    rows = await s.execute(
+        select(DeploymentTarget, App, AppRevision)
+        .join(App, App.id == DeploymentTarget.app_id)
+        .join(AppRevision, AppRevision.id == DeploymentTarget.desired_revision_id, isouter=True)
+        .where(
+            DeploymentTarget.device_id == device_id,
+            DeploymentTarget.app_id != this_app_id,
+            DeploymentTarget.desired_revision_id.is_not(None),
+            DeploymentTarget.status != "removed",
+        )
+    )
+    conflicts: list[dict] = []
+    for _target, other_app, other_rev in rows.all():
+        if other_rev is None or not other_rev.files:
+            continue
+        other_names = _container_names_from_compose(other_rev.files)
+        for collision in sorted(new_names & other_names):
+            conflicts.append({"container_name": collision, "conflicting_app": other_app.name})
+    return conflicts
 
 
 def _check_group_access(ctx: ToolContext, group_id: str | None) -> dict | None:
@@ -642,6 +705,39 @@ async def deploy_revision(ctx: ToolContext, args: dict) -> dict:
             if rev is None:
                 return {"error": f"app '{app_name}' has no revisions yet — call apply_app_revision first"}
 
+        # Conflict pre-flight (Layer A). Parse the new revision's compose
+        # for explicit container_name declarations; cross-check against
+        # other apps already deployed to this device. There is no
+        # "force" path: Layer B (agent-side, v0.5.2+) refuses to overwrite
+        # container_name conflicts at apply time even if we set
+        # desired_revision_id here. So the operator's only two real
+        # options are "replace the conflicting deployment" or "cancel".
+        conflicts = await _container_name_conflicts(s, device.id, rev.files or {}, app.id)
+        if conflicts:
+            conflicting_apps = sorted({c["conflicting_app"] for c in conflicts})
+            return {
+                "warning": "container_name conflicts on target",
+                "device": device_name,
+                "app": app_name,
+                "desired_version": rev.version,
+                "conflicts": conflicts,
+                "conflicting_apps": conflicting_apps,
+                "replace_plan": [
+                    f"delete_deployment(app='{a}', device='{device_name}')"
+                    for a in conflicting_apps
+                ] + [
+                    f"deploy_revision(app='{app_name}', device='{device_name}')",
+                ],
+                "note": (
+                    f"{len(conflicts)} container name(s) on {device_name} would collide with "
+                    f"{', '.join(conflicting_apps)}. Only two viable paths: REPLACE — execute the "
+                    f"steps in replace_plan in order, after the operator confirms they want to "
+                    f"stop the conflicting app(s); or CANCEL — abandon the request. There is no "
+                    f"'force' option: the edge agent's apply-time pre-flight refuses container_name "
+                    f"collisions, so a deploy left to race would just paused_retries out."
+                ),
+            }
+
         existing = (await s.execute(
             select(DeploymentTarget).where(
                 DeploymentTarget.device_id == device.id,
@@ -919,6 +1015,45 @@ async def deploy_revision_to_group(ctx: ToolContext, args: dict) -> dict:
             )).scalar_one_or_none()
             if rev is None:
                 return {"error": f"app '{app_name}' has no revisions yet"}
+
+        # Conflict pre-flight (Layer A) across every device that's
+        # actually going to receive a deploy. Aggregates per-device
+        # conflicts so the operator gets the whole picture in one
+        # response instead of N retries. Same "no force" semantics as
+        # the single-device path — only replace or cancel are real.
+        per_device_conflicts: list[dict] = []
+        for device in devices:
+            if device.status != "online" and not include_offline:
+                continue
+            conflicts = await _container_name_conflicts(s, device.id, rev.files or {}, app.id)
+            if conflicts:
+                per_device_conflicts.append({"device": device.name, "conflicts": conflicts})
+        if per_device_conflicts:
+            all_conflicting_apps = sorted({
+                c["conflicting_app"]
+                for pd in per_device_conflicts
+                for c in pd["conflicts"]
+            })
+            return {
+                "warning": "container_name conflicts on one or more targets",
+                "app": app_name,
+                "group_id": group,
+                "desired_version": rev.version,
+                "per_device": per_device_conflicts,
+                "conflicting_apps": all_conflicting_apps,
+                "replace_plan": [
+                    f"delete_deployment_from_group(app='{a}', group_id='{group}')"
+                    for a in all_conflicting_apps
+                ] + [
+                    f"deploy_revision_to_group(app='{app_name}', group_id='{group}')",
+                ],
+                "note": (
+                    f"{len(per_device_conflicts)} device(s) in '{group}' have container_name "
+                    f"conflicts with {', '.join(all_conflicting_apps)}. Only two viable paths: "
+                    f"REPLACE — execute the steps in replace_plan in order, after the operator "
+                    f"confirms; or CANCEL. No 'force' option."
+                ),
+            }
 
         results = []
         skipped = []

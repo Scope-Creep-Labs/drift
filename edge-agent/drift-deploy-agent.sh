@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.1"
+AGENT_VERSION="0.5.2"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -327,6 +327,51 @@ apply_revision() {
     log_warn "[$app] $err"
     state_set_error "$app" "$err"
     return 1
+  fi
+
+  # Conflict pre-flight (Layer B). Parse compose for explicit
+  # container_name: declarations; if any name is already in use by a
+  # container we don't own (i.e. drift.app label is missing or refers
+  # to a different app), report a clean apply_error instead of letting
+  # docker fail with its own less-readable "name in use" message.
+  # Names we DO own (drift.app == $app) are fine — compose up will
+  # recreate them in place.
+  local compose_file
+  for cand in compose.yaml compose.yml docker-compose.yml; do
+    if [ -f "$rev_dir/$cand" ]; then compose_file="$rev_dir/$cand"; break; fi
+  done
+  if [ -n "${compose_file:-}" ]; then
+    local declared_names
+    declared_names=$(awk '/^[[:space:]]*container_name:[[:space:]]*/ {
+      gsub(/^[[:space:]]*container_name:[[:space:]]*/, "", $0);
+      gsub(/[[:space:]]*#.*$/, "", $0);
+      gsub(/["'"'"']/, "", $0);
+      gsub(/[[:space:]]+$/, "", $0);
+      if ($0 != "") print $0;
+    }' "$compose_file")
+    local conflicts=""
+    if [ -n "$declared_names" ]; then
+      while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        # Container with this exact name?
+        local cid owner
+        cid=$(docker ps -a --filter "name=^${name}$" --format '{{.ID}}' 2>/dev/null | head -1)
+        if [ -n "$cid" ]; then
+          owner=$(docker inspect -f '{{ index .Config.Labels "drift.app" }}' "$cid" 2>/dev/null)
+          if [ -z "$owner" ]; then
+            conflicts="$conflicts $name(unmanaged)"
+          elif [ "$owner" != "$app" ]; then
+            conflicts="$conflicts $name(owned-by:$owner)"
+          fi
+        fi
+      done <<< "$declared_names"
+    fi
+    if [ -n "$conflicts" ]; then
+      err="REFUSED: container_name conflicts —$conflicts. Remove the listed containers manually (or via Drift's app removal) and retry."
+      log_warn "[$app] $err"
+      state_set_error "$app" "$err"
+      return 1
+    fi
   fi
 
   generate_drift_override "$rev_dir" "$app" "$rev_id"

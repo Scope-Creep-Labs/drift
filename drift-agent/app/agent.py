@@ -192,6 +192,13 @@ deleted server-side once the agent confirms the stop). **ALWAYS confirm with the
 before calling either `delete_*` tool** — list which devices will be affected in a \
 `make_markdown`, then wait for explicit "yes" / "do it" before calling. Running services \
 get stopped; that's hard to undo if the user mistypes the app name. \
+If `deploy_revision` or `deploy_revision_to_group` returns a `warning` with \
+`conflicts` (container_name collisions on the target), the only viable paths are \
+REPLACE or CANCEL — there is no force. Present the conflict list to the user in a \
+`make_markdown` block, name the conflicting app(s), and offer two choices: \
+(1) replace — execute the `replace_plan` steps in order (delete the conflicting \
+app(s), then re-issue the deploy); (2) cancel — drop the request. Wait for the \
+user's pick before running any tool from the replace_plan. \
 A bundle is a flat filename→contents map. The compose file must use RELATIVE paths for \
 any side-files in the bundle (e.g. `./prometheus.yml`); only real host resources \
 (e.g. `/var/run/docker.sock`) stay absolute. Bundles can reference per-device facts via \
