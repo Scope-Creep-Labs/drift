@@ -487,6 +487,18 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
         prior = _with_cache_breakpoint(prior)
     messages: list[dict] = [*prior, {"role": "user", "content": user_content}]
 
+    # Accumulate usage across every API call in this turn's tool loop.
+    # `final.usage` only carries the LAST call's tokens — without this
+    # accumulator, prior rounds (system prompt read, tool-result reads)
+    # would silently drop. Emitted as the turn's `metadata.usage` and
+    # exported to Prometheus when the loop concludes.
+    turn_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+    }
+
     yield sse("start", {"engine": settings.model})
 
     try:
@@ -520,6 +532,12 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
 
                 final = await stream.get_final_message()
 
+            # Roll this iteration's usage into the per-turn accumulator.
+            turn_usage["input_tokens"] += final.usage.input_tokens
+            turn_usage["output_tokens"] += final.usage.output_tokens
+            turn_usage["cache_read_input_tokens"] += getattr(final.usage, "cache_read_input_tokens", 0)
+            turn_usage["cache_creation_input_tokens"] += getattr(final.usage, "cache_creation_input_tokens", 0)
+
             # Drain any SSE bytes emit-tools queued during this iteration's tool execution
             # (they're queued lazily — we'll flush after running tools below).
 
@@ -540,19 +558,39 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
                     #    long investigation can't grow unbounded.
                     compacted = _compact_history_for_save(messages)
                     _session_history[investigation_id] = _trim_to_recent_turns(compacted)
+
+                # Emit cumulative usage (sum across every API call in
+                # this turn's tool loop) as the turn's metadata.
                 yield sse(
                     "metadata",
                     {
                         "engine": settings.model,
                         "stop_reason": final.stop_reason,
-                        "usage": {
-                            "input_tokens": final.usage.input_tokens,
-                            "output_tokens": final.usage.output_tokens,
-                            "cache_read_input_tokens": getattr(final.usage, "cache_read_input_tokens", 0),
-                            "cache_creation_input_tokens": getattr(final.usage, "cache_creation_input_tokens", 0),
-                        },
+                        "usage": dict(turn_usage),
                     },
                 )
+
+                # Export to Prometheus so the fleet's reporter-cp scrape
+                # picks it up. Per-user, per-model, per-kind breakdown
+                # lets operators ask "tokens by user this month" etc.
+                # Username "anonymous" only occurs in the deploy-disabled
+                # / no-auth dev path; in production every call is gated
+                # by get_current_user.
+                from .deploy.observability import agent_tokens_total, agent_turns_total
+                username = getattr(user, "username", None) or "anonymous"
+                for kind, attr in (
+                    ("input", "input_tokens"),
+                    ("output", "output_tokens"),
+                    ("cache_read", "cache_read_input_tokens"),
+                    ("cache_creation", "cache_creation_input_tokens"),
+                ):
+                    n = turn_usage[attr]
+                    if n > 0:
+                        agent_tokens_total.labels(
+                            user=username, model=settings.model, kind=kind
+                        ).inc(n)
+                agent_turns_total.labels(user=username, model=settings.model).inc()
+
                 yield sse("done", {})
                 return
 

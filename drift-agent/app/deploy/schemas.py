@@ -28,6 +28,13 @@ class DeviceOut(BaseModel):
 
 class DeviceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
+    # Logical grouping the device will declare on its first check-in.
+    # Required so the operator (the one calling create_device) is locked
+    # into a group they have access to — the install command is then
+    # rendered with this GROUP_ID baked in, preventing a deploy-role user
+    # from inadvertently commissioning a device into a group they can't
+    # then manage.
+    group_id: str = Field(min_length=1, max_length=128)
 
 
 class DeviceCreated(BaseModel):

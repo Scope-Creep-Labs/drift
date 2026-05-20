@@ -379,31 +379,40 @@ async def commission_device(ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
     name = args.get("name")
+    group_id = args.get("group_id")
     if not name:
         return {"error": "name is required"}
+    if not group_id or not isinstance(group_id, str):
+        return {"error": "group_id is required — pick a group the operator has access to (use list_devices to see existing groups)"}
+    # Lock the operator into a group they can manage; admins bypass.
+    if (err := _check_group_access(ctx, group_id)):
+        return err
     async with session() as s:
         if await _device_by_name(s, name):
             return {"error": f"device '{name}' already exists; delete it first or pick a new name"}
         token = security.generate_bootstrap_token()
-        device = Device(name=name, bootstrap_token_hash=security.hash_token(token))
+        device = Device(
+            name=name,
+            bootstrap_token_hash=security.hash_token(token),
+            group_id=group_id,
+        )
         s.add(device)
         await s.commit()
         await s.refresh(device)
-    install_cmd = _render_install_cmd(name, token)
+    install_cmd = _render_install_cmd(name, token, group_id)
     return {
         "device": _device_dict(device),
         "bootstrap_token": token,
         "install_cmd": install_cmd,
         "guidance": (
-            "Paste the install_cmd on the new device as root. Only host dep is Docker — "
-            "the agent runs as a container, so no systemd, no jq, no docker compose "
-            "plugin needed on the host. Works on Linux VMs, Raspberry Pi, Synology NAS, "
-            "anywhere Docker runs. The bootstrap_token is shown ONCE — treat it like a "
-            "password. **REPLACE GROUP_ID=** in the one-liner with a logical grouping "
-            "for this device (e.g. cloud, edge, client-x, prod) — required, used as "
-            "${DRIFT_GROUP_ID} in bundles. Protected service/container names "
-            "(drift-agent, drift-postgres, drift-frontend, drift-deploy-agent) are "
-            "refused by the agent as a bricking safeguard."
+            f"Paste the install_cmd on the new device as root. The group ('{group_id}') "
+            "is baked in — the install command's GROUP_ID is set, so the runner doesn't "
+            "have to pick. Only host dep is Docker — the agent runs as a container, so "
+            "no systemd, no jq, no docker compose plugin needed on the host. Works on "
+            "Linux VMs, Raspberry Pi, Synology NAS, anywhere Docker runs. The "
+            "bootstrap_token is shown ONCE — treat it like a password. Protected "
+            "service/container names (drift-agent, drift-postgres, drift-frontend, "
+            "drift-deploy-agent) are refused by the agent as a bricking safeguard."
         ),
     }
 
@@ -425,14 +434,14 @@ async def delete_device(ctx: ToolContext, args: dict) -> dict:
     return {"deleted": name}
 
 
-def _render_install_cmd(name: str, token: str) -> str:
+def _render_install_cmd(name: str, token: str, group_id: str) -> str:
     # Mirror of routes_admin._render_install_cmd. Bearer-only auth — Caddy
     # is configured to NOT basic_auth /drift/api/deploy/agent/* paths.
     return (
         f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
         f"CP_URL=https://drift.example.com/drift/api/deploy "
-        f"GROUP_ID=CHOOSE_ONE_OF=cloud|edge|client-x|prod sudo -E bash"
+        f"GROUP_ID={group_id} sudo -E bash"
     )
 
 
@@ -1126,12 +1135,20 @@ DEPLOY_TOOLS: list[dict] = [
         "description": (
             "Register a new device and return the one-time bootstrap token + a curl|sh "
             "install command the operator pastes onto the device as root. The token is "
-            "shown ONCE — treat it like a password."
+            "shown ONCE — treat it like a password. group_id is REQUIRED and locked into "
+            "the install command so the runner can't change it; the operator must have "
+            "access to that group (admins can use any group)."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"name": {"type": "string", "description": "Stable, lowercase, hyphenated device name."}},
-            "required": ["name"],
+            "properties": {
+                "name": {"type": "string", "description": "Stable, lowercase, hyphenated device name."},
+                "group_id": {
+                    "type": "string",
+                    "description": "Logical grouping for this device. Common values in this fleet: drift_home, dev-cloud, dev-work. Use one of the operator's allowed groups (use list_devices to see what's in use).",
+                },
+            },
+            "required": ["name", "group_id"],
         },
     },
     {

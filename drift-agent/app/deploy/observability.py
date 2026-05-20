@@ -96,6 +96,23 @@ device_last_seen_seconds = Gauge(
 )
 
 
+# Agent-runtime metrics. These are emitted on /metrics alongside the
+# deploy-state gauges + counters, scraped by reporter-cp's
+# drift-deploy-cp job, and queryable from the chat just like any other
+# metric series. Operators can ask "how many tokens did I burn this
+# month?" instead of relying on a server-side aggregate table.
+agent_tokens_total = Counter(
+    "drift_agent_tokens_total",
+    "Anthropic API token usage by Drift's investigate endpoint, by user/model/kind.",
+    ["user", "model", "kind"],
+)
+agent_turns_total = Counter(
+    "drift_agent_turns_total",
+    "Completed conversation turns (one increment per successful run_agent loop).",
+    ["user", "model"],
+)
+
+
 REFRESH_SECONDS = 30
 _refresh_task: Optional[asyncio.Task] = None
 

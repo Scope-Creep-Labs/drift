@@ -82,20 +82,31 @@ async def create_device(
     user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceCreated:
-    # Note: device.group_id isn't on DeviceCreate (set later by the agent
-    # via check-in). Deploy-role users can commission; admins can too.
+    # group_id is required + must be in the operator's allowed groups
+    # (admins bypass via has_group). This locks the install command to
+    # the operator's scope; without it, a deploy-role user could ship a
+    # GROUP_ID=<other> command and end up with a device they can't manage.
+    _check_group_access(user, body.group_id)
     existing = await db.execute(select(Device).where(Device.name == body.name))
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, f"device '{body.name}' already exists")
     token = security.generate_bootstrap_token()
-    device = Device(name=body.name, bootstrap_token_hash=security.hash_token(token))
+    # Pre-stamp the group_id on the row so the CP-side scoping (list
+    # filters, group queries) recognizes it before the first check-in
+    # rewrites it from the agent's reported env. The first check-in
+    # confirms by writing the same value back.
+    device = Device(
+        name=body.name,
+        bootstrap_token_hash=security.hash_token(token),
+        group_id=body.group_id,
+    )
     db.add(device)
     await db.commit()
     await db.refresh(device)
     return DeviceCreated(
         device=DeviceOut.model_validate(device, from_attributes=True),
         bootstrap_token=token,
-        install_cmd=_render_install_cmd(body.name, token),
+        install_cmd=_render_install_cmd(body.name, token, body.group_id),
     )
 
 
@@ -114,15 +125,17 @@ async def delete_device(
     await db.commit()
 
 
-def _render_install_cmd(name: str, token: str) -> str:
+def _render_install_cmd(name: str, token: str, group_id: str) -> str:
     # /drift/api/deploy/agent/* is intentionally NOT Caddy-basic-auth-gated
     # (the bootstrap token is the device's credential), so no -u flag is
-    # needed here. The token itself is the secret.
+    # needed here. The token itself is the secret. group_id is locked in
+    # at commission time so the runner of this script doesn't get to
+    # change which group the device joins.
     return (
         f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
         f"CP_URL=https://drift.example.com/drift/api/deploy "
-        f"GROUP_ID=CHOOSE_ONE_OF=cloud|edge|client-x|prod sudo -E bash"
+        f"GROUP_ID={group_id} sudo -E bash"
     )
 
 
