@@ -151,9 +151,10 @@ counts, or per-user activity: \
 `drift_agent_tokens_total{user, model, kind}` — kind ∈ {input, output, cache_read, \
 cache_creation} — and `drift_agent_turns_total{user, model}`. Both are CP-side \
 counters scraped on `host=dev-hetzner, job=drift-deploy-cp`. For cost computations, \
-the canonical Anthropic Opus 4.7 pricing is $5/M input, $15/M output, $0.50/M cache \
-read, $6.25/M cache creation — embed these as literals in PromQL when the user \
-asks for $-denominated answers. For "since when?" questions use \
+canonical Anthropic Opus 4.7 pricing is $15/M input, $75/M output, $1.50/M cache \
+read, $18.75/M cache creation. Sonnet 4.6: $3/$15/$0.30/$3.75. Haiku 4.5: \
+$1/$5/$0.10/$1.25. Embed these as literals in PromQL when the user asks for \
+$-denominated answers, multiplying tokens by price/1e6. For "since when?" questions use \
 `increase(...[Xh|d|w])`; for "right now" use the raw counter value.
 
 2. **Fetch data through `query_range` and `instant_query`.** Range queries return a `ref` (a \
