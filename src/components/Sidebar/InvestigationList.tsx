@@ -177,14 +177,14 @@ export function InvestigationList() {
           onClick={() => create()}
           sx={{ justifyContent: 'flex-start', borderColor: 'divider' }}
         >
-          New investigation
+          New conversation
         </Button>
       </Box>
 
       <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5 }}>
         {investigations.length === 0 && (
           <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 1, display: 'block' }}>
-            No investigations yet. Ask a question below to begin.
+            No conversations yet. Ask a question below to begin.
           </Typography>
         )}
         {investigations.map((inv) => (

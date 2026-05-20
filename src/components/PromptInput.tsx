@@ -189,7 +189,7 @@ export function PromptInput() {
       {isStreaming && (
         <Box sx={{ mt: 1, display: 'flex', alignItems: 'center', gap: 1, color: 'text.secondary' }}>
           <CircularProgress size={12} />
-          <Box sx={{ fontSize: '0.78rem' }}>Investigating…</Box>
+          <Box sx={{ fontSize: '0.78rem' }}>Working…</Box>
         </Box>
       )}
       {error && (

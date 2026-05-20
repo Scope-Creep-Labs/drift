@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Box, Button, Chip, Stack, Typography } from '@mui/material'
 import IosShareIcon from '@mui/icons-material/IosShare'
 import CheckBoxOutlinedIcon from '@mui/icons-material/CheckBoxOutlined'
+import { useAuth, type AuthUser } from '../auth/AuthContext'
 import { useActiveInvestigation, useInvestigationStore } from '../state/investigationStore'
 import { Turn } from './Turn'
 import { SUGGESTED_PROMPTS } from '../data/scenarios'
@@ -16,6 +17,8 @@ export function Conversation() {
   const exitSelectMode = useInvestigationStore((s) => s.exitSelectMode)
   const selectAll = useInvestigationStore((s) => s.selectAllTurnsInActive)
   const { submit, isStreaming } = useInvestigate()
+  const auth = useAuth()
+  const user = auth.status === 'authenticated' ? auth.user : undefined
   const bottomRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
@@ -63,7 +66,7 @@ export function Conversation() {
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 4, py: 4 }}>
         {turns.length === 0 && !showStreaming && (
-          <EmptyState onPick={(text) => submit({ prompt: text })} disabled={isStreaming} />
+          <EmptyState onPick={(text) => submit({ prompt: text })} disabled={isStreaming} user={user} />
         )}
 
         {turns.map((t) => (
@@ -133,19 +136,24 @@ export function Conversation() {
 function EmptyState({
   onPick,
   disabled,
+  user,
 }: {
   onPick: (text: string) => void
   disabled: boolean
+  user: AuthUser | undefined
 }) {
   const engine = (import.meta.env.VITE_ENGINE ?? 'mock').toString()
+  const suggestions =
+    engine === 'agent' ? suggestionsForUser(user) : SUGGESTED_PROMPTS.map((p) => p.text)
+  const greeting = user?.username ? `Hi ${user.username} — what can I help with?` : 'What can I help with?'
   return (
     <Box sx={{ maxWidth: 720, mx: 'auto', mt: 6 }}>
       <Typography variant="h5" sx={{ fontWeight: 600, mb: 1 }}>
-        What do you want to investigate?
+        {greeting}
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
         {engine === 'agent'
-          ? 'Drift queries your time-series store, runs analysis, and assembles charts, tables, and recommendations as it works. Ask anything about your hosts, containers, or metrics.'
+          ? 'Ask anything about metrics, logs, alerts, deployments, or the fleet. Drift queries your data, runs analysis, and assembles charts, tables, and recommendations as it works.'
           : 'Drift returns rich responses — markdown, time-series charts, anomaly overlays, tables, timelines — without leaving the prompt loop.'}
       </Typography>
       <Typography
@@ -156,35 +164,57 @@ function EmptyState({
         Try
       </Typography>
       <Stack spacing={1}>
-        {(engine === 'agent' ? AGENT_SUGGESTIONS : SUGGESTED_PROMPTS.map((p) => p.text)).map(
-          (text) => (
-            <Chip
-              key={text}
-              label={text}
-              variant="outlined"
-              disabled={disabled}
-              onClick={() => onPick(text)}
-              sx={{
-                justifyContent: 'flex-start',
-                py: 2.4,
-                borderRadius: 2,
-                borderColor: 'divider',
-                '& .MuiChip-label': { px: 1.4, fontSize: '0.85rem', whiteSpace: 'normal' },
-                cursor: 'pointer',
-                '&:hover': { bgcolor: 'action.hover' },
-              }}
-            />
-          ),
-        )}
+        {suggestions.map((text) => (
+          <Chip
+            key={text}
+            label={text}
+            variant="outlined"
+            disabled={disabled}
+            onClick={() => onPick(text)}
+            sx={{
+              justifyContent: 'flex-start',
+              py: 2.4,
+              borderRadius: 2,
+              borderColor: 'divider',
+              '& .MuiChip-label': { px: 1.4, fontSize: '0.85rem', whiteSpace: 'normal' },
+              cursor: 'pointer',
+              '&:hover': { bgcolor: 'action.hover' },
+            }}
+          />
+        ))}
       </Stack>
     </Box>
   )
 }
 
-const AGENT_SUGGESTIONS = [
-  'Which hosts are reporting metrics right now, and what jobs are scraping?',
-  'Compare CPU usage between my hosts over the last hour. Where is it highest?',
-  'Which Docker containers are using the most memory right now?',
-  'Investigate whether anything looks anomalous on the cloud VM in the last hour.',
-  'Find signals that correlate with high CPU on my Pi.',
+// Role-tiered starter prompts. Each list is the four most-useful entry
+// points for the role's primary surface. Admin/deploy still cover the
+// observability prompts implicitly — once the conversation starts the
+// agent can route to anything they're authorized for.
+const OBSERVE_SUGGESTIONS = [
+  'Which hosts are reporting metrics right now?',
+  'Compare CPU usage between my home devices in the last hour. Where is it highest?',
+  'Show me recent error logs from nvidia-jetson-002.',
+  'Set up an alert for any host with root disk < 10% free.',
 ]
+
+const DEPLOY_SUGGESTIONS = [
+  'Show me current deployment status across the fleet — anything not healthy?',
+  'Which deployments are paused or failing? Group by app.',
+  'Walk me through deploying a new app from a compose file.',
+  'Retry any paused deployments on home-synology-001.',
+]
+
+const ADMIN_SUGGESTIONS = [
+  "What's the state of the fleet right now? Devices, apps, anything failing.",
+  'List users and what device groups they have access to.',
+  'Create a new observe user with access to drift_home.',
+  'Show me deployments that have been failing for the past day.',
+]
+
+function suggestionsForUser(user: AuthUser | undefined): string[] {
+  if (!user) return OBSERVE_SUGGESTIONS
+  if (user.role === 'admin') return ADMIN_SUGGESTIONS
+  if (user.role === 'deploy') return DEPLOY_SUGGESTIONS
+  return OBSERVE_SUGGESTIONS
+}
