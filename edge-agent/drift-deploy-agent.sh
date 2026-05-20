@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.2"
+AGENT_VERSION="0.5.3"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -459,6 +459,67 @@ remove_app() {
 }
 
 
+# Identity facts about the host — interfaces, hostname, arch, os,
+# kernel, docker_version. Collected periodically (FACTS_EVERY_N_TICKS),
+# overwritten on the CP each time. For operational time-series (disk,
+# mem, uptime, CPU) use node-exporter via reporter — these only need
+# slow-changing identity bits.
+FACTS_EVERY_N_TICKS=${FACTS_EVERY_N_TICKS:-20}    # ≈10min at 30s poll
+_FACTS_TICK_COUNTER=0
+_FACTS_CACHED='{}'
+
+collect_facts() {
+  # Interfaces → {ifname: [ip, ip, ...]}. Prefer `ip -j` if present
+  # (most modern Linux); falls back to grep/awk on `ip -4 -o addr`
+  # for stripped-down boxes that lack JSON output support.
+  local interfaces='{}'
+  if ip -j addr show >/dev/null 2>&1; then
+    interfaces=$(ip -j addr show 2>/dev/null | jq '[.[] | {
+      key: .ifname,
+      value: [(.addr_info // [])[] | select(.scope == "global") | .local]
+    }] | from_entries' 2>/dev/null || echo '{}')
+  else
+    interfaces=$(ip -4 -o addr show scope global 2>/dev/null \
+      | awk '{split($4,a,"/"); print $2"|"a[1]}' \
+      | jq -R 'split("|") | {(.[0]): [.[1]]}' \
+      | jq -s 'add // {}' 2>/dev/null || echo '{}')
+  fi
+
+  local host arch kernel os docker_v
+  # /host/etc/hostname is bind-mounted from the host in install.sh; the
+  # in-container `hostname` returns the container ID, which is useless.
+  # Fall back to in-container hostname if the bind mount is missing
+  # (older installs that haven't re-run install.sh yet).
+  if [ -r /host/etc/hostname ]; then
+    host=$(cat /host/etc/hostname 2>/dev/null | tr -d '[:space:]')
+  fi
+  host=${host:-$(hostname 2>/dev/null || echo unknown)}
+  # uname reflects the host kernel since containers share it — these
+  # two are correct in-container without any bind mount.
+  arch=$(uname -m 2>/dev/null || echo unknown)
+  kernel=$(uname -r 2>/dev/null || echo unknown)
+  # Same story for /etc/os-release: in-container it's alpine, so prefer
+  # the host's via the bind mount.
+  if [ -r /host/etc/os-release ]; then
+    os=$(. /host/etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-unknown}}")
+  elif [ -r /etc/os-release ]; then
+    os=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-unknown}}")
+  else
+    os="unknown"
+  fi
+  docker_v=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)
+
+  jq -n \
+    --argjson interfaces "$interfaces" \
+    --arg hostname "$host" \
+    --arg arch "$arch" \
+    --arg kernel "$kernel" \
+    --arg os "$os" \
+    --arg docker_version "$docker_v" \
+    '{interfaces:$interfaces, hostname:$hostname, arch:$arch, kernel:$kernel, os:$os, docker_version:$docker_version}'
+}
+
+
 reconcile_once() {
   local current errors
   current=$(jq -c '.current_revisions // {}' "$STATE_FILE" 2>/dev/null)
@@ -467,10 +528,29 @@ reconcile_once() {
   # agent could leave these empty. Default to '{}' so --argjson is happy.
   current=${current:-'{}'}
   errors=${errors:-'{}'}
+
+  # Recompute identity facts every FACTS_EVERY_N_TICKS (default 20 ≈
+  # 10min at 30s poll). Tick 0 always collects so the CP gets the
+  # facts on the agent's first check-in after start/upgrade. Send
+  # them ONLY on collection ticks so we don't waste bytes 19 times
+  # out of 20 (the CP keeps the prior snapshot when facts is absent).
+  local facts_field=""
+  if [ "$_FACTS_TICK_COUNTER" -eq 0 ]; then
+    _FACTS_CACHED=$(collect_facts 2>/dev/null || echo '{}')
+    facts_field=", facts: \$f"
+  fi
+  _FACTS_TICK_COUNTER=$(( (_FACTS_TICK_COUNTER + 1) % FACTS_EVERY_N_TICKS ))
+
   local body resp
-  body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
-              --argjson c "$current" --argjson e "$errors" \
-    '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}}')
+  if [ -n "$facts_field" ]; then
+    body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
+                --argjson c "$current" --argjson e "$errors" --argjson f "$_FACTS_CACHED" \
+      '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}, facts:$f}')
+  else
+    body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
+                --argjson c "$current" --argjson e "$errors" \
+      '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}}')
+  fi
 
   if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
     log_error "check-in failed (network)"

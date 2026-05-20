@@ -113,6 +113,11 @@ fi
 echo "starting drift-deploy-agent..."
 # Note: $DNS_ARGS is intentionally unquoted so Docker sees each `--dns X`
 # as a separate flag pair.
+#
+# Host /etc/hostname and /etc/os-release are bind-mounted read-only into
+# /host/etc/ so the agent's collect_facts() reports the HOST's identity,
+# not the container's (`hostname` inside a container returns the container
+# ID, /etc/os-release describes alpine instead of the host OS).
 # shellcheck disable=SC2086
 docker run -d \
   --name drift-deploy-agent \
@@ -122,6 +127,8 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
+  -v /etc/hostname:/host/etc/hostname:ro \
+  -v /etc/os-release:/host/etc/os-release:ro \
   drift-deploy-agent:latest
 
 echo

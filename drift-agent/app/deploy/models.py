@@ -42,6 +42,11 @@ class Device(Base):
     # Logical group reported by the agent on check-in. Used for fleet-wide
     # operations like deploy_revision_to_group.
     group_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True, index=True)
+    # Free-form identity facts reported by the agent: interfaces, hostname,
+    # arch, os, kernel, docker_version. Overwritten on check-in (the
+    # latest snapshot wins). For operational metrics (disk, mem, uptime)
+    # use the time-series in VictoriaMetrics via node-exporter.
+    facts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now_utc, nullable=False)
 
 

@@ -123,6 +123,11 @@ async def check_in(
         device.group_id = body.group_id
     if device.status != "online":
         device.status = "online"
+    # Overwrite identity facts when the agent reports them (every ~10min
+    # tick on v0.5.3+). Absent means the agent didn't include facts on
+    # this check-in — keep the prior snapshot.
+    if body.facts is not None:
+        device.facts = body.facts
 
     # Merge per-app facts the agent reports: current revisions + recent
     # apply errors. Either or both may be empty.

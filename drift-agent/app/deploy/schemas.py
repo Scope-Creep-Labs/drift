@@ -23,6 +23,10 @@ class DeviceOut(BaseModel):
     last_seen: Optional[datetime] = None
     agent_version: Optional[str] = None
     group_id: Optional[str] = None
+    # Free-form identity facts. Shape from the agent (v0.5.3+):
+    # interfaces, hostname, arch, os, kernel, docker_version.
+    # Null on pre-v0.5.3 devices until they next check in.
+    facts: Optional[dict] = None
     created_at: datetime
 
 
@@ -142,6 +146,10 @@ class AgentCheckIn(BaseModel):
     # to "failed" and surface last_error in list_deployments.
     apply_errors: dict[str, str] = Field(default_factory=dict)
     health: dict = Field(default_factory=dict)
+    # Identity facts: interfaces / hostname / arch / os / kernel /
+    # docker_version. Reported every ~10min (not every tick — these
+    # change slowly). Absent → CP leaves device.facts unchanged.
+    facts: Optional[dict] = None
 
 
 class DesiredApp(BaseModel):

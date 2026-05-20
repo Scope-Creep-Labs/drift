@@ -44,6 +44,9 @@ def _device_dict(d: Device) -> dict:
         "last_seen": d.last_seen.isoformat() if d.last_seen else None,
         "agent_version": d.agent_version,
         "group_id": d.group_id,
+        # Identity facts reported by the agent every ~10min. Null on
+        # devices that haven't checked in since v0.5.3.
+        "facts": d.facts,
         "created_at": d.created_at.isoformat(),
     }
 
