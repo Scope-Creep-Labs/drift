@@ -21,6 +21,7 @@ import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
 import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
+import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
@@ -110,6 +111,7 @@ export function InvestigationList() {
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
+  const usage = auth.status === 'authenticated' ? auth.usage : null
   const canDeploy = isDeploy(user)
   const isAdminUser = isAdmin(user)
 
@@ -360,10 +362,36 @@ export function InvestigationList() {
               >
                 {user.username}
               </Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.66rem' }}>
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.66rem', display: 'block' }}>
                 {user.role}
                 {user.role !== 'admin' && user.groups.length > 0 && ` · ${user.groups.join(', ')}`}
               </Typography>
+              {usage && usage.turns > 0 && (() => {
+                const tok = totalTokens(usage)
+                const cost = costForUsage(usage)
+                return (
+                  <Tooltip
+                    placement="top"
+                    title={
+                      <Box sx={{ fontSize: '0.7rem', lineHeight: 1.5 }}>
+                        <div>in: {usage.input_tokens.toLocaleString()}</div>
+                        <div>out: {usage.output_tokens.toLocaleString()}</div>
+                        <div>cache read: {usage.cache_read_input_tokens.toLocaleString()}</div>
+                        <div>cache write: {usage.cache_creation_input_tokens.toLocaleString()}</div>
+                        <div>{usage.turns} turn{usage.turns === 1 ? '' : 's'}</div>
+                      </Box>
+                    }
+                  >
+                    <Typography
+                      variant="caption"
+                      color="text.disabled"
+                      sx={{ fontSize: '0.62rem', display: 'block', mt: 0.2, cursor: 'help' }}
+                    >
+                      {tok >= 1000 ? `${(tok / 1000).toFixed(1)}k` : tok} tok · {formatUsd(cost)}
+                    </Typography>
+                  </Tooltip>
+                )
+              })()}
             </>
           )}
         </Box>

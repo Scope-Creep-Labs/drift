@@ -8,13 +8,26 @@ export type AuthUser = {
   groups: string[]
 }
 
+// Mirrors MeUsage. Process-local counters from drift-agent's
+// Prometheus registry — reset on drift-agent restart. For lifetime
+// totals query VM directly from chat (the data flows there via
+// reporter-cp's scrape).
+export type UsageSnapshot = {
+  input_tokens: number
+  output_tokens: number
+  cache_read_input_tokens: number
+  cache_creation_input_tokens: number
+  turns: number
+}
+
 type AuthState =
   | { status: 'loading' }
   | { status: 'unauthenticated' }
-  | { status: 'authenticated'; user: AuthUser }
+  | { status: 'authenticated'; user: AuthUser; usage: UsageSnapshot | null }
 
 type AuthValue = AuthState & {
   refresh: () => Promise<void>
+  refreshUsage: () => Promise<void>
   login: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>
@@ -42,6 +55,16 @@ export function hasGroup(user: AuthUser | undefined, group: string | undefined |
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: 'loading' })
 
+  const fetchUsage = useCallback(async (): Promise<UsageSnapshot | null> => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/me/usage`, { credentials: 'include' })
+      if (!res.ok) return null
+      return (await res.json()) as UsageSnapshot
+    } catch {
+      return null
+    }
+  }, [])
+
   const refresh = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/auth/me`, {
@@ -57,11 +80,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
       const user = (await res.json()) as AuthUser
-      setState({ status: 'authenticated', user })
+      // Pull usage in parallel — it's small, single-request, and means
+      // the sidebar number is up to date the instant the SPA mounts.
+      const usage = await fetchUsage()
+      setState({ status: 'authenticated', user, usage })
     } catch {
       setState({ status: 'unauthenticated' })
     }
-  }, [])
+  }, [fetchUsage])
+
+  const refreshUsage = useCallback(async () => {
+    const usage = await fetchUsage()
+    setState((s) => (s.status === 'authenticated' ? { ...s, usage } : s))
+  }, [fetchUsage])
 
   const login = useCallback(
     async (username: string, password: string) => {
@@ -83,9 +114,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error(msg)
       }
       const user = (await res.json()) as AuthUser
-      setState({ status: 'authenticated', user })
+      const usage = await fetchUsage()
+      setState({ status: 'authenticated', user, usage })
     },
-    [],
+    [fetchUsage],
   )
 
   const logout = useCallback(async () => {
@@ -130,7 +162,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refresh])
 
   return (
-    <AuthCtx.Provider value={{ ...state, refresh, login, logout, changePassword }}>
+    <AuthCtx.Provider
+      value={{ ...state, refresh, refreshUsage, login, logout, changePassword }}
+    >
       {children}
     </AuthCtx.Provider>
   )

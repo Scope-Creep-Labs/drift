@@ -146,6 +146,62 @@ async def me(user: UserContext = Depends(get_current_user)) -> UserOut:
     )
 
 
+class MeUsage(BaseModel):
+    """Token + turn counts for the requesting user, read from the same
+    Prometheus counters that /metrics exposes. Process-local — survives
+    drift-agent restarts only via the metrics scraped into VM. For
+    "lifetime" / "this month" totals, query VM from chat."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_input_tokens: int
+    cache_creation_input_tokens: int
+    turns: int
+
+
+@router.get("/me/usage", response_model=MeUsage)
+async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
+    # Walk the global Prometheus registry once and sum samples for this
+    # user across all (model, kind) combinations. Cheaper than calling
+    # .labels(...) for every combo since the model name isn't known at
+    # request time (could be multiple if the operator's been switching
+    # MODEL between runs).
+    from prometheus_client import REGISTRY
+
+    totals = {
+        "input": 0,
+        "output": 0,
+        "cache_read": 0,
+        "cache_creation": 0,
+    }
+    turns = 0
+    for metric_family in REGISTRY.collect():
+        if metric_family.name == "drift_agent_tokens":
+            for sample in metric_family.samples:
+                if (
+                    sample.name == "drift_agent_tokens_total"
+                    and sample.labels.get("user") == user.username
+                ):
+                    kind = sample.labels.get("kind")
+                    if kind in totals:
+                        totals[kind] += int(sample.value)
+        elif metric_family.name == "drift_agent_turns":
+            for sample in metric_family.samples:
+                if (
+                    sample.name == "drift_agent_turns_total"
+                    and sample.labels.get("user") == user.username
+                ):
+                    turns += int(sample.value)
+
+    return MeUsage(
+        input_tokens=totals["input"],
+        output_tokens=totals["output"],
+        cache_read_input_tokens=totals["cache_read"],
+        cache_creation_input_tokens=totals["cache_creation"],
+        turns=turns,
+    )
+
+
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     body: PasswordChangeRequest,

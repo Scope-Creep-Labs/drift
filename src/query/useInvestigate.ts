@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react'
 import { getAdapter } from '../adapters'
+import { useAuth } from '../auth/AuthContext'
 import { dataRegistry } from '../data/registry'
 import { useInvestigationStore } from '../state/investigationStore'
 import type { PromptRequest } from '../types/prompt'
@@ -12,6 +13,7 @@ export type InvestigateState = {
 export function useInvestigate() {
   const [state, setState] = useState<InvestigateState>({ isStreaming: false, error: null })
   const abortRef = useRef<AbortController | null>(null)
+  const { refreshUsage } = useAuth()
 
   const {
     beginStream,
@@ -75,6 +77,9 @@ export function useInvestigate() {
             case 'done':
               finalizeStream()
               setState({ isStreaming: false, error: null })
+              // Pull the latest server-side counter snapshot now that
+              // this turn's tokens have landed in the registry.
+              refreshUsage().catch(() => {})
               return
             case 'start':
               break
@@ -107,6 +112,7 @@ export function useInvestigate() {
       setStreamError,
       finalizeStream,
       abortStream,
+      refreshUsage,
     ],
   )
 
