@@ -73,6 +73,9 @@ export function AppModal({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadingFiles, setLoadingFiles] = useState(false)
+  // Current revision metadata in edit mode (loaded with files). null in
+  // create mode and during the load. Drives the "Editing v3" subtitle.
+  const [currentVersion, setCurrentVersion] = useState<number | null>(null)
   const filePickerRef = useRef<HTMLInputElement | null>(null)
 
   // Reset state when the modal opens/closes so create after edit doesn't
@@ -86,14 +89,17 @@ export function AppModal({
     if (mode.kind === 'create') {
       setName('')
       setFiles(STARTER_FILES.map((f) => ({ ...f })))
+      setCurrentVersion(null)
     } else {
       // Edit: fetch the latest revision's files into the editor.
       setName(mode.appName)
       setFiles([])
+      setCurrentVersion(null)
       setLoadingFiles(true)
       deployApi
         .getRevision(mode.appName, 'latest')
         .then((rev) => {
+          setCurrentVersion(rev.version)
           const entries = Object.entries(rev.files).map(([n, c]) => ({ name: n, content: c }))
           // Stable ordering: compose first, then alphabetical.
           entries.sort((a, b) => {
@@ -235,7 +241,14 @@ export function AppModal({
     <Dialog open={open} onClose={loading ? undefined : onClose} maxWidth="md" fullWidth>
       <DialogTitle>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
-          <span>{mode.kind === 'create' ? 'New app' : `Edit ${mode.appName}`}</span>
+          <Stack direction="row" alignItems="baseline" spacing={1}>
+            <span>{mode.kind === 'create' ? 'New app' : `Edit ${mode.appName}`}</span>
+            {mode.kind === 'edit' && currentVersion !== null && (
+              <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
+                editing v{currentVersion} · save creates v{currentVersion + 1}
+              </Typography>
+            )}
+          </Stack>
           <IconButton size="small" onClick={onClose} disabled={loading}>
             <CloseIcon fontSize="small" />
           </IconButton>
