@@ -1,0 +1,43 @@
+groups:
+- name: drift-deploy-agent
+  interval: 30s
+  rules:
+
+  # CP-side gauge from drift-agent's /metrics. Updated every 30s by the
+  # observability refresh loop. One series per device with a `device`
+  # label. This is the single source of truth for "is the agent alive"
+  # — independent of any per-device reporter config, independent of
+  # whether vmagent on the remote device is shipping. The CP knows when
+  # each device last checked in; that's all this rule needs.
+  - alert: DriftAgentStale
+    expr: time() - drift_deploy_device_last_seen_seconds > 300
+    for: 1m
+    labels:
+      severity: warning
+      component: drift-deploy
+    annotations:
+      summary: "drift-deploy-agent on {{ $labels.device }} silent for >5m"
+      description: |
+        Device has been silent for {{ $value | humanizeDuration }}.
+        The CP's staleness reaper has flipped this device to status=offline
+        and the UI reflects that. Causes seen in practice: agent DNS broken
+        (corp network without daemon.json --dns), device powered off,
+        Docker daemon stopped, network path to the CP severed.
+        Diagnostics on the device: `docker logs --tail=30 drift-deploy-agent`.
+
+  # Sharper rule — fires faster (2m absent) but only for the case where
+  # the CP scrape itself is broken (we lose visibility into ALL devices,
+  # not just one). Catches "vmagent on dev-hetzner can't scrape the CP"
+  # type outages — distinct from any individual device going stale.
+  - alert: DriftDeployCPMetricsAbsent
+    expr: absent(drift_deploy_device_last_seen_seconds)
+    for: 2m
+    labels:
+      severity: critical
+      component: drift-deploy
+    annotations:
+      summary: "drift-agent's metrics endpoint hasn't been scraped in 2m"
+      description: |
+        No `drift_deploy_device_last_seen_seconds` samples for >2m. The
+        whole fleet's freshness signal is dark. Check that vmagent on
+        dev-hetzner is up and the `drift-deploy-cp` scrape target is healthy.

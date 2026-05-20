@@ -82,6 +82,23 @@ Last-admin protection: the system refuses to demote or delete the only admin so 
 
 ---
 
+## Offline detection
+
+Three layers, all keyed off the same signal — the CP's `device.last_seen` column updated on every successful check-in:
+
+1. **`/api/deploy/devices` status** flips `online → offline` after `DRIFT_DEVICE_STALE_AFTER_SECONDS` of silence (default 300). Runs on the same 30s loop as the observability gauge refresh. As soon as a device starts checking in again, the next successful check-in resets `status=online`.
+
+2. **Prometheus gauge** `drift_deploy_device_last_seen_seconds{device}` exposed at the CP's `/metrics`. Scraped by the `drift-deploy-cp` job in `reporter-cp`'s `prometheus.yml` (deployed only to `dev-hetzner`, where the CP physically runs). One series per device; updated every 30s.
+
+3. **Alert rules** ([examples/alerts/drift-deploy.yml](./examples/alerts/drift-deploy.yml), deployed to vmalert at `/etc/alerts/drift-deploy.yml`):
+
+   - **`DriftAgentStale`** (severity=warning, for=1m) — fires per device when `time() - drift_deploy_device_last_seen_seconds > 300`. Aligned with the CP reaper threshold so the alert and the UI status agree.
+   - **`DriftDeployCPMetricsAbsent`** (severity=critical, for=2m) — fires when the gauge itself is absent. Catches "vmagent can't scrape the CP" / "CP /metrics endpoint stopped responding" — distinct from any individual device going stale.
+
+The three layers are designed to be redundant: the CP reaper means the UI tells the truth even if the alert pipeline is broken; the gauge gives an external observability signal; the alert rules turn that into proactive notifications.
+
+---
+
 ## Edge-agent self-update (v0.5.0+)
 
 The `drift-deploy-agent.sh` script self-updates on every check-in. The control plane includes the current canonical script's 12-char SHA in each `/check-in` response (`agent_target_sha`). When the running agent's SHA differs, the container exits cleanly; Docker's `--restart unless-stopped` brings it back; a bootstrapper at the top of the script fetches `/api/deploy/agent/agent.sh`, `bash -n` checks it, and `exec`s into it. Worst-case downtime per device per update: one poll cycle + container restart, ~20–30s.
