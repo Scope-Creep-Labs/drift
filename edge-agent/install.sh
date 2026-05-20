@@ -45,6 +45,39 @@ done
 DRIFT_DOCKER_DATA_DIR=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)
 echo "detected docker data dir: $DRIFT_DOCKER_DATA_DIR"
 
+# Detect the host's actual upstream DNS resolvers so the container
+# inherits resolvers that work from inside its network namespace. The
+# default Docker behavior is to copy /etc/resolv.conf into the container,
+# but on systemd-resolved boxes (most modern Linux, Jetson included)
+# that file points at 127.0.0.53 — a stub listener that exists only on
+# the host. Containers can't reach it. Result: every DNS lookup from
+# inside the container times out, silently bricking the agent's check-ins
+# while leaving long-lived TCP connections (e.g. vmagent shipping
+# metrics) unaffected. Auto-detecting the real upstreams once at install
+# time and passing them via --dns avoids the daemon.json detour entirely.
+detect_dns() {
+  # Prefer systemd-resolved's "Current DNS Server" line, then fall back
+  # to /etc/resolv.conf with 127.0.0.x stubs filtered out.
+  local servers=""
+  if command -v resolvectl >/dev/null 2>&1; then
+    servers=$(resolvectl status 2>/dev/null \
+      | awk '/^\s*DNS Servers:/ { for (i=3; i<=NF; i++) print $i }' \
+      | tr '\n' ' ')
+  fi
+  if [ -z "$servers" ] && [ -r /etc/resolv.conf ]; then
+    servers=$(awk '/^nameserver/ && $2 !~ /^127\./ {print $2}' /etc/resolv.conf | tr '\n' ' ')
+  fi
+  echo "$servers"
+}
+DNS_SERVERS=$(detect_dns)
+DNS_ARGS=""
+if [ -n "$DNS_SERVERS" ]; then
+  echo "detected host DNS resolvers: $DNS_SERVERS"
+  for d in $DNS_SERVERS; do DNS_ARGS="$DNS_ARGS --dns $d"; done
+else
+  echo "no usable host DNS resolvers detected; relying on Docker defaults" >&2
+fi
+
 mkdir -p /etc/drift-deploy /var/lib/drift-deploy/apps /var/lib/node_exporter/textfile_collector
 
 umask 077
@@ -78,10 +111,14 @@ if docker ps -a --format '{{.Names}}' | grep -qx drift-deploy-agent; then
 fi
 
 echo "starting drift-deploy-agent..."
+# Note: $DNS_ARGS is intentionally unquoted so Docker sees each `--dns X`
+# as a separate flag pair.
+# shellcheck disable=SC2086
 docker run -d \
   --name drift-deploy-agent \
   --restart unless-stopped \
   --env-file /etc/drift-deploy/env \
+  $DNS_ARGS \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \

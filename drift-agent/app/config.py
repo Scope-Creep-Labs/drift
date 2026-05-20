@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # so cookies require HTTPS.
     dev_mode: bool = False
 
+    # Device-freshness reaper: if a device's last_seen is older than this
+    # many seconds AND its status is still "online", flip it to "offline"
+    # on the next observability-refresh tick. 300s = 5 min, ~20 missed
+    # 15-second poll cycles — slack enough to not flap on transient
+    # blips, tight enough to surface real outages within minutes.
+    drift_device_stale_after_seconds: int = 300
+
     @property
     def deploy_enabled(self) -> bool:
         """Deploy subsystem requires both Postgres and B2 storage."""

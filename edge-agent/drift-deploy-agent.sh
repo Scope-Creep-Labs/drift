@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.0"
+AGENT_VERSION="0.5.1"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -388,6 +388,23 @@ remove_app() {
   if ! docker compose -p "$app" down --remove-orphans >/dev/null 2>&1; then
     log_warn "[$app] docker compose down had issues; clearing local state anyway"
   fi
+
+  # Defensive cleanup: sweep any container still labeled drift.app=$app.
+  # Belt-and-suspenders for the rare race where `compose down` returns 0
+  # before the daemon has fully reaped a container (especially likely
+  # when the compose declared an explicit container_name: that overrode
+  # the project-prefix scheme). Restricted to the drift.app label, which
+  # generate_drift_override stamps on every Drift-created container —
+  # so this only touches Drift's own state and never user-managed
+  # containers that might happen to share a name.
+  local stale
+  stale=$(docker ps -a --filter "label=drift.app=$app" -q 2>/dev/null)
+  if [ -n "$stale" ]; then
+    log_info "[$app] removing $(echo "$stale" | wc -l | tr -d ' ') stale container(s) with drift.app=$app"
+    echo "$stale" | xargs -r docker rm -f >/dev/null 2>&1 \
+      || log_warn "[$app] stale-container cleanup hit errors (continuing)"
+  fi
+
   # Drop the app from current_revisions + clear any pending error.
   atomic_jq "$STATE_FILE" --arg a "$app" \
     'del(.current_revisions[$a]) | (.apply_errors //= {}) | del(.apply_errors[$a])' \

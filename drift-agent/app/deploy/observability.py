@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -101,6 +102,31 @@ _refresh_task: Optional[asyncio.Task] = None
 
 async def _refresh_once() -> None:
     async with session() as s:
+        # Staleness reaper: any device that claims to be "online" but
+        # hasn't checked in within DRIFT_DEVICE_STALE_AFTER_SECONDS
+        # gets flipped to "offline". The check-in handler resets to
+        # "online" on the next successful tick, so once the device is
+        # back, status reflects reality without any operator action.
+        from ..config import settings as _settings  # avoid circular at module load
+        stale_threshold = datetime.now(timezone.utc) - timedelta(
+            seconds=_settings.drift_device_stale_after_seconds
+        )
+        stale_rows = await s.execute(
+            select(Device).where(
+                Device.status == "online",
+                Device.last_seen < stale_threshold,
+            )
+        )
+        for device in stale_rows.scalars().all():
+            log.info(
+                "device %s marked offline (last_seen=%s, threshold=%ss)",
+                device.name,
+                device.last_seen,
+                _settings.drift_device_stale_after_seconds,
+            )
+            device.status = "offline"
+        await s.commit()
+
         # Devices by status.
         devices_total.clear()
         rows = await s.execute(select(Device.status, func.count()).group_by(Device.status))
