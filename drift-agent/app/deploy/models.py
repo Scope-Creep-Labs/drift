@@ -178,17 +178,25 @@ class Session(Base):
 
 
 class RegistryCredential(Base):
-    """Per-registry pull credentials. password_encrypted is Fernet
-    ciphertext (see deploy.secrets). One row per registry — operator
-    sets it once via the UI, every device picks it up at its next
-    check-in (as a docker config.json auths entry)."""
+    """Per-registry pull credentials, scoped to a group. password_encrypted
+    is Fernet ciphertext (see deploy.secrets). The same registry can have
+    different creds in different groups (so e.g. group=cloud can use one
+    ghcr.io account and group=client-x can use another); uniqueness is on
+    the (registry, group_id) pair. Only devices whose group_id matches a
+    row's group_id receive it at check-in."""
 
     __tablename__ = "registry_credentials"
+    __table_args__ = (
+        UniqueConstraint("registry", "group_id", name="uq_registry_credentials_registry_group"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     # "ghcr.io", "docker.io", "registry.gitlab.com", … whatever the
-    # auths-key of docker config.json expects. Unique so upsert by name.
-    registry: Mapped[str] = mapped_column(String(256), unique=True, nullable=False)
+    # auths-key of docker config.json expects.
+    registry: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Free-form group identifier. Matches Device.group_id at check-in time;
+    # no FK because groups are pure strings (no group table).
+    group_id: Mapped[str] = mapped_column(String(128), nullable=False)
     username: Mapped[str] = mapped_column(String(256), nullable=False)
     password_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

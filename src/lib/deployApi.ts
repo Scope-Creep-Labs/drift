@@ -30,6 +30,10 @@ export type AppRevisionDetail = AppRevision & {
 export type RegistryCredential = {
   id: string
   registry: string
+  // Group the credential belongs to. Devices only receive creds whose
+  // group_id matches their own at check-in. Same registry can appear
+  // once per group with distinct usernames/passwords.
+  group_id: string
   username: string
   // Password is never returned by the API — write-only.
   created_at: string
@@ -108,12 +112,20 @@ export const deployApi = {
   // compare — operators re-paste the PAT to change anything.
   listRegistryCreds: () => api<RegistryCredential[]>('/registry-creds'),
 
-  upsertRegistryCreds: (registry: string, username: string, password: string) =>
+  upsertRegistryCreds: (
+    registry: string,
+    group_id: string,
+    username: string,
+    password: string,
+  ) =>
     api<RegistryCredential>('/registry-creds', {
       method: 'PUT',
-      body: JSON.stringify({ registry, username, password }),
+      body: JSON.stringify({ registry, group_id, username, password }),
     }),
 
-  deleteRegistryCreds: (registry: string) =>
-    api<void>(`/registry-creds/${encodeURIComponent(registry)}`, { method: 'DELETE' }),
+  deleteRegistryCreds: (registry: string, group_id: string) =>
+    api<void>(
+      `/registry-creds/${encodeURIComponent(registry)}?group_id=${encodeURIComponent(group_id)}`,
+      { method: 'DELETE' },
+    ),
 }

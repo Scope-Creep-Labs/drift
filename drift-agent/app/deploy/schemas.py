@@ -197,6 +197,7 @@ class RegistryCredentialOut(BaseModel):
 
     id: uuid.UUID
     registry: str
+    group_id: str
     username: str
     created_at: datetime
     updated_at: datetime
@@ -205,8 +206,12 @@ class RegistryCredentialOut(BaseModel):
 class RegistryCredentialSet(BaseModel):
     """Upsert payload from the UI. The password is required even on
     'update' because the server never decrypts to compare — every PUT
-    replaces both fields. Operators re-paste the PAT to change anything."""
+    replaces both fields. Operators re-paste the PAT to change anything.
+
+    `group_id` scopes the credential — devices only receive creds whose
+    group_id matches their own. Same registry can appear once per group."""
 
     registry: str = Field(min_length=1, max_length=256)
+    group_id: str = Field(min_length=1, max_length=128)
     username: str = Field(min_length=1, max_length=256)
     password: str = Field(min_length=1, max_length=4096)

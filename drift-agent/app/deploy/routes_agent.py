@@ -252,13 +252,23 @@ async def check_in(
             )
         )
 
-    # Registry credentials: stored encrypted per registry on the CP.
-    # Decrypt + repackage into the docker config.json auths shape so the
-    # agent can drop the value into /root/.docker/config.json verbatim.
-    # Only emitted when the secrets subsystem is configured (key present).
+    # Registry credentials: stored encrypted per (registry, group_id)
+    # on the CP. Each device only sees creds for its own group, so a
+    # client-x device can't read a client-y registry secret even if it
+    # were briefly compromised. Decrypted here, repackaged into the
+    # docker config.json auths shape so the agent drops it into
+    # /root/.docker/config.json verbatim. Skipped when the secrets
+    # subsystem is disabled OR the device hasn't been assigned a group
+    # (older commission flow predating group_id).
     creds_map: dict[str, dict[str, str]] = {}
-    if _settings.secrets_enabled:
-        creds_rows = (await db.execute(select(RegistryCredential))).scalars().all()
+    if _settings.secrets_enabled and device.group_id:
+        creds_rows = (
+            await db.execute(
+                select(RegistryCredential).where(
+                    RegistryCredential.group_id == device.group_id
+                )
+            )
+        ).scalars().all()
         for c in creds_rows:
             try:
                 password = crypto.decrypt(c.password_encrypted)

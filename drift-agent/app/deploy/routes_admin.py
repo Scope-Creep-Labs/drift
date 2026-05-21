@@ -356,12 +356,19 @@ def _require_secrets_enabled() -> None:
 
 @router.get("/registry-creds", response_model=list[RegistryCredentialOut])
 async def list_registry_creds(
-    _user: UserContext = Depends(require_role("admin")),
+    user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[RegistryCredentialOut]:
-    rows = await db.execute(
-        select(RegistryCredential).order_by(RegistryCredential.registry)
+    # Non-admins only see creds for groups they're a member of. Admins
+    # see everything (consistent with how devices/apps are listed).
+    q = select(RegistryCredential).order_by(
+        RegistryCredential.group_id, RegistryCredential.registry
     )
+    if not user.is_admin:
+        if not user.groups:
+            return []
+        q = q.where(RegistryCredential.group_id.in_(user.groups))
+    rows = await db.execute(q)
     return [
         RegistryCredentialOut.model_validate(c, from_attributes=True)
         for c in rows.scalars().all()
@@ -371,19 +378,24 @@ async def list_registry_creds(
 @router.put("/registry-creds", response_model=RegistryCredentialOut)
 async def upsert_registry_creds(
     body: RegistryCredentialSet,
-    _user: UserContext = Depends(require_role("admin")),
+    user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> RegistryCredentialOut:
     _require_secrets_enabled()
+    _check_group_access(user, body.group_id)
     encrypted = crypto.encrypt(body.password)
     existing = (
         await db.execute(
-            select(RegistryCredential).where(RegistryCredential.registry == body.registry)
+            select(RegistryCredential).where(
+                RegistryCredential.registry == body.registry,
+                RegistryCredential.group_id == body.group_id,
+            )
         )
     ).scalar_one_or_none()
     if existing is None:
         row = RegistryCredential(
             registry=body.registry,
+            group_id=body.group_id,
             username=body.username,
             password_encrypted=encrypted,
         )
@@ -398,23 +410,29 @@ async def upsert_registry_creds(
 
 
 # `registry:path` lets the registry name contain slashes (e.g. an
-# index URL like "https://index.docker.io/v1/"). The client should
-# still URL-encode the value to keep the router happy with unusual
-# characters.
+# index URL like "https://index.docker.io/v1/"). `group_id` is a query
+# param rather than another path segment so callers don't have to
+# double-encode it.
 @router.delete("/registry-creds/{registry:path}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_registry_creds(
     registry: str,
-    _user: UserContext = Depends(require_role("admin")),
+    group_id: str,
+    user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
+    _check_group_access(user, group_id)
     row = (
         await db.execute(
-            select(RegistryCredential).where(RegistryCredential.registry == registry)
+            select(RegistryCredential).where(
+                RegistryCredential.registry == registry,
+                RegistryCredential.group_id == group_id,
+            )
         )
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(
-            status.HTTP_404_NOT_FOUND, f"no credentials for registry '{registry}'"
+            status.HTTP_404_NOT_FOUND,
+            f"no credentials for registry '{registry}' in group '{group_id}'",
         )
     await db.delete(row)
     await db.commit()
