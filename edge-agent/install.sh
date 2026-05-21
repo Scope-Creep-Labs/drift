@@ -167,7 +167,17 @@ echo "starting drift-deploy-agent..."
 # the bridge-network fallback path; --network host bypasses it.
 #
 # /etc/os-release is bind-mounted from the host so collect_facts() can
-# read the host's OS string instead of the alpine container's.
+# read the host's OS string. The mount is CONDITIONAL: Synology DSM
+# and a few other non-systemd Linux variants don't ship it at all, and
+# Docker would refuse to start the container if the source path
+# doesn't exist. When absent, the agent falls back to "unknown" for
+# the os facts field, which is acceptable on those hosts.
+OS_RELEASE_MOUNT=""
+if [ -r /etc/os-release ]; then
+  OS_RELEASE_MOUNT="-v /etc/os-release:/host/etc/os-release:ro"
+else
+  echo "note: /etc/os-release not present on this host; agent will report os=unknown"
+fi
 # shellcheck disable=SC2086
 docker run -d \
   --name drift-deploy-agent \
@@ -177,7 +187,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
-  -v /etc/os-release:/host/etc/os-release:ro \
+  $OS_RELEASE_MOUNT \
   drift-deploy-agent:latest
 
 echo
