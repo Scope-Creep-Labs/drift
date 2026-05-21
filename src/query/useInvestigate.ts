@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import { getAdapter } from '../adapters'
 import { useAuth } from '../auth/AuthContext'
 import { dataRegistry } from '../data/registry'
+import { useFleetStore } from '../state/fleetStore'
 import { useInvestigationStore } from '../state/investigationStore'
 import type { PromptRequest } from '../types/prompt'
 
@@ -78,8 +79,11 @@ export function useInvestigate() {
               finalizeStream()
               setState({ isStreaming: false, error: null })
               // Pull the latest server-side counter snapshot now that
-              // this turn's tokens have landed in the registry.
+              // this turn's tokens have landed in the registry, plus
+              // refresh the fleet lists so autocomplete picks up
+              // anything just created/deleted in this turn.
               refreshUsage().catch(() => {})
+              useFleetStore.getState().refresh()
               return
             case 'start':
               break

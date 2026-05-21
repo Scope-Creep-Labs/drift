@@ -63,7 +63,20 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export type Device = {
+  id: string
+  name: string
+  status: string
+  last_seen: string | null
+  agent_version: string | null
+  group_id: string | null
+  facts: Record<string, unknown> | null
+  created_at: string
+}
+
 export const deployApi = {
+  listDevices: () => api<Device[]>('/devices'),
+
   listApps: () => api<App[]>('/apps'),
 
   createApp: (name: string) =>

@@ -1,4 +1,5 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
+import { useFleetStore } from '../state/fleetStore'
 
 // Mirrors UserOut from the backend (drift-agent/app/users/routes.py).
 export type AuthUser = {
@@ -84,6 +85,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // the sidebar number is up to date the instant the SPA mounts.
       const usage = await fetchUsage()
       setState({ status: 'authenticated', user, usage })
+      // Prime the autocomplete data in the background. Failure is
+      // silent — autocomplete just won't suggest anything until the
+      // next refresh trigger.
+      useFleetStore.getState().refresh()
     } catch {
       setState({ status: 'unauthenticated' })
     }
@@ -116,6 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const user = (await res.json()) as AuthUser
       const usage = await fetchUsage()
       setState({ status: 'authenticated', user, usage })
+      useFleetStore.getState().refresh()
     },
     [fetchUsage],
   )
