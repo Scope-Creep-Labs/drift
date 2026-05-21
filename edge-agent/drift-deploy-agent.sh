@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.3"
+AGENT_VERSION="0.5.5"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -289,7 +289,11 @@ write_textfile() {
     # One line per (app, revision) the device currently runs.
     printf '# HELP drift_deploy_agent_current_revision Current revision id per app (constant 1).\n'
     printf '# TYPE drift_deploy_agent_current_revision gauge\n'
-    jq -r '.current_revisions | to_entries[] | "drift_deploy_agent_current_revision{app=\"\(.key)\",revision=\"\(.value)\"} 1"' "$STATE_FILE"
+    # `// {}` guards against state.json being malformed or missing the
+    # key. Without this guard a `null | to_entries[]` crashes the
+    # script under set -euo pipefail, which puts the container into a
+    # restart spiral.
+    jq -r '(.current_revisions // {}) | to_entries[] | "drift_deploy_agent_current_revision{app=\"\(.key)\",revision=\"\(.value)\"} 1"' "$STATE_FILE" 2>/dev/null || true
   } > "$tmp"
   mv "$tmp" "$TEXTFILE_PATH"
 }
@@ -469,21 +473,37 @@ _FACTS_TICK_COUNTER=0
 _FACTS_CACHED='{}'
 
 collect_facts() {
-  # Interfaces → {ifname: [ip, ip, ...]}. Prefer `ip -j` if present
-  # (most modern Linux); falls back to grep/awk on `ip -4 -o addr`
-  # for stripped-down boxes that lack JSON output support.
-  local interfaces='{}'
-  if ip -j addr show >/dev/null 2>&1; then
-    interfaces=$(ip -j addr show 2>/dev/null | jq '[.[] | {
-      key: .ifname,
-      value: [(.addr_info // [])[] | select(.scope == "global") | .local]
-    }] | from_entries' 2>/dev/null || echo '{}')
-  else
-    interfaces=$(ip -4 -o addr show scope global 2>/dev/null \
-      | awk '{split($4,a,"/"); print $2"|"a[1]}' \
-      | jq -R 'split("|") | {(.[0]): [.[1]]}' \
-      | jq -s 'add // {}' 2>/dev/null || echo '{}')
-  fi
+  # Interfaces → {ifname: [ip, ip, ...]}. Parse `ip addr show` text
+  # output rather than `ip -j` so this works on busybox's stripped-down
+  # `ip` (the agent's alpine image ships busybox, not full iproute2).
+  # Pure awk: pick "scope global" inet lines, group by ifname, emit JSON.
+  local interfaces
+  interfaces=$(ip addr show 2>/dev/null | awk '
+    /^[0-9]+: / { gsub(/[:@].*$/, "", $2); iface = $2 }
+    /^[[:space:]]+inet / && /scope global/ {
+      ip = $2; sub("/.*", "", ip)
+      ifaces[iface] = ifaces[iface] (ifaces[iface] ? "," : "") ip
+    }
+    END {
+      printf "{"
+      first = 1
+      for (k in ifaces) {
+        if (!first) printf ","
+        first = 0
+        n = split(ifaces[k], arr, ",")
+        printf "\"%s\":[", k
+        for (i = 1; i <= n; i++) {
+          if (i > 1) printf ","
+          printf "\"%s\"", arr[i]
+        }
+        printf "]"
+      }
+      printf "}"
+    }
+  ' 2>/dev/null)
+  # Belt-and-suspenders: if the awk pipeline produced nothing for any
+  # reason, fall back to an empty object. jq below will accept it.
+  [ -z "$interfaces" ] && interfaces='{}'
 
   local host arch kernel os docker_v
   # /host/etc/hostname is bind-mounted from the host in install.sh; the
@@ -534,9 +554,15 @@ reconcile_once() {
   # facts on the agent's first check-in after start/upgrade. Send
   # them ONLY on collection ticks so we don't waste bytes 19 times
   # out of 20 (the CP keeps the prior snapshot when facts is absent).
+  # Fact collection is wrapped in `|| true` so a malformed `ip addr`
+  # output or any other glitch can never crash the main loop (which
+  # would put us in a docker restart spiral under set -euo pipefail).
   local facts_field=""
   if [ "$_FACTS_TICK_COUNTER" -eq 0 ]; then
-    _FACTS_CACHED=$(collect_facts 2>/dev/null || echo '{}')
+    set +e
+    _FACTS_CACHED=$(collect_facts 2>/dev/null)
+    if [ -z "$_FACTS_CACHED" ]; then _FACTS_CACHED='{}'; fi
+    set -e
     facts_field=", facts: \$f"
   fi
   _FACTS_TICK_COUNTER=$(( (_FACTS_TICK_COUNTER + 1) % FACTS_EVERY_N_TICKS ))
