@@ -372,6 +372,7 @@ export function InvestigationList() {
                     placement="top"
                     title={
                       <Box sx={{ fontSize: '0.7rem', lineHeight: 1.5 }}>
+                        <div style={{ fontWeight: 600, marginBottom: 2 }}>last {usage.window_days}d</div>
                         <div>in: {usage.input_tokens.toLocaleString()}</div>
                         <div>out: {usage.output_tokens.toLocaleString()}</div>
                         <div>cache read: {usage.cache_read_input_tokens.toLocaleString()}</div>

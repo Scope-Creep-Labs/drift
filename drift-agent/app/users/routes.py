@@ -147,51 +147,72 @@ async def me(user: UserContext = Depends(get_current_user)) -> UserOut:
 
 
 class MeUsage(BaseModel):
-    """Token + turn counts for the requesting user, read from the same
-    Prometheus counters that /metrics exposes. Process-local — survives
-    drift-agent restarts only via the metrics scraped into VM. For
-    "lifetime" / "this month" totals, query VM from chat."""
+    """Token + turn counts for the requesting user over the last 30
+    days. Queried from VictoriaMetrics (which holds the time-series
+    drift-agent's in-process counters get scraped into via reporter-cp),
+    so the number is persistent across drift-agent restarts.
+
+    `window_days` makes the time horizon explicit on the wire so the
+    UI's tooltip can label it; 30d strikes a reasonable balance between
+    "recent activity" and "lifetime" for a sidebar gauge."""
 
     input_tokens: int
     output_tokens: int
     cache_read_input_tokens: int
     cache_creation_input_tokens: int
     turns: int
+    window_days: int
 
 
 @router.get("/me/usage", response_model=MeUsage)
 async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
-    # Walk the global Prometheus registry once and sum samples for this
-    # user across all (model, kind) combinations. Cheaper than calling
-    # .labels(...) for every combo since the model name isn't known at
-    # request time (could be multiple if the operator's been switching
-    # MODEL between runs).
-    from prometheus_client import REGISTRY
+    # Querying VM (rather than the in-process registry) gives us
+    # restart-safe cumulative numbers: `increase()` detects counter
+    # resets between samples and adds them back. drift-agent can rebuild
+    # 100 times and this number keeps climbing.
+    from ..config import settings as _settings
+    from ..tools.metrics import make_vm_client
 
-    totals = {
-        "input": 0,
-        "output": 0,
-        "cache_read": 0,
-        "cache_creation": 0,
-    }
+    window_days = 30
+
+    # Default empty result so we don't 500 the sidebar when VM is
+    # unreachable or hasn't scraped any drift_agent_* samples yet.
+    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
     turns = 0
-    for metric_family in REGISTRY.collect():
-        if metric_family.name == "drift_agent_tokens":
-            for sample in metric_family.samples:
-                if (
-                    sample.name == "drift_agent_tokens_total"
-                    and sample.labels.get("user") == user.username
-                ):
-                    kind = sample.labels.get("kind")
-                    if kind in totals:
-                        totals[kind] += int(sample.value)
-        elif metric_family.name == "drift_agent_turns":
-            for sample in metric_family.samples:
-                if (
-                    sample.name == "drift_agent_turns_total"
-                    and sample.labels.get("user") == user.username
-                ):
-                    turns += int(sample.value)
+
+    if _settings.vm_url:
+        vm = make_vm_client()
+        try:
+            # username is server-trusted (comes from the session), so
+            # interpolating it into PromQL is safe — no need to escape.
+            # The Prometheus label value lexer also doesn't permit
+            # arbitrary code injection; worst case is an empty result.
+            tokens_q = (
+                f'sum by (kind) (increase(drift_agent_tokens_total'
+                f'{{user="{user.username}"}}[{window_days}d]))'
+            )
+            turns_q = (
+                f'sum(increase(drift_agent_turns_total'
+                f'{{user="{user.username}"}}[{window_days}d]))'
+            )
+            tokens_resp = await vm.instant_query(tokens_q)
+            for row in tokens_resp.get("data", {}).get("result", []) or []:
+                kind = row.get("metric", {}).get("kind")
+                if kind in totals:
+                    try:
+                        totals[kind] = int(float(row.get("value", [0, "0"])[1]))
+                    except (ValueError, TypeError):
+                        pass
+            turns_resp = await vm.instant_query(turns_q)
+            for row in turns_resp.get("data", {}).get("result", []) or []:
+                try:
+                    turns = int(float(row.get("value", [0, "0"])[1]))
+                except (ValueError, TypeError):
+                    pass
+        except Exception:  # noqa: BLE001 — sidebar shouldn't error if VM blips
+            pass
+        finally:
+            await vm.aclose()
 
     return MeUsage(
         input_tokens=totals["input"],
@@ -199,6 +220,7 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
         cache_read_input_tokens=totals["cache_read"],
         cache_creation_input_tokens=totals["cache_creation"],
         turns=turns,
+        window_days=window_days,
     )
 
 

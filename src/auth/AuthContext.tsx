@@ -9,16 +9,18 @@ export type AuthUser = {
   groups: string[]
 }
 
-// Mirrors MeUsage. Process-local counters from drift-agent's
-// Prometheus registry — reset on drift-agent restart. For lifetime
-// totals query VM directly from chat (the data flows there via
-// reporter-cp's scrape).
+// Mirrors MeUsage. Cumulative over `window_days` (default 30 from the
+// backend), pulled from VictoriaMetrics — survives drift-agent
+// restarts. Backend uses `increase(...)` which detects + accounts for
+// counter resets between scrapes. Up to one reporter-cp scrape
+// interval (~30s) of staleness right after a turn.
 export type UsageSnapshot = {
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
   turns: number
+  window_days: number
 }
 
 type AuthState =
