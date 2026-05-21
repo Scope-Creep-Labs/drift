@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.5"
+AGENT_VERSION="0.5.6"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -578,15 +578,46 @@ reconcile_once() {
       '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}}')
   fi
 
-  if ! resp=$(curl_cp -X POST "$CP_URL/agent/check-in" -d "$body"); then
-    log_error "check-in failed (network)"
+  # Check-in failure modes the operator should be able to distinguish
+  # from the logs without docker exec'ing in:
+  #   - network: DNS failure, host unreachable, TCP refused, TLS error
+  #   - 401/403: bootstrap token mismatch (commonly: device was deleted
+  #     and re-commissioned, but /etc/drift-deploy/env still has the
+  #     old token)
+  #   - 5xx: CP itself is unhealthy (deployment, postgres dead, etc.)
+  #   - non-JSON 200: something upstream is intercepting (Caddy returning
+  #     a basic_auth challenge, nginx returning HTML for some other path)
+  # We capture status code + body separately so each gets a clean log
+  # line and the response is never piped to jq blindly.
+  local _body_file _http_code _curl_rc
+  _body_file=$(mktemp /tmp/drift-checkin-resp.XXXXXX)
+  _http_code=$(curl -sS -o "$_body_file" -w '%{http_code}' \
+                 -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+                 -H "Content-Type: application/json" \
+                 --connect-timeout 5 --max-time 25 \
+                 -X POST "$CP_URL/agent/check-in" -d "$body" 2>/dev/null) \
+    && _curl_rc=0 || _curl_rc=$?
+  resp=$(cat "$_body_file" 2>/dev/null)
+  rm -f "$_body_file"
+
+  if [ "$_curl_rc" -ne 0 ]; then
+    log_error "check-in network failure (curl rc=$_curl_rc, likely DNS or unreachable). Last body: ${resp:0:120}"
     state_inc check_in_error; write_textfile; return
   fi
-  # Caddy / nginx can return non-JSON HTML on 5xx (control plane restart,
-  # auth misconfig). Validate before piping to jq so we get a clear log
-  # line instead of a spew of jq parse errors + `[ -gt 0 ]` bash failures.
+  if [ "$_http_code" = "401" ] || [ "$_http_code" = "403" ]; then
+    local _detail
+    _detail=$(echo "$resp" | jq -r '.detail // "(no detail)"' 2>/dev/null)
+    log_error "check-in HTTP $_http_code (auth): $_detail. Token in /etc/drift-deploy/env may be stale (device deleted + re-commissioned)."
+    state_inc check_in_error; write_textfile; return
+  fi
+  if [ "$_http_code" != "200" ]; then
+    log_error "check-in HTTP $_http_code: ${resp:0:200}"
+    state_inc check_in_error; write_textfile; return
+  fi
+  # 200 — but verify the body is actually parseable JSON before jq
+  # iterates over it. Same Caddy-HTML-on-success case from before.
   if ! echo "$resp" | jq -e '.' >/dev/null 2>&1; then
-    log_warn "check-in returned non-JSON (CP unhealthy?): ${resp:0:160}"
+    log_warn "check-in 200 but non-JSON body (Caddy/nginx interception?): ${resp:0:160}"
     state_inc check_in_error; write_textfile; return
   fi
   state_inc check_in_ok
@@ -631,11 +662,14 @@ reconcile_once() {
   fi
 
   local n
-  n=$(echo "$resp" | jq -r '.desired | length' 2>/dev/null)
+  n=$(echo "$resp" | jq -r '(.desired // []) | length' 2>/dev/null)
   n=${n:-0}
   if [ "$n" -gt 0 ] 2>/dev/null; then log_info "check-in: $n app(s) drift from desired"; fi
 
-  echo "$resp" | jq -c '.desired[]' | while read -r row; do
+  # `// []` ensures iteration is safe even if a future CP build
+  # accidentally drops the field — null piped to `.[]` is the exact
+  # crash mode that put the Pi into a restart spiral on v0.5.4.
+  echo "$resp" | jq -c '(.desired // [])[]' 2>/dev/null | while read -r row; do
     local app action rev url sha
     app=$(echo "$row" | jq -r '.app')
     action=$(echo "$row" | jq -r '.action // "deploy"')
