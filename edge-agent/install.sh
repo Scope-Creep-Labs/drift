@@ -172,11 +172,20 @@ echo "starting drift-deploy-agent..."
 # Docker would refuse to start the container if the source path
 # doesn't exist. When absent, the agent falls back to "unknown" for
 # the os facts field, which is acceptable on those hosts.
-OS_RELEASE_MOUNT=""
-if [ -r /etc/os-release ]; then
-  OS_RELEASE_MOUNT="-v /etc/os-release:/host/etc/os-release:ro"
-else
-  echo "note: /etc/os-release not present on this host; agent will report os=unknown"
+# OS-info source files — bind-mount each conditionally so the agent's
+# collect_facts() can read host-side identity. Each source is tried in
+# the order below until one yields a usable value; missing sources are
+# fine (Synology DSM, for example, doesn't ship /etc/os-release at all).
+OS_INFO_MOUNTS=""
+for src in /etc/os-release /usr/lib/os-release /etc.defaults/VERSION /etc/lsb-release; do
+  if [ -r "$src" ]; then
+    # Use the same path inside the container under /host/ — keep the
+    # source layout identical so collect_facts() can probe each spot.
+    OS_INFO_MOUNTS="$OS_INFO_MOUNTS -v $src:/host${src}:ro"
+  fi
+done
+if [ -z "$OS_INFO_MOUNTS" ]; then
+  echo "note: no recognized OS-info files on this host; agent will report os=unknown"
 fi
 # shellcheck disable=SC2086
 docker run -d \
@@ -187,7 +196,7 @@ docker run -d \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
-  $OS_RELEASE_MOUNT \
+  $OS_INFO_MOUNTS \
   drift-deploy-agent:latest
 
 echo

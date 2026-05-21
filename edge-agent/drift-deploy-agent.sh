@@ -94,7 +94,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.6"
+AGENT_VERSION="0.5.7"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -518,15 +518,39 @@ collect_facts() {
   # two are correct in-container without any bind mount.
   arch=$(uname -m 2>/dev/null || echo unknown)
   kernel=$(uname -r 2>/dev/null || echo unknown)
-  # Same story for /etc/os-release: in-container it's alpine, so prefer
-  # the host's via the bind mount.
-  if [ -r /host/etc/os-release ]; then
-    os=$(. /host/etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-unknown}}")
-  elif [ -r /etc/os-release ]; then
-    os=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-unknown}}")
-  else
-    os="unknown"
+  # Host OS detection — try a sequence of host-bind-mounted source
+  # files, first-hit wins. install.sh decides which ones to mount
+  # based on what's actually present on the host:
+  #   /host/etc/os-release         — systemd-era standard (~95% of distros)
+  #   /host/usr/lib/os-release     — systemd fallback (rare cases where /etc is missing)
+  #   /host/etc.defaults/VERSION   — Synology DSM
+  #   /host/etc/lsb-release        — older Ubuntu / Debian derivatives
+  # If none match, fall through to the in-container /etc/os-release
+  # (alpine) and ultimately "unknown".
+  os=""
+  for src in /host/etc/os-release /host/usr/lib/os-release; do
+    if [ -z "$os" ] && [ -r "$src" ]; then
+      os=$(. "$src" 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-}}")
+    fi
+  done
+  # Synology DSM has /etc.defaults/VERSION in shell-source-able format:
+  # productversion="7.2.1", buildnumber="69057", etc. Wrap as DSM <ver>.
+  if [ -z "$os" ] && [ -r /host/etc.defaults/VERSION ]; then
+    os=$(. /host/etc.defaults/VERSION 2>/dev/null \
+          && [ -n "${productversion:-}" ] \
+          && echo "DSM ${productversion}${buildnumber:+ (build $buildnumber)}")
   fi
+  # /etc/lsb-release uses DISTRIB_DESCRIPTION (or compose from
+  # DISTRIB_ID + DISTRIB_RELEASE). Same source-able shell-vars shape.
+  if [ -z "$os" ] && [ -r /host/etc/lsb-release ]; then
+    os=$(. /host/etc/lsb-release 2>/dev/null \
+          && echo "${DISTRIB_DESCRIPTION:-${DISTRIB_ID}${DISTRIB_RELEASE:+ $DISTRIB_RELEASE}}")
+  fi
+  # Last resort: in-container /etc/os-release (alpine baseline).
+  if [ -z "$os" ] && [ -r /etc/os-release ]; then
+    os=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-${NAME:-unknown}}")
+  fi
+  os=${os:-unknown}
   docker_v=$(docker version --format '{{.Server.Version}}' 2>/dev/null || echo unknown)
 
   jq -n \
