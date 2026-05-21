@@ -123,6 +123,40 @@ fi
 rm -f /tmp/drift-install-probe.json
 echo "✓ token authenticated"
 
+# Detect host CA bundle BEFORE writing the env file so CURL_CA_BUNDLE
+# (if applicable) lands in the same file the container loads via
+# --env-file. The bind-mount that backs this path is added to the
+# docker run invocation further down.
+CA_BUNDLE_HOST=""
+for path in \
+  /etc/ssl/certs/ca-certificates.crt \
+  /etc/pki/tls/certs/ca-bundle.crt \
+  /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+  /etc/ssl/cert.pem \
+; do
+  if [ -r "$path" ]; then
+    CA_BUNDLE_HOST="$path"
+    break
+  fi
+done
+CA_BUNDLE_MOUNT=""
+CURL_CA_BUNDLE_ENVLINE=""
+DRIFT_HOST_CA_BUNDLE_ENVLINE=""
+if [ -n "$CA_BUNDLE_HOST" ]; then
+  echo "detected host CA bundle: $CA_BUNDLE_HOST"
+  echo "  → mounted into agent at /host/etc/ssl/host-ca-bundle.crt (curl trust)"
+  echo "  → exposed to deployed apps as DRIFT_HOST_CA_BUNDLE=$CA_BUNDLE_HOST"
+  CA_BUNDLE_MOUNT="-v $CA_BUNDLE_HOST:/host/etc/ssl/host-ca-bundle.crt:ro"
+  # CURL_CA_BUNDLE uses the IN-CONTAINER path (agent's own curl reads it).
+  # DRIFT_HOST_CA_BUNDLE uses the HOST path (passed through compose so the
+  # docker daemon — which lives on the host — can bind-mount it into app
+  # containers). Different values, same underlying file.
+  CURL_CA_BUNDLE_ENVLINE="CURL_CA_BUNDLE=/host/etc/ssl/host-ca-bundle.crt"
+  DRIFT_HOST_CA_BUNDLE_ENVLINE="DRIFT_HOST_CA_BUNDLE=$CA_BUNDLE_HOST"
+else
+  echo "note: no host CA bundle found at standard locations; agent will rely on container's Mozilla bundle"
+fi
+
 umask 077
 cat > /etc/drift-deploy/env <<EOF
 DEVICE_NAME=$DEVICE_NAME
@@ -131,6 +165,8 @@ CP_URL=$CP_URL
 POLL_INTERVAL=$POLL_INTERVAL
 GROUP_ID=$GROUP_ID
 DRIFT_DOCKER_DATA_DIR=$DRIFT_DOCKER_DATA_DIR
+$CURL_CA_BUNDLE_ENVLINE
+$DRIFT_HOST_CA_BUNDLE_ENVLINE
 EOF
 chmod 600 /etc/drift-deploy/env
 umask 022
@@ -187,6 +223,7 @@ done
 if [ -z "$OS_INFO_MOUNTS" ]; then
   echo "note: no recognized OS-info files on this host; agent will report os=unknown"
 fi
+
 # shellcheck disable=SC2086
 docker run -d \
   --name drift-deploy-agent \
@@ -197,6 +234,7 @@ docker run -d \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
   $OS_INFO_MOUNTS \
+  $CA_BUNDLE_MOUNT \
   drift-deploy-agent:latest
 
 echo

@@ -77,6 +77,10 @@ fi
 DRIFT_DEVICE_NAME="$DEVICE_NAME"
 DRIFT_GROUP_ID="$GROUP_ID"
 # DRIFT_DOCKER_DATA_DIR is already in env; just make it explicit.
+# DRIFT_HOST_CA_BUNDLE is populated by install.sh when the host has a
+# combined CA bundle (Debian/Ubuntu/RHEL/Alpine). Empty on hosts where
+# none was detected — the override generator gates injection on it.
+DRIFT_HOST_CA_BUNDLE="${DRIFT_HOST_CA_BUNDLE:-}"
 
 # Bricking protection. Bundles whose compose file declares any of these
 # as a service name OR via container_name: are rejected with apply_error.
@@ -94,7 +98,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.7"
+AGENT_VERSION="0.5.8"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -169,6 +173,7 @@ generate_drift_override() {
   services=$(cd "$rev_dir" \
     && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
        DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+       DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
        docker compose config --services 2>/dev/null)
   if [ -z "$services" ]; then
     log_warn "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
@@ -184,12 +189,33 @@ generate_drift_override() {
       printf '      DRIFT_DEVICE_NAME: "%s"\n' "$DRIFT_DEVICE_NAME"
       printf '      DRIFT_GROUP_ID: "%s"\n' "$DRIFT_GROUP_ID"
       printf '      DRIFT_APP: "%s"\n' "$app"
+      # Operator-PKI / corp TLS-intercepting proxy trust. SSL_CERT_FILE
+      # and CURL_CA_BUNDLE are honored by curl, openssl, Go's crypto/tls,
+      # Python's ssl module, and most cert-aware tooling — so apps trust
+      # the host's CA roots regardless of the image's distro. The volumes
+      # block below also overrides the standard Debian/Alpine bundle
+      # paths for tools that read those directly.
+      if [ -n "$DRIFT_HOST_CA_BUNDLE" ]; then
+        printf '      SSL_CERT_FILE: "/etc/ssl/certs/ca-certificates.crt"\n'
+        printf '      CURL_CA_BUNDLE: "/etc/ssl/certs/ca-certificates.crt"\n'
+      fi
       printf '    labels:\n'
       printf '      drift.managed: "true"\n'
       printf '      drift.device_name: "%s"\n' "$DRIFT_DEVICE_NAME"
       printf '      drift.group_id: "%s"\n' "$DRIFT_GROUP_ID"
       printf '      drift.app: "%s"\n' "$app"
       printf '      drift.revision: "%s"\n' "$rev_id"
+      # Bind-mount the host's combined CA bundle into BOTH the
+      # Debian/Ubuntu standard path and the Alpine/BSD standard path so
+      # apps that read either one trust the operator's PKI. If a bundle
+      # already declares a volume targeting one of these paths, compose
+      # will refuse to start the service ("duplicate mount point") —
+      # resolve by removing the bundle's redundant mount.
+      if [ -n "$DRIFT_HOST_CA_BUNDLE" ]; then
+        printf '    volumes:\n'
+        printf '      - "%s:/etc/ssl/certs/ca-certificates.crt:ro"\n' "$DRIFT_HOST_CA_BUNDLE"
+        printf '      - "%s:/etc/ssl/cert.pem:ro"\n' "$DRIFT_HOST_CA_BUNDLE"
+      fi
     done <<< "$services"
   } > "$override"
 }
@@ -204,6 +230,7 @@ bundle_touches_protected() {
   names=$(cd "$rev_dir" && \
     DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
     DRIFT_APP="" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+    DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
     docker compose config --format json 2>/dev/null \
     | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
     | sort -u)
@@ -388,6 +415,7 @@ apply_revision() {
   if ! err=$( cd "$rev_dir" \
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
        && docker compose -p "$app" pull 2>&1 \
        && docker compose -p "$app" up -d --remove-orphans 2>&1 ); then
     # err contains the combined output; take the last few lines for the
@@ -404,6 +432,7 @@ apply_revision() {
   bad=$( cd "$rev_dir" \
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
