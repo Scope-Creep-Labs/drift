@@ -67,4 +67,28 @@ class TimelineBlock(BaseModel):
     title: str | None = None
 
 
-RenderBlock = MarkdownBlock | ChartBlock | TableBlock | MetricBlock | TimelineBlock
+class LiveChartTrace(BaseModel):
+    name: str
+    promql: str
+    unit: str | None = None
+
+
+class LiveChartBlock(BaseModel):
+    """Chart that re-runs its PromQL on a timer in the frontend. The
+    block carries no data on emission — the LiveChart component polls
+    /api/query each tick. `chart_key` is the replace-in-place identity:
+    a later emission with the same key updates the existing chart
+    (preserving Plotly zoom/hover) instead of creating a new one."""
+
+    type: Literal["live_chart"] = "live_chart"
+    chart_key: str
+    title: str | None = None
+    traces: list[LiveChartTrace]
+    refresh_ms: int = 5000
+    range_seconds: int = 600
+    step_seconds: int = 15
+
+
+RenderBlock = (
+    MarkdownBlock | ChartBlock | TableBlock | MetricBlock | TimelineBlock | LiveChartBlock
+)

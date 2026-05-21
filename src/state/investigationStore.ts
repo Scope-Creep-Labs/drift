@@ -203,9 +203,41 @@ export const useInvestigationStore = create<Store>()(
       },
 
       addBlock(block) {
-        set((s) =>
-          s.streaming ? { streaming: { ...s.streaming, blocks: [...s.streaming.blocks, block] } } : s,
-        )
+        set((s) => {
+          if (!s.streaming) return s
+          // Live charts replace in place by chart_key. When the agent
+          // mutates an existing live chart (different refresh, more
+          // traces, etc.), we strip any prior live_chart with the same
+          // chart_key from earlier turns in the same investigation
+          // *and* from the current streaming buffer, then append the
+          // fresh one. The LiveChartBlock component identifies by
+          // `live:${chart_key}` as its React key, so the same instance
+          // is reused — preserving Plotly zoom/hover/axes.
+          if (block.type === 'live_chart') {
+            const chartKey = block.chart_key
+            const investigations = s.investigations.map((inv) =>
+              inv.id === s.streaming!.investigationId
+                ? {
+                    ...inv,
+                    turns: inv.turns.map((t) => ({
+                      ...t,
+                      blocks: t.blocks.filter(
+                        (b) => !(b.type === 'live_chart' && b.chart_key === chartKey),
+                      ),
+                    })),
+                  }
+                : inv,
+            )
+            const streamingBlocks = s.streaming.blocks.filter(
+              (b) => !(b.type === 'live_chart' && b.chart_key === chartKey),
+            )
+            return {
+              investigations,
+              streaming: { ...s.streaming, blocks: [...streamingBlocks, block] },
+            }
+          }
+          return { streaming: { ...s.streaming, blocks: [...s.streaming.blocks, block] } }
+        })
       },
 
       setStreamMetadata(metadata) {

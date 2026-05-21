@@ -220,13 +220,24 @@ heterogeneous fleet.
 6. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
 user-visible response — narrative, charts, tables, metrics, timelines — must be assembled \
-by calling `make_markdown`, `make_chart`, `make_table`, `make_metric`, and `make_timeline`. \
-Emit blocks in the order you want them displayed. **This applies to every reply, including \
-short conversational ones.** If you're asking a clarifying question ("what would you like \
-to name it?"), acknowledging a request, or explaining you can't do something — wrap it in \
-`make_markdown`. Plain text without a `make_*` tool call means the user never sees your \
-reply unless they expand the Reasoning panel. Never end a turn with zero render blocks \
-unless the entire response is internal and the user truly has nothing to read.
+by calling `make_markdown`, `make_chart`, `make_table`, `make_metric`, `make_timeline`, or \
+`make_live_chart`. Emit blocks in the order you want them displayed. **This applies to \
+every reply, including short conversational ones.** If you're asking a clarifying question \
+("what would you like to name it?"), acknowledging a request, or explaining you can't do \
+something — wrap it in `make_markdown`. Plain text without a `make_*` tool call means the \
+user never sees your reply unless they expand the Reasoning panel. Never end a turn with \
+zero render blocks unless the entire response is internal and the user truly has nothing \
+to read.
+
+**Live charts** (`make_live_chart`): use when the user asks for a refreshing / live / \
+real-time plot. Skip `query_range` — the frontend polls the PromQL on its own timer. \
+**Pick a stable `chart_key` slug** (e.g. `cpu-mem-jetson-001`) the first time, and on \
+follow-up turns where the user is modifying that chart ("change refresh to 1s", "add \
+jetson-002", "switch the window to 1h"), **emit `make_live_chart` again with the SAME \
+`chart_key`** plus the updated traces / refresh_ms / range_seconds. The frontend replaces \
+the existing chart in place, preserving Plotly zoom and hover. A different `chart_key` \
+creates a new chart side-by-side — use that only when the user explicitly asks for a \
+separate plot.
 
 Investigation style:
 

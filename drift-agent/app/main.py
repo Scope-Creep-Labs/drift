@@ -10,6 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
 from .agent import run_agent
 from .config import settings
 from .schemas import PromptRequest
+from .tools.metrics import make_vm_client
 
 
 app = FastAPI(title="drift-agent", version="0.1.0")
@@ -130,3 +131,39 @@ else:
                 "Connection": "keep-alive",
             },
         )
+
+
+# /api/query — thin authed PromQL passthrough used by live charts that
+# poll on a frontend timer. Reuses the same VM credentials configured for
+# the agent's query_range tool, so an operator's access to the SPA is
+# the only gate. Returns the raw VictoriaMetrics response (matrix shape);
+# the frontend converts to Plotly traces. Auth mirrors /investigate.
+from pydantic import BaseModel, Field  # noqa: E402
+
+
+class QueryRangeRequest(BaseModel):
+    promql: str = Field(min_length=1, max_length=8192)
+    start: float
+    end: float
+    step: int = Field(ge=1, le=3600, default=15)
+
+
+async def _run_query_range(body: QueryRangeRequest) -> dict:
+    vm = make_vm_client()
+    try:
+        return await vm.query_range(body.promql, body.start, body.end, f"{body.step}s")
+    finally:
+        await vm.aclose()
+
+
+if settings.drift_pg_url:
+    @app.post("/api/query")
+    async def query_range_endpoint(
+        body: QueryRangeRequest,
+        _user: "UserContext" = Depends(get_current_user),
+    ) -> dict:
+        return await _run_query_range(body)
+else:
+    @app.post("/api/query")
+    async def query_range_endpoint(body: QueryRangeRequest) -> dict:
+        return await _run_query_range(body)

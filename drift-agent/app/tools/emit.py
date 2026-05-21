@@ -75,6 +75,31 @@ async def make_timeline(ctx: ToolContext, args: dict) -> dict:
     return {"emitted": "timeline", "events": len(args["events"])}
 
 
+async def make_live_chart(ctx: ToolContext, args: dict) -> dict:
+    # No data prefetch — the frontend polls /api/query each tick. The
+    # block carries only the recipe (PromQL per trace + cadence + window).
+    # chart_key gives the frontend its replace-in-place identity so a
+    # later emission with the same key updates the existing Plotly
+    # instance (preserving zoom/hover/axes) instead of remounting.
+    block: dict[str, Any] = {
+        "type": "live_chart",
+        "chart_key": args["chart_key"],
+        "traces": args["traces"],
+        "refresh_ms": int(args.get("refresh_ms") or 5000),
+        "range_seconds": int(args.get("range_seconds") or 600),
+        "step_seconds": int(args.get("step_seconds") or 15),
+    }
+    if args.get("title"):
+        block["title"] = args["title"]
+    await ctx.emit("block", block)
+    return {
+        "emitted": "live_chart",
+        "chart_key": args["chart_key"],
+        "n_traces": len(args["traces"]),
+        "refresh_ms": block["refresh_ms"],
+    }
+
+
 EMIT_TOOLS: list[dict] = [
     {
         "name": "make_markdown",
@@ -168,6 +193,63 @@ EMIT_TOOLS: list[dict] = [
             "required": ["events"],
         },
     },
+    {
+        "name": "make_live_chart",
+        "description": (
+            "Emit a chart that auto-refreshes by re-running its PromQL on a timer. "
+            "Use when the user asks for a 'live', 'refreshing', 'real-time', or 'auto-updating' "
+            "plot. **Pass the same `chart_key` across turns to update the same chart** "
+            "(e.g. 'cpu-mem-jetson-001') — the frontend replaces the existing chart in place, "
+            "preserving zoom/hover. A different `chart_key` creates a new chart. Each trace is "
+            "an independent PromQL query (one series per query result). Do NOT use query_range "
+            "before this tool — the frontend polls the queries directly."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "chart_key": {
+                    "type": "string",
+                    "description": (
+                        "Stable slug identifying this chart across edits. Reuse the slug "
+                        "from the most recent make_live_chart in this conversation when "
+                        "the user is modifying (refresh rate, adding/removing series, "
+                        "changing window)."
+                    ),
+                },
+                "title": {"type": "string"},
+                "traces": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Legend label for this series."},
+                            "promql": {"type": "string", "description": "PromQL expression — one series per matrix row in the response."},
+                            "unit": {"type": "string", "description": "Optional axis unit (%, MB, req/s, ...)."},
+                        },
+                        "required": ["name", "promql"],
+                    },
+                },
+                "refresh_ms": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "default": 5000,
+                    "description": "Poll interval in milliseconds. Floor 1000ms; default 5000ms.",
+                },
+                "range_seconds": {
+                    "type": "integer",
+                    "default": 600,
+                    "description": "How much history each poll renders (default 600s = 10min).",
+                },
+                "step_seconds": {
+                    "type": "integer",
+                    "default": 15,
+                    "description": "PromQL step in seconds (default 15s).",
+                },
+            },
+            "required": ["chart_key", "traces"],
+        },
+    },
 ]
 
 
@@ -177,4 +259,5 @@ EMIT_HANDLERS = {
     "make_chart": make_chart,
     "make_table": make_table,
     "make_timeline": make_timeline,
+    "make_live_chart": make_live_chart,
 }

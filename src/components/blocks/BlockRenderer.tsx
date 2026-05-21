@@ -5,6 +5,7 @@ import { ChartBlock } from './ChartBlock'
 import { TableBlock } from './TableBlock'
 import { MetricBlock } from './MetricBlock'
 import { TimelineBlock } from './TimelineBlock'
+import { LiveChartBlock } from './LiveChartBlock'
 
 function renderOne(block: RenderBlock, contextPrompt: string, key: string) {
   switch (block.type) {
@@ -18,6 +19,12 @@ function renderOne(block: RenderBlock, contextPrompt: string, key: string) {
       return <MetricBlock key={key} block={block} />
     case 'timeline':
       return <TimelineBlock key={key} block={block} />
+    case 'live_chart':
+      // Use the stable chart_key so the React component instance survives
+      // replace-in-place updates from later agent turns. Without this the
+      // Plotly chart would remount on every mutation (refresh rate change,
+      // adding/removing series) and lose zoom/hover.
+      return <LiveChartBlock key={`live:${block.chart_key}`} block={block} />
   }
 }
 
