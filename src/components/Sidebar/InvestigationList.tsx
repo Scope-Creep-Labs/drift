@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Box,
   Button,
@@ -21,11 +21,12 @@ import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
 import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
+import { useFleetStore } from '../../state/fleetStore'
 import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
-import { deployApi, type App, type DeploymentTarget } from '../../lib/deployApi'
+import { type App, type DeploymentTarget } from '../../lib/deployApi'
 
 // Roll-up of a single app's deployment state across the whole fleet.
 // "worst wins" so a single failing target colors the row attention-y.
@@ -102,9 +103,6 @@ export function InvestigationList() {
   // Apps section state. Lives here (not in the global investigation store)
   // because it's narrowly scoped to the sidebar list — and the source of
   // truth is the server.
-  const [apps, setApps] = useState<App[] | null>(null)
-  const [deployments, setDeployments] = useState<DeploymentTarget[]>([])
-  const [appsError, setAppsError] = useState<string | null>(null)
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
@@ -115,33 +113,33 @@ export function InvestigationList() {
   const canDeploy = isDeploy(user)
   const isAdminUser = isAdmin(user)
 
-  const refreshApps = () => {
-    setAppsError(null)
-    // Parallel fetch of apps + deployments — both feed the sidebar's
-    // rollup view (status badges + recency sort).
-    Promise.all([deployApi.listApps(), deployApi.listDeployments()])
-      .then(([a, d]) => {
-        setApps(a)
-        setDeployments(d)
-      })
-      .catch((e: Error) => setAppsError(e.message))
-  }
-
-  useEffect(() => {
-    refreshApps()
-  }, [])
+  // Apps + deployments come from the shared fleetStore so:
+  //  - the sidebar re-renders whenever useInvestigate fires a 'done'
+  //    (i.e. immediately after the chat completes a turn that may
+  //    have deployed/removed/created something)
+  //  - the autocomplete and the sidebar are always in sync
+  //  - manual modal saves still refresh by calling refresh() directly
+  const apps = useFleetStore((s) => s.apps)
+  const deployments = useFleetStore((s) => s.deployments)
+  const fleetLoaded = useFleetStore((s) => s.loaded)
+  const refreshFleet = useFleetStore((s) => s.refresh)
+  // Until the first refresh completes, render the empty/loading state
+  // (matches the prior "apps === null" semantic so the existing JSX
+  // branches keep working).
+  const appsView: App[] | null = fleetLoaded ? apps : null
+  const appsError: string | null = null  // store swallows errors silently
 
   // Derived: filter + sort the apps for display. Recomputed when any of
   // the inputs change. Sort key is "most recent deployment activity"
   // (lastTouchedAt) so apps you're working on float to the top; the
   // filter is case-insensitive substring on the name.
   const visibleApps = useMemo(() => {
-    if (apps === null) return null
-    const rollups = rollupFromDeployments(apps, deployments)
+    if (appsView === null) return null
+    const rollups = rollupFromDeployments(appsView, deployments)
     const needle = filter.trim().toLowerCase()
     const filtered = needle
-      ? apps.filter((a) => a.name.toLowerCase().includes(needle))
-      : apps.slice()
+      ? appsView.filter((a) => a.name.toLowerCase().includes(needle))
+      : appsView.slice()
     filtered.sort((a, b) => {
       const ra = rollups.get(a.id)?.lastTouchedAt ?? 0
       const rb = rollups.get(b.id)?.lastTouchedAt ?? 0
@@ -149,7 +147,7 @@ export function InvestigationList() {
       return a.name.localeCompare(b.name)
     })
     return filtered.map((a) => ({ app: a, rollup: rollups.get(a.id)! }))
-  }, [apps, deployments, filter])
+  }, [appsView, deployments, filter])
 
   return (
     <Stack
@@ -265,7 +263,7 @@ export function InvestigationList() {
           )}
         </Stack>
 
-        {apps !== null && apps.length > 5 && (
+        {appsView !== null && apps.length > 5 && (
           <Box sx={{ px: 1, pb: 0.4 }}>
             <TextField
               value={filter}
@@ -292,7 +290,7 @@ export function InvestigationList() {
               {appsError}
             </Typography>
           )}
-          {apps !== null && apps.length === 0 && !appsError && (
+          {appsView !== null && apps.length === 0 && !appsError && (
             <Typography variant="caption" color="text.secondary" sx={{ px: 2, display: 'block' }}>
               No apps yet.
             </Typography>
@@ -421,7 +419,7 @@ export function InvestigationList() {
           open
           mode={modal}
           onClose={() => setModal(null)}
-          onSaved={refreshApps}
+          onSaved={refreshFleet}
         />
       )}
 
