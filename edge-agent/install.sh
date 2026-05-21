@@ -80,6 +80,49 @@ fi
 
 mkdir -p /etc/drift-deploy /var/lib/drift-deploy/apps /var/lib/node_exporter/textfile_collector
 
+# Probe-before-write: verify the supplied BOOTSTRAP_TOKEN actually
+# authenticates against the CP BEFORE we overwrite /etc/drift-deploy/env.
+# Without this guard, a wrong token (saved from an old install, typo,
+# copy-paste from another device) silently replaces the working token in
+# the env file, and the failure only surfaces hours later when check-ins
+# start 401'ing in a docker restart spiral — exactly the failure mode
+# that bit home-pi4-001 (a token mismatch that took 20+ hours of
+# debugging to localize).
+echo "verifying BOOTSTRAP_TOKEN against $CP_URL..."
+probe_http=$(curl -sS -o /tmp/drift-install-probe.json -w '%{http_code}' \
+  -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+  -H "Content-Type: application/json" \
+  --connect-timeout 5 --max-time 15 \
+  -X POST "$CP_URL/agent/check-in" \
+  -d "{\"device_name\":\"$DEVICE_NAME\",\"agent_version\":\"install-probe\"}" 2>/dev/null) || probe_http="000"
+if [ "$probe_http" != "200" ]; then
+  echo >&2
+  echo "ERROR: BOOTSTRAP_TOKEN does not authenticate for device '$DEVICE_NAME'." >&2
+  echo "       CP returned HTTP $probe_http." >&2
+  if [ "$probe_http" = "401" ] || [ "$probe_http" = "403" ]; then
+    body=$(jq -r '.detail // "(no detail)"' /tmp/drift-install-probe.json 2>/dev/null \
+            || cat /tmp/drift-install-probe.json 2>/dev/null \
+            || echo "(no body)")
+    echo "       Detail: $body" >&2
+    echo "" >&2
+    echo "Likely causes:" >&2
+    echo "  - The token is stale: the device was deleted + re-commissioned" >&2
+    echo "    on the CP and you're using an old install command." >&2
+    echo "  - The DEVICE_NAME doesn't match the row in the CP's devices table." >&2
+    echo "  - The token was edited / truncated since the original commission." >&2
+    echo "" >&2
+    echo "Fix: get a fresh install_cmd from Drift (commission_device or the" >&2
+    echo "admin API) and re-run that command on this host. The existing" >&2
+    echo "env file at /etc/drift-deploy/env is left untouched." >&2
+  elif [ "$probe_http" = "000" ]; then
+    echo "       (network failure — DNS or CP unreachable)" >&2
+  fi
+  rm -f /tmp/drift-install-probe.json
+  exit 1
+fi
+rm -f /tmp/drift-install-probe.json
+echo "✓ token authenticated"
+
 umask 077
 cat > /etc/drift-deploy/env <<EOF
 DEVICE_NAME=$DEVICE_NAME
