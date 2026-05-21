@@ -19,7 +19,7 @@ import KeyIcon from '@mui/icons-material/Key'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
-import { useAuth, isAdmin, isDeploy } from '../../auth/AuthContext'
+import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
 import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
@@ -111,7 +111,6 @@ export function InvestigationList() {
   const user = auth.status === 'authenticated' ? auth.user : undefined
   const usage = auth.status === 'authenticated' ? auth.usage : null
   const canDeploy = isDeploy(user)
-  const isAdminUser = isAdmin(user)
 
   // Apps + deployments come from the shared fleetStore so:
   //  - the sidebar re-renders whenever useInvestigate fires a 'done'
@@ -395,7 +394,7 @@ export function InvestigationList() {
           )}
         </Box>
         <Stack direction="row" spacing={0.2}>
-          {isAdminUser && (
+          {isDeploy(user) && (
             <Tooltip title="Registry credentials">
               <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
                 <KeyIcon sx={{ fontSize: 14 }} />
