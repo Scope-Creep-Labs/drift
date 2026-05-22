@@ -177,6 +177,46 @@ class Session(Base):
     )
 
 
+class TerminalSession(Base):
+    """A web-terminal session against a device. Lifecycle:
+      - pending: row created by POST /devices/{name}/terminal; agent
+        will pick it up on its next check-in.
+      - active:  both browser and agent WS have attached and the CP
+        is relaying bytes.
+      - closed:  either side disconnected cleanly.
+      - expired: no agent attached within `pending_timeout_seconds`
+        OR session exceeded `max_session_seconds`.
+
+    Bytes counters are best-effort — they tick every flush from the
+    relay and let us spot one-way silence in audit without paying for
+    keystroke capture.
+    """
+
+    __tablename__ = "terminal_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("devices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # FK to users.id; users live in a separate model (auth subsystem),
+    # we don't relationship() across to avoid a deploy ↔ auth circular.
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    bytes_browser_to_agent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    bytes_agent_to_browser: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class RegistryCredential(Base):
     """Per-registry pull credentials, scoped to a group. password_encrypted
     is Fernet ciphertext (see deploy.secrets). The same registry can have

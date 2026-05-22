@@ -98,7 +98,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.5.8"
+AGENT_VERSION="0.6.1"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -712,6 +712,40 @@ reconcile_once() {
     # the outer process, which lets Docker's --restart unless-stopped do
     # its job and the bootstrap fetch the new script.
     exit 100
+  fi
+
+  # Pending terminal sessions: the CP creates a row when an operator
+  # clicks "Terminal" in the UI, then surfaces the session id here.
+  # Fork one terminal-bridge.py subprocess per session — it owns its
+  # own WS connection and pty for the duration of the login. Multiple
+  # sessions can run concurrently (independent OS processes, no shared
+  # state). If the script is missing (older image), warn and continue
+  # so an old agent still reconciles bundles normally.
+  if [ -x /opt/drift/terminal-bridge.py ]; then
+    echo "$resp" | jq -r '(.pending_sessions // [])[]' 2>/dev/null | while read -r session_id; do
+      [ -z "$session_id" ] && continue
+      # `/agent/check-in` lives under `$CP_URL` — derive the WS URL by
+      # swapping the scheme and the route. Both http:// and https://
+      # cases are handled so dev (plain http) and prod (https through
+      # Caddy) work identically.
+      local ws_url="${CP_URL/http:\/\//ws:\/\/}"
+      ws_url="${ws_url/https:\/\//wss:\/\/}"
+      ws_url="${ws_url%/}/agent/terminal/ws/${session_id}"
+      log_info "spawning terminal bridge for session $session_id"
+      # Detach: nohup + & so the bridge outlives this reconcile_once
+      # subshell. stdout/stderr go to the agent container's docker logs
+      # via the inherited fds, so bridge failures surface in the same
+      # place as everything else.
+      #
+      # 9>&- CRITICAL: closes the inherited flock fd in the child. Without
+      # this, the bridge keeps the reconcile lock held for the lifetime
+      # of the user's terminal session, which makes the NEXT tick's
+      # `flock -w 10` time out and exit 99 → container restart → bridge
+      # dies → session closes ≈40s after the user logs in (30s poll +
+      # 10s flock wait). Same trap every long-running child inside a
+      # flock'd subshell would walk into; fix it at the spawn site.
+      nohup /opt/drift/terminal-bridge.py "$ws_url" "$BOOTSTRAP_TOKEN" 9>&- >&2 &
+    done
   fi
 
   local n

@@ -80,6 +80,51 @@ fi
 
 mkdir -p /etc/drift-deploy /var/lib/drift-deploy/apps /var/lib/node_exporter/textfile_collector
 
+# ---- drift user (terminal access) ----
+# Provision a host-side `drift` account for remote terminal sessions.
+# Every web-terminal session lands at `/bin/login` and the operator
+# authenticates as this user; member of the host's sudoers group, so
+# `sudo` with this same password gives root. Password is generated
+# fresh per device and printed once at the end of install.
+#
+# Idempotent: if `drift` already exists, leave its password alone — a
+# rerun is for upgrading the agent, not rotating credentials. Operator
+# can manually `passwd drift` on the device to rotate.
+SUDO_GROUP=""
+for g in sudo wheel administrators; do
+  if getent group "$g" >/dev/null 2>&1; then
+    SUDO_GROUP="$g"
+    break
+  fi
+done
+if [ -z "$SUDO_GROUP" ]; then
+  echo "WARNING: no sudoers-style group (sudo/wheel/administrators) found on this host." >&2
+  echo "         drift user will be created without sudo rights — host shell will work" >&2
+  echo "         but privileged commands will fail." >&2
+fi
+
+DRIFT_USER_PASSWORD_GENERATED=""
+if id drift >/dev/null 2>&1; then
+  echo "drift user already exists; leaving password unchanged (use 'passwd drift' to rotate)"
+  # Still ensure they're in the sudoers group on rerun, in case the
+  # operator created the user by hand without that membership.
+  if [ -n "$SUDO_GROUP" ] && ! id -nG drift | tr ' ' '\n' | grep -qx "$SUDO_GROUP"; then
+    usermod -aG "$SUDO_GROUP" drift
+    echo "added drift to '$SUDO_GROUP' group"
+  fi
+else
+  # Generate a 16-char password: /dev/urandom → base64 → strip /+= and
+  # trim. Avoids characters that need shell-escaping when the operator
+  # pastes the value into the web terminal's login prompt.
+  DRIFT_USER_PASSWORD_GENERATED=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
+  useradd -m -s /bin/bash drift
+  echo "drift:$DRIFT_USER_PASSWORD_GENERATED" | chpasswd
+  if [ -n "$SUDO_GROUP" ]; then
+    usermod -aG "$SUDO_GROUP" drift
+  fi
+  echo "created drift user (member of '$SUDO_GROUP')"
+fi
+
 # Probe-before-write: verify the supplied BOOTSTRAP_TOKEN actually
 # authenticates against the CP BEFORE we overwrite /etc/drift-deploy/env.
 # Without this guard, a wrong token (saved from an old install, typo,
@@ -225,10 +270,20 @@ if [ -z "$OS_INFO_MOUNTS" ]; then
 fi
 
 # shellcheck disable=SC2086
+# --pid host + SYS_ADMIN/SYS_PTRACE: let the agent `nsenter -t 1 -m -p -u`
+# into the host's namespaces to spawn `/bin/login` for web-terminal
+# sessions. This is a real privilege bump from the prior minimal flags
+# but doesn't expand the trust boundary: the agent already gets root-
+# equivalent power via /var/run/docker.sock (anyone who can talk to the
+# docker daemon can mount / and become root). Without these, the
+# terminal feature can't reach the host's PAM stack.
 docker run -d \
   --name drift-deploy-agent \
   --restart unless-stopped \
   --network host \
+  --pid host \
+  --cap-add SYS_ADMIN \
+  --cap-add SYS_PTRACE \
   --env-file /etc/drift-deploy/env \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
@@ -243,3 +298,13 @@ docker ps --filter name=drift-deploy-agent --format '{{.Names}}\t{{.Status}}'
 echo
 echo "tail with:  docker logs -f drift-deploy-agent"
 echo "to upgrade: re-run this install.sh; the prior container is replaced in place."
+
+if [ -n "$DRIFT_USER_PASSWORD_GENERATED" ]; then
+  echo
+  echo "===================================================================="
+  echo "  drift user password (save this — shown only once):"
+  echo "    $DRIFT_USER_PASSWORD_GENERATED"
+  echo "  Use this to log in via the Drift web terminal. Rotate with:"
+  echo "    passwd drift  (run on this device as root)"
+  echo "===================================================================="
+fi

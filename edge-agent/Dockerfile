@@ -12,10 +12,13 @@ RUN apk add --no-cache \
         coreutils \
         util-linux \
         docker-cli \
-        docker-cli-compose
+        docker-cli-compose \
+        python3 \
+        py3-websockets
 
 COPY drift-deploy-agent.sh /usr/local/bin/drift-deploy-agent.sh
-RUN chmod +x /usr/local/bin/drift-deploy-agent.sh
+COPY terminal-bridge.py /opt/drift/terminal-bridge.py
+RUN chmod +x /usr/local/bin/drift-deploy-agent.sh /opt/drift/terminal-bridge.py
 
 WORKDIR /var/lib/drift-deploy
 ENTRYPOINT ["/usr/local/bin/drift-deploy-agent.sh"]

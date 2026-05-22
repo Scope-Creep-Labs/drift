@@ -177,6 +177,12 @@ class AgentCheckInResponse(BaseModel):
     # CLI inside the agent container picks it up for compose pull. Empty
     # map = no creds configured; agent leaves the file alone (no clobber).
     registry_credentials: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # Terminal session ids that this device has waiting in the CP's
+    # relay. The agent forks one terminal-bridge.py per id (passes the
+    # bootstrap token through as the WS Authorization header). Empty
+    # list on every check-in until an operator clicks "Terminal" in the
+    # UI, which inserts a `pending` row in terminal_sessions.
+    pending_sessions: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AgentBootstrap(BaseModel):

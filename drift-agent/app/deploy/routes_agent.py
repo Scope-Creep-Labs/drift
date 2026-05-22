@@ -23,7 +23,7 @@ EDGE_AGENT_DIR = Path("/opt/edge-agent")
 
 # Files included in the build context the device pulls to docker build the
 # agent image locally. Tiny — keeps install.sh dependency-free of a registry.
-BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh")
+BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh", "terminal-bridge.py")
 
 
 _agent_target_sha_cache: str | None = None
@@ -280,9 +280,17 @@ async def check_in(
             auth = base64.b64encode(f"{c.username}:{password}".encode()).decode()
             creds_map[c.registry] = {"auth": auth}
 
+    # Pending terminal sessions for this device. Imported lazily to
+    # avoid a circular at module load (terminal.py also imports from
+    # this package). The agent forks one terminal-bridge.py per id.
+    from .terminal import _get_pending_for_device
+
+    pending_sessions = await _get_pending_for_device(db, device.id)
+
     await db.commit()
     return AgentCheckInResponse(
         desired=desired,
         agent_target_sha=_agent_target_sha(),
         registry_credentials=creds_map,
+        pending_sessions=pending_sessions,
     )

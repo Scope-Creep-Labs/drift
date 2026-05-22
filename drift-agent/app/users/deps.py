@@ -105,6 +105,45 @@ async def get_current_user(
     )
 
 
+async def resolve_user_from_cookie(websocket) -> "UserContext | None":
+    """WebSocket-friendly variant of get_current_user. FastAPI's Cookie
+    dep injection doesn't surface during the WS handshake, so we read
+    the cookie out of websocket.cookies ourselves. Returns None on any
+    auth failure (the caller closes with a 4xxx code)."""
+    sid_str = websocket.cookies.get(SESSION_COOKIE)
+    if not sid_str:
+        return None
+    try:
+        sid = uuid.UUID(sid_str)
+    except ValueError:
+        return None
+    async with db_session() as db:
+        sess = await get_session(db, sid)
+        if sess is None:
+            await db.commit()
+            return None
+        user = (
+            await db.execute(select(User).where(User.id == sess.user_id))
+        ).scalar_one_or_none()
+        if user is None:
+            await db.delete(sess)
+            await db.commit()
+            return None
+        groups = {
+            g.group_id
+            for g in (
+                await db.execute(select(UserGroup).where(UserGroup.user_id == user.id))
+            ).scalars().all()
+        }
+        await db.commit()
+        return UserContext(
+            id=user.id,
+            username=user.username,
+            role=user.role,
+            groups=frozenset(groups),
+        )
+
+
 def require_role(min_role: str):
     """Dependency factory: only proceed if the current user has at least
     `min_role`. Returns the same UserContext so endpoints can keep using

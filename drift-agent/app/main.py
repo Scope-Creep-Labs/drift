@@ -39,12 +39,14 @@ if settings.drift_pg_url:
     )
     from .deploy.routes_admin import router as deploy_admin_router
     from .deploy.routes_agent import router as deploy_agent_router
+    from .deploy.terminal import router as terminal_router
     from .users.bootstrap import ensure_bootstrap_admin
     from .users.routes import router as auth_router
 
     app.include_router(auth_router)
     app.include_router(deploy_admin_router)
     app.include_router(deploy_agent_router)
+    app.include_router(terminal_router)
 
     @app.on_event("startup")
     async def _on_startup() -> None:

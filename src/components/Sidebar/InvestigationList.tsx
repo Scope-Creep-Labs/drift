@@ -14,11 +14,13 @@ import {
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import DevicesIcon from '@mui/icons-material/Devices'
 import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import KeyIcon from '@mui/icons-material/Key'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
+import TerminalIcon from '@mui/icons-material/Terminal'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
@@ -26,6 +28,7 @@ import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
+import { TerminalModal } from '../TerminalModal'
 import { type App, type DeploymentTarget } from '../../lib/deployApi'
 
 // Roll-up of a single app's deployment state across the whole fleet.
@@ -106,6 +109,7 @@ export function InvestigationList() {
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [terminalDevice, setTerminalDevice] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -119,9 +123,22 @@ export function InvestigationList() {
   //  - the autocomplete and the sidebar are always in sync
   //  - manual modal saves still refresh by calling refresh() directly
   const apps = useFleetStore((s) => s.apps)
+  const devices = useFleetStore((s) => s.devices)
   const deployments = useFleetStore((s) => s.deployments)
   const fleetLoaded = useFleetStore((s) => s.loaded)
   const refreshFleet = useFleetStore((s) => s.refresh)
+
+  // Devices the current user can open a terminal against. Admins see
+  // everything; deploy users see only devices in their groups. Sorted
+  // alphabetically for a stable list across re-renders.
+  const visibleDevices = useMemo(() => {
+    if (!user) return []
+    const subset =
+      user.role === 'admin'
+        ? devices
+        : devices.filter((d) => d.group_id && user.groups.includes(d.group_id))
+    return [...subset].sort((a, b) => a.name.localeCompare(b.name))
+  }, [devices, user])
   // Until the first refresh completes, render the empty/loading state
   // (matches the prior "apps === null" semantic so the existing JSX
   // branches keep working).
@@ -233,6 +250,72 @@ export function InvestigationList() {
           minHeight: 0,
         }}
       >
+        {canDeploy && visibleDevices.length > 0 && (
+          <>
+            <Stack
+              direction="row"
+              alignItems="center"
+              sx={{ px: 1.6, pt: 1.2, pb: 0.6 }}
+            >
+              <Stack direction="row" alignItems="center" spacing={0.8}>
+                <DevicesIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}
+                >
+                  Devices
+                </Typography>
+              </Stack>
+            </Stack>
+            <List
+              dense
+              sx={{ maxHeight: '22vh', overflowY: 'auto', px: 0.5, py: 0.3 }}
+            >
+              {visibleDevices.map((d) => (
+                <ListItemButton
+                  key={d.id}
+                  onClick={() => setTerminalDevice(d.name)}
+                  sx={{
+                    borderRadius: 1,
+                    mx: 0.5,
+                    py: 0.4,
+                  }}
+                >
+                  <Box
+                    sx={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: '50%',
+                      mr: 1,
+                      flexShrink: 0,
+                      bgcolor:
+                        d.status === 'online'
+                          ? 'success.main'
+                          : d.status === 'offline'
+                            ? 'error.main'
+                            : 'warning.main',
+                    }}
+                  />
+                  <ListItemText
+                    primary={d.name}
+                    secondary={d.group_id ?? undefined}
+                    primaryTypographyProps={{
+                      sx: { fontSize: '0.78rem', fontWeight: 500 },
+                    }}
+                    secondaryTypographyProps={{ sx: { fontSize: '0.66rem' } }}
+                  />
+                  <Tooltip title="Open terminal">
+                    <TerminalIcon
+                      sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
+                    />
+                  </Tooltip>
+                </ListItemButton>
+              ))}
+            </List>
+          </>
+        )}
+
         <Stack
           direction="row"
           alignItems="center"
@@ -425,6 +508,13 @@ export function InvestigationList() {
 
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
+      {terminalDevice && (
+        <TerminalModal
+          open={terminalDevice !== null}
+          deviceName={terminalDevice}
+          onClose={() => setTerminalDevice(null)}
+        />
+      )}
     </Stack>
   )
 }
