@@ -137,27 +137,18 @@ elif command -v useradd >/dev/null 2>&1; then
   fi
   echo "created drift user (shell=$DRIFT_USER_SHELL${SUDO_GROUP:+, group=$SUDO_GROUP})"
   DRIFT_USER_PROVISIONED=1
-elif command -v synouser >/dev/null 2>&1; then
-  # Synology DSM. synouser doesn't accept the shell — DSM users get
-  # /sbin/nologin by default, so we patch /etc/passwd afterwards.
-  # Add to the 'administrators' group via synogroup so the user shows
-  # in DSM's user list as an admin (closest analogue to sudo).
-  DRIFT_USER_PASSWORD_GENERATED=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
-  synouser --add drift "$DRIFT_USER_PASSWORD_GENERATED" "Drift Remote Terminal" 0 "" 0
-  # Repoint the shell — DSM ships busybox ash at /bin/ash typically.
-  if [ "$DRIFT_USER_SHELL" != "/sbin/nologin" ]; then
-    sed -i "s|^\(drift:.*:\)/[^:]*$|\1$DRIFT_USER_SHELL|" /etc/passwd || true
-  fi
-  if command -v synogroup >/dev/null 2>&1 && getent group administrators >/dev/null 2>&1; then
-    # synogroup --memberadd <group> <user> [...]
-    synogroup --memberadd administrators drift 2>/dev/null || true
-  fi
-  echo "created drift user via synouser (shell=$DRIFT_USER_SHELL)"
-  DRIFT_USER_PROVISIONED=1
 else
-  echo "WARNING: no useradd / synouser on this host." >&2
-  echo "         Skipping drift user provisioning — the web terminal will fail" >&2
-  echo "         to log in until a 'drift' user is created manually on this device." >&2
+  # Synology DSM (and anything else without useradd). We tried plumbing
+  # the web terminal through nsenter+/bin/login here, but DSM's
+  # customized login binary exits silently outside a getty context, so
+  # password auth never completes. Rather than ship a feature that
+  # half-works, skip the drift user entirely and tell the operator to
+  # use DSM's native SSH for shell access on this device. Everything
+  # else about the agent (reconcile, fleet metrics, deploys, registry
+  # creds, observability) works fine.
+  echo "WARNING: no useradd on this host (likely Synology DSM)." >&2
+  echo "         Drift web terminal is not supported here — use DSM's own SSH" >&2
+  echo "         for shell access. Skipping drift user creation." >&2
 fi
 
 # Probe-before-write: verify the supplied BOOTSTRAP_TOKEN actually
