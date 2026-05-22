@@ -24,11 +24,11 @@ import TerminalIcon from '@mui/icons-material/Terminal'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
+import { useTerminalUiStore } from '../../state/terminalUiStore'
 import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
-import { TerminalModal } from '../TerminalModal'
 import { type App, type DeploymentTarget } from '../../lib/deployApi'
 
 // Roll-up of a single app's deployment state across the whole fleet.
@@ -109,7 +109,8 @@ export function InvestigationList() {
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
-  const [terminalDevice, setTerminalDevice] = useState<string | null>(null)
+  const [deviceFilter, setDeviceFilter] = useState('')
+  const openTerminal = useTerminalUiStore((s) => s.open)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -131,7 +132,7 @@ export function InvestigationList() {
   // Devices the current user can open a terminal against. Admins see
   // everything; deploy users see only devices in their groups. Sorted
   // alphabetically for a stable list across re-renders.
-  const visibleDevices = useMemo(() => {
+  const accessibleDevices = useMemo(() => {
     if (!user) return []
     const subset =
       user.role === 'admin'
@@ -139,6 +140,20 @@ export function InvestigationList() {
         : devices.filter((d) => d.group_id && user.groups.includes(d.group_id))
     return [...subset].sort((a, b) => a.name.localeCompare(b.name))
   }, [devices, user])
+
+  // Final list with the search filter applied. Substring match on
+  // name + group_id so operators can narrow by either ("pi" or
+  // "edge"). The filter input itself is only shown when the
+  // accessible list is long enough to merit one (>5).
+  const visibleDevices = useMemo(() => {
+    const needle = deviceFilter.trim().toLowerCase()
+    if (!needle) return accessibleDevices
+    return accessibleDevices.filter(
+      (d) =>
+        d.name.toLowerCase().includes(needle) ||
+        (d.group_id ?? '').toLowerCase().includes(needle),
+    )
+  }, [accessibleDevices, deviceFilter])
   // Until the first refresh completes, render the empty/loading state
   // (matches the prior "apps === null" semantic so the existing JSX
   // branches keep working).
@@ -250,7 +265,7 @@ export function InvestigationList() {
           minHeight: 0,
         }}
       >
-        {canDeploy && visibleDevices.length > 0 && (
+        {canDeploy && accessibleDevices.length > 0 && (
           <>
             <Stack
               direction="row"
@@ -268,10 +283,39 @@ export function InvestigationList() {
                 </Typography>
               </Stack>
             </Stack>
+            {accessibleDevices.length > 5 && (
+              <Box sx={{ px: 1, pb: 0.4 }}>
+                <TextField
+                  value={deviceFilter}
+                  onChange={(e) => setDeviceFilter(e.target.value)}
+                  placeholder="Filter devices…"
+                  size="small"
+                  fullWidth
+                  variant="outlined"
+                  InputProps={{
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                      </InputAdornment>
+                    ),
+                    sx: { fontSize: '0.78rem', '& input': { py: 0.6 } },
+                  }}
+                />
+              </Box>
+            )}
             <List
               dense
               sx={{ maxHeight: '22vh', overflowY: 'auto', px: 0.5, py: 0.3 }}
             >
+              {deviceFilter && visibleDevices.length === 0 && (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{ px: 2, display: 'block' }}
+                >
+                  No devices match "{deviceFilter}".
+                </Typography>
+              )}
               {visibleDevices.map((d) => {
                 const online = d.status === 'online'
                 return (
@@ -287,7 +331,7 @@ export function InvestigationList() {
                     {/* span wraps disabled button so the tooltip still fires */}
                     <span>
                       <ListItemButton
-                        onClick={online ? () => setTerminalDevice(d.name) : undefined}
+                        onClick={online ? () => openTerminal(d.name) : undefined}
                         disabled={!online}
                         sx={{
                           borderRadius: 1,
@@ -526,13 +570,8 @@ export function InvestigationList() {
 
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
-      {terminalDevice && (
-        <TerminalModal
-          open={terminalDevice !== null}
-          deviceName={terminalDevice}
-          onClose={() => setTerminalDevice(null)}
-        />
-      )}
+      {/* TerminalModal is mounted at the App root via useTerminalUiStore
+          — any surface (sidebar row, chat action card) can open it. */}
     </Stack>
   )
 }

@@ -51,30 +51,52 @@ def _set_winsize(fd: int, rows: int, cols: int) -> None:
 
 def _spawn_login() -> tuple[int, int]:
     """fork() + pty.openpty() so the child has a controlling tty. The
-    child enters the host's namespaces and execs /bin/login — PAM does
-    the rest. Returns (pid, master_fd)."""
+    child enters the host's namespaces and execs login — PAM does
+    the rest. Returns (pid, master_fd).
+
+    Login binary path varies: Debian/Ubuntu/Alpine ship /bin/login;
+    Synology DSM and some embedded distros put it at /sbin/login or
+    /usr/bin/login. We pass a literal shell snippet through nsenter so
+    the host's PATH and binary layout are honored rather than the
+    container's. As a last resort, fall back to executing the user's
+    shell from /etc/passwd directly — useful when login is missing or
+    PAM is broken — though that path bypasses authentication so it's
+    gated on the host not having /bin/login at all (DSM-style cases)."""
     pid, fd = pty.fork()
     if pid == 0:
-        # Child: enter host namespaces, then exec login. Mount + pid +
-        # uts + ipc cover everything login needs to see the host's
-        # /etc/passwd, /etc/shadow, /proc, and hostname.
-        os.execvp(
-            "nsenter",
-            [
-                "nsenter",
-                "--target", "1",
-                "--mount",
-                "--pid",
-                "--uts",
-                "--ipc",
-                "--",
-                "/bin/login",
-            ],
+        # Run a small inline script inside the host's namespaces. The
+        # script picks the first existing login binary and execs it.
+        # `exec` chains so /bin/login becomes PID-equivalent to nsenter
+        # and inherits the controlling tty allocated by pty.fork().
+        # The diagnostic echo on failure travels back through the pty
+        # to the browser's xterm so the operator sees what went wrong.
+        host_cmd = (
+            'for L in /bin/login /sbin/login /usr/bin/login /usr/sbin/login; do '
+            '  if [ -x "$L" ]; then exec "$L"; fi; '
+            'done; '
+            'echo "drift terminal: no /bin/login on host (looked in '
+            '/bin /sbin /usr/bin /usr/sbin)" >&2; '
+            'echo "kernel: $(uname -sr); shell: $0" >&2; '
+            'sleep 5; '
+            'exit 127'
         )
-        # exec only returns on failure; tell the parent something
-        # specific so the WS surfaces a real error rather than a
-        # confusing EOF.
-        sys.stderr.write("exec nsenter/login failed\n")
+        try:
+            os.execvp(
+                "nsenter",
+                [
+                    "nsenter",
+                    "--target", "1",
+                    "--mount",
+                    "--pid",
+                    "--uts",
+                    "--ipc",
+                    "--",
+                    "/bin/sh", "-c", host_cmd,
+                ],
+            )
+        except OSError as e:
+            sys.stderr.write(f"drift terminal: nsenter exec failed: {e}\r\n")
+        sys.stderr.write("drift terminal: spawn fell through (nsenter or shell missing)\r\n")
         os._exit(127)
     return pid, fd
 
@@ -179,10 +201,31 @@ async def run(ws_url: str, bearer: str) -> None:
                     os.kill(pid, 15)
                 except ProcessLookupError:
                     pass
+                sys.stderr.write("terminal-bridge: reaping child\r\n")
                 try:
-                    os.waitpid(pid, 0)
-                except ChildProcessError:
-                    pass
+                    _wpid, status = os.waitpid(pid, 0)
+                    if os.WIFEXITED(status):
+                        rc = os.WEXITSTATUS(status)
+                        sys.stderr.write(f"terminal-bridge: child exited rc={rc}\r\n")
+                        if rc == 127:
+                            sys.stderr.write(
+                                "  → host /bin/login not found, or nsenter "
+                                "denied. Check host login path + caps.\r\n"
+                            )
+                        elif rc == 1:
+                            sys.stderr.write(
+                                "  → nsenter or login returned generic error "
+                                "(check host PAM config or namespace support).\r\n"
+                            )
+                    elif os.WIFSIGNALED(status):
+                        sys.stderr.write(
+                            f"terminal-bridge: child killed by signal "
+                            f"{os.WTERMSIG(status)}\r\n"
+                        )
+                except ChildProcessError as e:
+                    sys.stderr.write(
+                        f"terminal-bridge: waitpid failed: {e}\r\n"
+                    )
     except Exception as e:  # noqa: BLE001 — log to stderr so docker logs surfaces it
         sys.stderr.write(f"terminal-bridge: {e}\n")
         sys.exit(1)

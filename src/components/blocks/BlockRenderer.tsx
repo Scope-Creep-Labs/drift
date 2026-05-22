@@ -6,6 +6,7 @@ import { TableBlock } from './TableBlock'
 import { MetricBlock } from './MetricBlock'
 import { TimelineBlock } from './TimelineBlock'
 import { LiveChartBlock } from './LiveChartBlock'
+import { TerminalActionBlock } from './TerminalActionBlock'
 
 function renderOne(block: RenderBlock, contextPrompt: string, key: string) {
   switch (block.type) {
@@ -25,6 +26,8 @@ function renderOne(block: RenderBlock, contextPrompt: string, key: string) {
       // Plotly chart would remount on every mutation (refresh rate change,
       // adding/removing series) and lose zoom/hover.
       return <LiveChartBlock key={`live:${block.chart_key}`} block={block} />
+    case 'terminal_action':
+      return <TerminalActionBlock key={key} block={block} />
   }
 }
 

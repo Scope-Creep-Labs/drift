@@ -104,25 +104,60 @@ if [ -z "$SUDO_GROUP" ]; then
 fi
 
 DRIFT_USER_PASSWORD_GENERATED=""
+DRIFT_USER_PROVISIONED=0
+# Helper: pick the best-available shell. DSM only ships ash/sh; standard
+# Linux distros have bash. Used both for new users and for fixing
+# /sbin/nologin defaults on DSM.
+_pick_shell() {
+  for s in /bin/bash /bin/ash /bin/sh; do
+    if [ -x "$s" ]; then echo "$s"; return; fi
+  done
+  echo /bin/sh
+}
+DRIFT_USER_SHELL=$(_pick_shell)
+
 if id drift >/dev/null 2>&1; then
   echo "drift user already exists; leaving password unchanged (use 'passwd drift' to rotate)"
-  # Still ensure they're in the sudoers group on rerun, in case the
-  # operator created the user by hand without that membership.
-  if [ -n "$SUDO_GROUP" ] && ! id -nG drift | tr ' ' '\n' | grep -qx "$SUDO_GROUP"; then
-    usermod -aG "$SUDO_GROUP" drift
-    echo "added drift to '$SUDO_GROUP' group"
+  DRIFT_USER_PROVISIONED=1
+  # Best-effort sudoers group membership. usermod may not exist on
+  # Synology — skip silently rather than aborting.
+  if [ -n "$SUDO_GROUP" ] \
+     && command -v usermod >/dev/null 2>&1 \
+     && ! id -nG drift | tr ' ' '\n' | grep -qx "$SUDO_GROUP"; then
+    usermod -aG "$SUDO_GROUP" drift && echo "added drift to '$SUDO_GROUP' group" || true
   fi
-else
-  # Generate a 16-char password: /dev/urandom → base64 → strip /+= and
-  # trim. Avoids characters that need shell-escaping when the operator
-  # pastes the value into the web terminal's login prompt.
+elif command -v useradd >/dev/null 2>&1; then
+  # Standard Linux. /dev/urandom → base64 → strip /+= → 16 chars; avoids
+  # shell-escape pitfalls when the operator pastes the value at login.
   DRIFT_USER_PASSWORD_GENERATED=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
-  useradd -m -s /bin/bash drift
+  useradd -m -s "$DRIFT_USER_SHELL" drift
   echo "drift:$DRIFT_USER_PASSWORD_GENERATED" | chpasswd
-  if [ -n "$SUDO_GROUP" ]; then
-    usermod -aG "$SUDO_GROUP" drift
+  if [ -n "$SUDO_GROUP" ] && command -v usermod >/dev/null 2>&1; then
+    usermod -aG "$SUDO_GROUP" drift || true
   fi
-  echo "created drift user (member of '$SUDO_GROUP')"
+  echo "created drift user (shell=$DRIFT_USER_SHELL${SUDO_GROUP:+, group=$SUDO_GROUP})"
+  DRIFT_USER_PROVISIONED=1
+elif command -v synouser >/dev/null 2>&1; then
+  # Synology DSM. synouser doesn't accept the shell — DSM users get
+  # /sbin/nologin by default, so we patch /etc/passwd afterwards.
+  # Add to the 'administrators' group via synogroup so the user shows
+  # in DSM's user list as an admin (closest analogue to sudo).
+  DRIFT_USER_PASSWORD_GENERATED=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 16)
+  synouser --add drift "$DRIFT_USER_PASSWORD_GENERATED" "Drift Remote Terminal" 0 "" 0
+  # Repoint the shell — DSM ships busybox ash at /bin/ash typically.
+  if [ "$DRIFT_USER_SHELL" != "/sbin/nologin" ]; then
+    sed -i "s|^\(drift:.*:\)/[^:]*$|\1$DRIFT_USER_SHELL|" /etc/passwd || true
+  fi
+  if command -v synogroup >/dev/null 2>&1 && getent group administrators >/dev/null 2>&1; then
+    # synogroup --memberadd <group> <user> [...]
+    synogroup --memberadd administrators drift 2>/dev/null || true
+  fi
+  echo "created drift user via synouser (shell=$DRIFT_USER_SHELL)"
+  DRIFT_USER_PROVISIONED=1
+else
+  echo "WARNING: no useradd / synouser on this host." >&2
+  echo "         Skipping drift user provisioning — the web terminal will fail" >&2
+  echo "         to log in until a 'drift' user is created manually on this device." >&2
 fi
 
 # Probe-before-write: verify the supplied BOOTSTRAP_TOKEN actually

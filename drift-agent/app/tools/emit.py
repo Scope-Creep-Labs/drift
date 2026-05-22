@@ -75,6 +75,21 @@ async def make_timeline(ctx: ToolContext, args: dict) -> dict:
     return {"emitted": "timeline", "events": len(args["events"])}
 
 
+async def make_terminal_action(ctx: ToolContext, args: dict) -> dict:
+    # No-op against the DB — the actual session is created when the user
+    # clicks the card and the frontend POSTs /devices/{name}/terminal.
+    # Keeps abandoned "open terminal" suggestions from leaving orphaned
+    # `pending` rows in terminal_sessions.
+    block: dict[str, Any] = {
+        "type": "terminal_action",
+        "device_name": args["device_name"],
+    }
+    if args.get("reason"):
+        block["reason"] = args["reason"]
+    await ctx.emit("block", block)
+    return {"emitted": "terminal_action", "device_name": args["device_name"]}
+
+
 async def make_live_chart(ctx: ToolContext, args: dict) -> dict:
     # No data prefetch — the frontend polls /api/query each tick. The
     # block carries only the recipe (PromQL per trace + cadence + window).
@@ -194,6 +209,36 @@ EMIT_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "make_terminal_action",
+        "description": (
+            "Emit a clickable card offering to open a remote SSH-style terminal "
+            "to a device. Use when the user asks to 'open a terminal', 'ssh into', "
+            "'shell into', 'login to' a device, or when investigating an issue "
+            "would benefit from interactive host access. The user clicks the card "
+            "to open the terminal; do not assume it will open automatically. The "
+            "user must be a deploy-role member of the device's group; the card "
+            "still renders for users without access (frontend gates the click)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "device_name": {
+                    "type": "string",
+                    "description": "Name of the device as it appears in `list_devices`.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "One-line context shown under the device name on the card "
+                        "(e.g. 'docker daemon not responding — needs investigation'). "
+                        "Optional; helpful when the agent is recommending the terminal."
+                    ),
+                },
+            },
+            "required": ["device_name"],
+        },
+    },
+    {
         "name": "make_live_chart",
         "description": (
             "Emit a chart that auto-refreshes by re-running its PromQL on a timer. "
@@ -260,4 +305,5 @@ EMIT_HANDLERS = {
     "make_table": make_table,
     "make_timeline": make_timeline,
     "make_live_chart": make_live_chart,
+    "make_terminal_action": make_terminal_action,
 }

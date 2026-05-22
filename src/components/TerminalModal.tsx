@@ -97,7 +97,15 @@ export function TerminalModal({
         term.open(containerRef.current)
         // requestAnimationFrame — the container needs a layout pass
         // before fit can measure cols/rows correctly.
-        requestAnimationFrame(() => fit.fit())
+        requestAnimationFrame(() => {
+          fit.fit()
+          // Focus inside the rAF so the dialog has finished its open
+          // transition; MUI moves focus into the dialog on mount, so
+          // calling focus() synchronously would lose to that. xterm's
+          // focus() lands keystrokes in the terminal and starts the
+          // cursor blink.
+          term.focus()
+        })
       }
 
       setPhase('waiting')
@@ -222,6 +230,12 @@ export function TerminalModal({
       onClose={onClose}
       maxWidth="lg"
       fullWidth
+      // disableAutoFocus: stop MUI from focusing the Dialog root after
+      // mount — we want focus on the xterm canvas so keystrokes go to
+      // the remote shell and the cursor blinks without an extra click.
+      // disableRestoreFocus: cosmetic; avoids a focus jump on close.
+      disableAutoFocus
+      disableRestoreFocus
       PaperProps={{ sx: { bgcolor: '#0b0b0d' } }}
     >
       <DialogTitle sx={{ pr: 1 }}>

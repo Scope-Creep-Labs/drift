@@ -60,6 +60,12 @@ export type LiveChartBlock = {
   step_seconds: number
 }
 
+export type TerminalActionBlock = {
+  type: 'terminal_action'
+  device_name: string
+  reason?: string
+}
+
 export type RenderBlock =
   | MarkdownBlock
   | ChartBlock
@@ -67,3 +73,4 @@ export type RenderBlock =
   | MetricBlock
   | TimelineBlock
   | LiveChartBlock
+  | TerminalActionBlock

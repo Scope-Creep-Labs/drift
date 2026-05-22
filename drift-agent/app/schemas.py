@@ -89,6 +89,25 @@ class LiveChartBlock(BaseModel):
     step_seconds: int = 15
 
 
+class TerminalActionBlock(BaseModel):
+    """A clickable card the agent emits when it wants the user to open
+    a remote terminal to a device. The card stays in the conversation
+    history; clicking it opens the existing terminal modal (same flow
+    as the sidebar device row). The agent does NOT pre-create a session
+    — that happens when the user clicks, so abandoned suggestions
+    don't accumulate orphaned `pending` rows."""
+
+    type: Literal["terminal_action"] = "terminal_action"
+    device_name: str
+    reason: str | None = None
+
+
 RenderBlock = (
-    MarkdownBlock | ChartBlock | TableBlock | MetricBlock | TimelineBlock | LiveChartBlock
+    MarkdownBlock
+    | ChartBlock
+    | TableBlock
+    | MetricBlock
+    | TimelineBlock
+    | LiveChartBlock
+    | TerminalActionBlock
 )

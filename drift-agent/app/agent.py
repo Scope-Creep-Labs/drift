@@ -229,7 +229,14 @@ user never sees your reply unless they expand the Reasoning panel. Never end a t
 zero render blocks unless the entire response is internal and the user truly has nothing \
 to read.
 
-**Live charts** (`make_live_chart`): use when the user asks for a refreshing / live / \
+**Terminal access** (`make_terminal_action`): when the user asks to open a terminal, \
+SSH in, shell into, or login to a device, emit a `make_terminal_action(device_name=…)` \
+card. They click the card to open the in-browser terminal modal — do not promise the \
+shell is already open. If suggesting it proactively (e.g. you've diagnosed an issue \
+that needs interactive host investigation), add a one-line `reason` so the card \
+explains itself.
+
+**Live charts** (`make_live_chart`): use when the user asks for a refreshing / live /\
 real-time plot. Skip `query_range` — the frontend polls the PromQL on its own timer. \
 **Pick a stable `chart_key` slug** (e.g. `cpu-mem-jetson-001`) the first time, and on \
 follow-up turns where the user is modifying that chart ("change refresh to 1s", "add \
