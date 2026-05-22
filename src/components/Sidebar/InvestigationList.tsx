@@ -272,46 +272,64 @@ export function InvestigationList() {
               dense
               sx={{ maxHeight: '22vh', overflowY: 'auto', px: 0.5, py: 0.3 }}
             >
-              {visibleDevices.map((d) => (
-                <ListItemButton
-                  key={d.id}
-                  onClick={() => setTerminalDevice(d.name)}
-                  sx={{
-                    borderRadius: 1,
-                    mx: 0.5,
-                    py: 0.4,
-                  }}
-                >
-                  <Box
-                    sx={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: '50%',
-                      mr: 1,
-                      flexShrink: 0,
-                      bgcolor:
-                        d.status === 'online'
-                          ? 'success.main'
-                          : d.status === 'offline'
-                            ? 'error.main'
-                            : 'warning.main',
-                    }}
-                  />
-                  <ListItemText
-                    primary={d.name}
-                    secondary={d.group_id ?? undefined}
-                    primaryTypographyProps={{
-                      sx: { fontSize: '0.78rem', fontWeight: 500 },
-                    }}
-                    secondaryTypographyProps={{ sx: { fontSize: '0.66rem' } }}
-                  />
-                  <Tooltip title="Open terminal">
-                    <TerminalIcon
-                      sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
-                    />
+              {visibleDevices.map((d) => {
+                const online = d.status === 'online'
+                return (
+                  <Tooltip
+                    key={d.id}
+                    title={
+                      online
+                        ? 'Open terminal'
+                        : `${d.status} — terminal disabled until next check-in`
+                    }
+                    placement="right"
+                  >
+                    {/* span wraps disabled button so the tooltip still fires */}
+                    <span>
+                      <ListItemButton
+                        onClick={online ? () => setTerminalDevice(d.name) : undefined}
+                        disabled={!online}
+                        sx={{
+                          borderRadius: 1,
+                          mx: 0.5,
+                          py: 0.4,
+                          // Disabled MUI buttons drop opacity globally; pin a
+                          // softer fade so the device name + status dot stay
+                          // legible (an offline device should still be
+                          // identifiable in the list).
+                          '&.Mui-disabled': { opacity: 0.55 },
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            width: 6,
+                            height: 6,
+                            borderRadius: '50%',
+                            mr: 1,
+                            flexShrink: 0,
+                            bgcolor: online
+                              ? 'success.main'
+                              : d.status === 'offline'
+                                ? 'error.main'
+                                : 'warning.main',
+                          }}
+                        />
+                        <ListItemText
+                          primary={d.name}
+                          secondary={d.group_id ?? undefined}
+                          primaryTypographyProps={{
+                            sx: { fontSize: '0.78rem', fontWeight: 500 },
+                          }}
+                          secondaryTypographyProps={{ sx: { fontSize: '0.66rem' } }}
+                        />
+                        <TerminalIcon
+                          sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
+                        />
+                      </ListItemButton>
+                    </span>
                   </Tooltip>
-                </ListItemButton>
-              ))}
+                )
+              })}
             </List>
           </>
         )}

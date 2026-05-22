@@ -201,6 +201,19 @@ async def create_terminal_session(
                 status.HTTP_403_FORBIDDEN,
                 f"you don't have access to device '{name}'",
             )
+    # Pre-flight: refuse if the device isn't currently online. Without
+    # this the browser would create a session row, sit through the 60s
+    # pairing timeout, then 4408. Better to fail fast with context so
+    # the operator can decide whether to wait for the device to come
+    # back or fix it. last_seen surfaces in the error so they can
+    # judge how stale the offline-ness is.
+    if device.status != "online":
+        last_seen_str = device.last_seen.isoformat() if device.last_seen else "never"
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"device '{name}' is {device.status} (last seen: {last_seen_str}) — "
+            "cannot open terminal until it checks in",
+        )
     async with _sessions_lock:
         if len(_sessions) >= MAX_CONCURRENT_SESSIONS:
             raise HTTPException(
