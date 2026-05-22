@@ -1,4 +1,4 @@
-import { Avatar, Box, Checkbox, Paper, Stack, Typography } from '@mui/material'
+import { Avatar, Box, Checkbox, Paper, Stack, Tooltip, Typography } from '@mui/material'
 import PersonOutlineIcon from '@mui/icons-material/PersonOutline'
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome'
 import type { Turn as TurnT, StreamingTurn } from '../state/investigationStore'
@@ -8,6 +8,41 @@ import { Scratchpad } from './Scratchpad'
 import { costForUsage, formatUsd } from '../lib/pricing'
 
 type TurnLike = TurnT | (StreamingTurn & { id: string; createdAt: string })
+
+// Compact local-time label for a turn's createdAt. Hovering the chip
+// reveals the absolute timestamp via Tooltip in the caller. We avoid a
+// dep like date-fns for the tiny set of cases we actually need.
+function formatTurnTime(iso: string): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const now = Date.now()
+  const diffSec = Math.max(0, Math.round((now - d.getTime()) / 1000))
+  if (diffSec < 45) return 'just now'
+  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`
+  // Same calendar day → just the time.
+  const sameDay =
+    d.getFullYear() === new Date(now).getFullYear() &&
+    d.getMonth() === new Date(now).getMonth() &&
+    d.getDate() === new Date(now).getDate()
+  if (sameDay) {
+    return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  }
+  // Yesterday is common enough to label explicitly.
+  const yesterday = new Date(now - 86400000)
+  if (
+    d.getFullYear() === yesterday.getFullYear() &&
+    d.getMonth() === yesterday.getMonth() &&
+    d.getDate() === yesterday.getDate()
+  ) {
+    return `Yesterday ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+  }
+  return d.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  })
+}
 
 export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: boolean }) {
   const selectMode = useInvestigationStore((s) => s.selectMode)
@@ -56,6 +91,17 @@ export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: 
           variant="outlined"
           sx={{ flex: 1, px: 2, py: 1.4, borderColor: 'divider', bgcolor: 'background.paper' }}
         >
+          {turn.createdAt && (
+            <Tooltip title={new Date(turn.createdAt).toLocaleString()} placement="top-end">
+              <Typography
+                variant="caption"
+                color="text.disabled"
+                sx={{ display: 'block', mb: 0.5, fontSize: '0.66rem' }}
+              >
+                {formatTurnTime(turn.createdAt)}
+              </Typography>
+            </Tooltip>
+          )}
           <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
             {turn.prompt}
           </Typography>

@@ -8,14 +8,14 @@ import {
   ListItemButton,
   ListItemText,
   Stack,
+  Tab,
+  Tabs,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
-import DevicesIcon from '@mui/icons-material/Devices'
-import InventoryIcon from '@mui/icons-material/Inventory2Outlined'
 import KeyIcon from '@mui/icons-material/Key'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
@@ -110,6 +110,10 @@ export function InvestigationList() {
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
+  // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
+  // each section gets the full content height instead of fighting for
+  // 38% of the sidebar. Defaults to Conversations (matches prior UX).
+  const [tab, setTab] = useState<'conversations' | 'devices' | 'apps'>('conversations')
   const openTerminal = useTerminalUiStore((s) => s.open)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
@@ -200,112 +204,124 @@ export function InvestigationList() {
         </Typography>
       </Box>
 
-      <Box sx={{ p: 1.2 }}>
-        <Button
-          fullWidth
-          variant="outlined"
-          startIcon={<AddIcon />}
-          onClick={() => create()}
-          sx={{ justifyContent: 'flex-start', borderColor: 'divider' }}
-        >
-          New conversation
-        </Button>
-      </Box>
-
-      <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5 }}>
-        {investigations.length === 0 && (
-          <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 1, display: 'block' }}>
-            No conversations yet. Ask a question below to begin.
-          </Typography>
+      <Tabs
+        value={tab}
+        onChange={(_, v) => setTab(v)}
+        variant="fullWidth"
+        sx={{
+          minHeight: 36,
+          borderBottom: 1,
+          borderColor: 'divider',
+          '& .MuiTab-root': {
+            minHeight: 36,
+            fontSize: '0.72rem',
+            textTransform: 'none',
+            letterSpacing: 0.2,
+            py: 0.5,
+          },
+        }}
+      >
+        <Tab value="conversations" label="Conversations" />
+        {canDeploy && accessibleDevices.length > 0 && (
+          <Tab value="devices" label={`Devices · ${accessibleDevices.length}`} />
         )}
-        {investigations.map((inv) => (
-          <ListItemButton
-            key={inv.id}
-            selected={inv.id === activeId}
-            onClick={() => setActive(inv.id)}
-            sx={{
-              borderRadius: 1,
-              mx: 0.5,
-              mb: 0.3,
-              '&.Mui-selected': { bgcolor: 'action.selected' },
-            }}
-          >
-            <ListItemText
-              primary={inv.title}
-              secondary={`${inv.turns.length} turn${inv.turns.length === 1 ? '' : 's'}`}
-              primaryTypographyProps={{
-                fontSize: '0.85rem',
-                noWrap: true,
-                fontWeight: inv.id === activeId ? 600 : 400,
-              }}
-              secondaryTypographyProps={{ fontSize: '0.72rem' }}
-            />
-            <Tooltip title="Delete">
-              <IconButton
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  remove(inv.id)
+        <Tab value="apps" label={`Apps · ${apps.length}`} />
+      </Tabs>
+
+      {tab === 'conversations' && (
+        <>
+          <Box sx={{ p: 1.2 }}>
+            <Button
+              fullWidth
+              variant="outlined"
+              startIcon={<AddIcon />}
+              onClick={() => create()}
+              sx={{ justifyContent: 'flex-start', borderColor: 'divider' }}
+            >
+              New conversation
+            </Button>
+          </Box>
+
+          <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5 }}>
+            {investigations.length === 0 && (
+              <Typography variant="caption" color="text.secondary" sx={{ px: 2, py: 1, display: 'block' }}>
+                No conversations yet. Ask a question below to begin.
+              </Typography>
+            )}
+            {investigations.map((inv) => (
+              <ListItemButton
+                key={inv.id}
+                selected={inv.id === activeId}
+                onClick={() => setActive(inv.id)}
+                sx={{
+                  borderRadius: 1,
+                  mx: 0.5,
+                  mb: 0.3,
+                  '&.Mui-selected': { bgcolor: 'action.selected' },
                 }}
               >
-                <DeleteOutlineIcon fontSize="inherit" />
-              </IconButton>
-            </Tooltip>
-          </ListItemButton>
-        ))}
-      </List>
+                <ListItemText
+                  primary={inv.title}
+                  secondary={`${inv.turns.length} turn${inv.turns.length === 1 ? '' : 's'}`}
+                  primaryTypographyProps={{
+                    fontSize: '0.85rem',
+                    noWrap: true,
+                    fontWeight: inv.id === activeId ? 600 : 400,
+                  }}
+                  secondaryTypographyProps={{ fontSize: '0.72rem' }}
+                />
+                <Tooltip title="Delete">
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      remove(inv.id)
+                    }}
+                  >
+                    <DeleteOutlineIcon fontSize="inherit" />
+                  </IconButton>
+                </Tooltip>
+              </ListItemButton>
+            ))}
+          </List>
+        </>
+      )}
 
       <Box
         sx={{
-          borderTop: 1,
-          borderColor: 'divider',
-          maxHeight: '38%',
+          flex: 1,
           display: 'flex',
           flexDirection: 'column',
           minHeight: 0,
+          // The Devices/Apps tabs replace the prior maxHeight: 38% bottom
+          // section. flex: 1 lets each list use the full available height
+          // for its own scroll.
+          ...(tab === 'conversations' ? { display: 'none' } : {}),
         }}
       >
-        {canDeploy && accessibleDevices.length > 0 && (
+        {tab === 'devices' && canDeploy && accessibleDevices.length > 0 && (
           <>
-            <Stack
-              direction="row"
-              alignItems="center"
-              sx={{ px: 1.6, pt: 1.2, pb: 0.6 }}
-            >
-              <Stack direction="row" alignItems="center" spacing={0.8}>
-                <DevicesIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-                <Typography
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}
-                >
-                  Devices
-                </Typography>
-              </Stack>
-            </Stack>
-            {accessibleDevices.length > 5 && (
-              <Box sx={{ px: 1, pb: 0.4 }}>
-                <TextField
-                  value={deviceFilter}
-                  onChange={(e) => setDeviceFilter(e.target.value)}
-                  placeholder="Filter devices…"
-                  size="small"
-                  fullWidth
-                  variant="outlined"
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
-                      </InputAdornment>
-                    ),
-                    sx: { fontSize: '0.78rem', '& input': { py: 0.6 } },
-                  }}
-                />
-              </Box>
-            )}
+            <Box sx={{ px: 1, pt: 1, pb: 0.4 }}>
+              <TextField
+                value={deviceFilter}
+                onChange={(e) => setDeviceFilter(e.target.value)}
+                placeholder="Filter devices…"
+                size="small"
+                fullWidth
+                variant="outlined"
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon sx={{ fontSize: 14, color: 'text.disabled' }} />
+                    </InputAdornment>
+                  ),
+                  sx: { fontSize: '0.78rem', '& input': { py: 0.6 } },
+                }}
+              />
+            </Box>
             <List
               dense
-              sx={{ maxHeight: '22vh', overflowY: 'auto', px: 0.5, py: 0.3 }}
+              sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}
             >
               {deviceFilter && visibleDevices.length === 0 && (
                 <Typography
@@ -378,36 +394,29 @@ export function InvestigationList() {
           </>
         )}
 
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-          sx={{ px: 1.6, pt: 1.2, pb: 0.6 }}
-        >
-          <Stack direction="row" alignItems="center" spacing={0.8}>
-            <InventoryIcon sx={{ fontSize: 14, color: 'text.secondary' }} />
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}
-            >
-              Apps
-            </Typography>
+        {tab === 'apps' && (
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            sx={{ px: 1.6, pt: 1, pb: 0.4 }}
+          >
+            {canDeploy && (
+              <Tooltip title="New app">
+                <Button
+                  size="small"
+                  startIcon={<AddIcon sx={{ fontSize: 14 }} />}
+                  onClick={() => setModal({ kind: 'create' })}
+                  sx={{ fontSize: '0.72rem', textTransform: 'none' }}
+                >
+                  New app
+                </Button>
+              </Tooltip>
+            )}
           </Stack>
-          {canDeploy && (
-            <Tooltip title="New app">
-              <IconButton
-                size="small"
-                onClick={() => setModal({ kind: 'create' })}
-                sx={{ p: 0.3 }}
-              >
-                <AddIcon sx={{ fontSize: 16 }} />
-              </IconButton>
-            </Tooltip>
-          )}
-        </Stack>
+        )}
 
-        {appsView !== null && apps.length > 5 && (
+        {tab === 'apps' && appsView !== null && apps.length > 5 && (
           <Box sx={{ px: 1, pb: 0.4 }}>
             <TextField
               value={filter}
@@ -428,7 +437,7 @@ export function InvestigationList() {
           </Box>
         )}
 
-        <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}>
+        {tab === 'apps' && <List dense sx={{ flex: 1, overflowY: 'auto', px: 0.5, py: 0.3 }}>
           {appsError && (
             <Typography variant="caption" color="error.main" sx={{ px: 2, display: 'block' }}>
               {appsError}
@@ -479,7 +488,7 @@ export function InvestigationList() {
               )}
             </ListItemButton>
           ))}
-        </List>
+        </List>}
       </Box>
 
       <Box
