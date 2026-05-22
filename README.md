@@ -12,8 +12,11 @@
 
 ## What you get
 
-- **Frontend** — React + Material UI dark theme, Plotly time-series charts, real-time streaming UI that surfaces the agent's thinking and tool calls.
-- **Backend** — FastAPI agent powered by Claude Opus 4.7 with adaptive thinking, prompt caching, and 16 tools across discovery / query / analysis / render-block emission.
+- **Frontend** — React + Material UI dark theme, Plotly time-series charts, real-time streaming UI that surfaces the agent's thinking and tool calls. Sidebar lists devices and apps in your groups; xterm.js opens a host shell to a device in one click.
+- **Backend** — FastAPI agent powered by Claude Opus 4.7 with adaptive thinking, prompt caching, and ~30 tools across discovery / query / analysis / render-block emission / fleet management.
+- **Multi-user** — login + cookie sessions, RBAC (observe / deploy / admin), user-group scoping for devices, audit log for terminal sessions. Bootstrap an admin via env vars; manage the rest from the chat ("create user X with deploy role in group Y") or the admin API.
+- **Drift Deploy** — promote a compose bundle as a Drift "app", push it to one device or a whole group, watch the agent reconcile in real time. Per-group registry credentials, automatic agent self-update, retry budgets, conflict detection, host-CA injection for corp PKI. See [DEPLOY.md](./DEPLOY.md).
+- **Live charts** — ask for a "refreshing plot of CPU/memory on jetson-001 every 5s" and a Plotly chart polls a server-side PromQL passthrough on a timer. "Now change refresh rate to 1s" mutates the same chart in place (preserves zoom/hover).
 - **Compose stack** — slim Docker images for both services. Brings its own TSDB? No — point it at any Prometheus-compatible source via `VM_URL`.
 
 ```
@@ -244,10 +247,10 @@ Normal for complex investigations — `claude-opus-4-7` with `effort=high` is th
 
 ## Notes
 
-- **Persistence**: investigation history is in `localStorage` under key `drift.investigations.v2`. Chart trace data is in-memory only — see [ARCHITECTURE.md → The dataRef pattern](./ARCHITECTURE.md#the-dataref-pattern).
+- **Persistence**: investigation history is in `localStorage` under key `drift.investigations.v2`. Chart trace data is in-memory only — see [ARCHITECTURE.md → The dataRef pattern](./ARCHITECTURE.md#the-dataref-pattern). User auth, devices, apps, registry creds, terminal session metadata live in Postgres (the `drift-postgres` service in compose). Token usage is reported as metrics into VictoriaMetrics so the sidebar's per-user "$X used" survives drift-agent restarts.
 - **Agent loop cap**: the loop is bounded at 20 LLM iterations; most investigations finish in 4–8.
 - **No automated tests yet.** Verification is manual via the UI.
-- **No multi-user / auth.** Single-user demo. Adding auth would require a state model with sessions and a backing DB.
+- **Bootstrap admin**: set `DRIFT_ADMIN_USERNAME` + `DRIFT_ADMIN_PASSWORD` in `.env` for first-run admin creation. Subsequent users are created from chat or the admin API.
 
 ---
 

@@ -17,11 +17,13 @@ This document is the deep dive. For a quickstart, see [README.md](./README.md).
 9. [Tool catalog](#tool-catalog)
 10. [Render blocks](#render-blocks)
 11. [Engine adapter pattern](#engine-adapter-pattern)
-12. [State model](#state-model)
-13. [Prompt caching](#prompt-caching)
-14. [Design decisions and trade-offs](#design-decisions-and-trade-offs)
-15. [Extension points](#extension-points)
-16. [File reference](#file-reference)
+12. [Live charts](#live-charts)
+13. [Web terminal](#web-terminal)
+14. [State model](#state-model)
+15. [Prompt caching](#prompt-caching)
+16. [Design decisions and trade-offs](#design-decisions-and-trade-offs)
+17. [Extension points](#extension-points)
+18. [File reference](#file-reference)
 
 ---
 
@@ -381,13 +383,15 @@ All analysis tools take refs as input. They never echo raw arrays back to the LL
 
 ### Emit tools (push render blocks to the UI)
 
-| Name             | Pushes                                                              |
-| ---------------- | ------------------------------------------------------------------- |
-| `make_markdown`  | A markdown block (GFM supported).                                    |
-| `make_metric`    | A single metric card (label + value + optional unit + trend).        |
-| `make_chart`     | A Plotly chart referencing one or more dataRefs. Supports custom layout.  |
-| `make_table`     | A table (columns + rows + optional title).                           |
-| `make_timeline`  | A vertical event timeline.                                           |
+| Name                  | Pushes                                                                                          |
+| --------------------- | ----------------------------------------------------------------------------------------------- |
+| `make_markdown`       | A markdown block (GFM supported).                                                                |
+| `make_metric`         | A single metric card (label + value + optional unit + trend).                                    |
+| `make_chart`          | A Plotly chart referencing one or more dataRefs. Supports custom layout.                         |
+| `make_table`          | A table (columns + rows + optional title).                                                       |
+| `make_timeline`       | A vertical event timeline.                                                                       |
+| `make_live_chart`     | A chart that polls PromQL on a timer. Same `chart_key` reused across turns mutates in place.     |
+| `make_terminal_action`| A clickable card that opens a remote shell modal to a device.                                    |
 
 Emit tools have side effects: they push `block` events (and `data` events for charts) onto the SSE stream. They return a tiny ack to the model so the loop continues.
 
@@ -397,15 +401,17 @@ This split — *fetch / analyze / emit* — solves the structured-output reliabi
 
 ## Render blocks
 
-A `RenderBlock` is a discriminated union by `type`. Five variants:
+A `RenderBlock` is a discriminated union by `type`. Seven variants:
 
-| Type      | Shape                                                                 | Component               |
-| --------- | --------------------------------------------------------------------- | ----------------------- |
-| `markdown`| `{type, content}`                                                     | `MarkdownBlock`         |
-| `chart`   | `{type, renderer, spec, dataRef?, title?}`                            | `ChartBlock` (lazy Plotly) |
-| `table`   | `{type, columns, rows, title?}`                                       | `TableBlock`            |
-| `metric`  | `{type, label, value, unit?, trend?}`                                 | `MetricBlock`           |
-| `timeline`| `{type, events: [{ts, label, severity?}], title?}`                    | `TimelineBlock`         |
+| Type             | Shape                                                                                                   | Component               |
+| ---------------- | ------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `markdown`       | `{type, content}`                                                                                       | `MarkdownBlock`         |
+| `chart`          | `{type, renderer, spec, dataRef?, title?}`                                                              | `ChartBlock` (lazy Plotly) |
+| `table`          | `{type, columns, rows, title?}`                                                                         | `TableBlock`            |
+| `metric`         | `{type, label, value, unit?, trend?}`                                                                   | `MetricBlock`           |
+| `timeline`       | `{type, events: [{ts, label, severity?}], title?}`                                                      | `TimelineBlock`         |
+| `live_chart`     | `{type, chart_key, title?, traces:[{name,promql,unit?}], refresh_ms, range_seconds, step_seconds}`      | `LiveChartBlock` (polls `/api/query`; `Plotly.react` diff so series update without remount) |
+| `terminal_action`| `{type, device_name, reason?}`                                                                          | `TerminalActionBlock` (button opens `TerminalModal` via `useTerminalUiStore`) |
 
 Definitions live in two places that must stay in sync:
 
@@ -440,6 +446,61 @@ The Mock adapter exists for two reasons:
 2. **Architecture validation** — proves the streaming interface is genuinely engine-agnostic.
 
 Adding a new engine (e.g., a Langflow flow, a custom Python agent, or a different LLM provider) is a single file: implement `stream(req)`, drop it in `src/adapters/`, register in `getAdapter()`. The frontend doesn't change.
+
+---
+
+## Live charts
+
+`make_live_chart` emits a block whose component owns its own polling timer. The block carries no data on emission — only the recipe (one PromQL expression per trace + refresh interval + range/step). On the frontend:
+
+1. `LiveChartBlock` reads the block's `traces` + `refresh_ms` + `range_seconds` + `step_seconds`.
+2. A `setInterval` fires `Promise.all(traces.map(t => POST /api/query {promql, start, end, step}))`. The endpoint is a thin authed passthrough to `VMClient.query_range` (`drift-agent/app/main.py`).
+3. Each tick replaces the `data` state with a fresh array. `react-plotly.js` calls `Plotly.react` under the hood, which diffs the new data against the live chart and only updates the series — `layout` is memoized with stable deps so zoom/hover survive.
+4. `AbortController` cancels an in-flight poll when a new tick begins (avoids stale/fresh frame races).
+5. `uirevision: chart_key` in the Plotly layout locks user-driven zoom across data refreshes.
+
+**Mutation by prompt** ("change refresh to 1s", "add jetson-002") works because the agent re-emits `make_live_chart` with the same `chart_key`. The block store's `addBlock` detects a `live_chart` with a matching `chart_key` in any earlier turn of the investigation, strips it, and appends the new one to the current streaming buffer. The frontend uses `live:${chart_key}` as the React key so the component instance survives the replacement — `Plotly.react` diffs new vs old, preserving canvas state. Older turns lose the chart visually (by design — the latest version always sits at the most recent turn that touched it).
+
+---
+
+## Web terminal
+
+Browser opens an xterm.js modal → CP creates a session row → CP relays bytes between two WebSockets:
+
+```
+Browser ◄──WS──► CP relay ◄──WS──► edge agent (terminal-bridge.py)
+                                              │
+                                              ▼ (pty.fork + nsenter -t 1)
+                                          /bin/login on the host
+```
+
+Devices have no inbound network. The CP cannot push; it stores `pending_sessions[id]` on the device's row. The edge agent surfaces those in its next check-in response, then forks a `terminal-bridge.py` subprocess per session. The bridge opens a WebSocket to the CP, allocates a pty, and execs `nsenter -t 1 -m -p -u -i -- /bin/login` so PAM does the auth.
+
+**State machine** (per session, in `drift-agent/app/deploy/terminal.py`):
+
+```
+POST /devices/{name}/terminal     row inserted, status="pending"
+↓ (operator's WS connects first)
+attach_browser()                  state.browser_ws set, awaits pair
+↓ (agent picks up id in check-in, forks bridge, bridge opens WS)
+attach_agent()                    state.agent_ws set, pair signal fires
+↓
+relay()                            row → "active", two byte-pump tasks
+↓ (either side disconnects)
+cleanup()                          row → "closed", bytes flushed to DB
+```
+
+In-memory pairing (`_sessions: dict[uuid, _SessionState]`); a CP restart drops all in-flight sessions — operators reopen, agents pick up the new id next check-in. The DB row carries durable metadata so audit survives.
+
+**Auth layers**
+- Browser-side WS: `resolve_user_from_cookie(websocket)` (`users/deps.py`) + `deploy` role + `_check_group_access(device.group_id)`. FastAPI's `Cookie` dep doesn't work in WS routes.
+- Agent-side WS: bearer token in the `Authorization` header, cross-checked against the device the session is bound to.
+
+**Device-side bridge** (`edge-agent/terminal-bridge.py`): `pty.fork()` so the child has a controlling tty, `os.execvp("nsenter", ...)` to enter host namespaces, then a shell snippet that probes multiple login paths (`/bin/login` → `/sbin/login` → `/usr/bin/login` → `/usr/sbin/login`). The agent container ships `python3` + `py3-websockets` for this; `--pid host --cap-add SYS_ADMIN --cap-add SYS_PTRACE` are added at install time so nsenter can reach PID 1.
+
+**Audit**: `terminal_sessions` table tracks `(device_id, user_id, status, started_at, ended_at, bytes_browser_to_agent, bytes_agent_to_browser)`. Metadata only — no keystroke capture.
+
+Synology DSM is not supported here: `/bin/login` exits silently when spawned outside a getty context. DSM operators should use the device's own SSH for shell access.
 
 ---
 

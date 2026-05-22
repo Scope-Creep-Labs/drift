@@ -59,7 +59,8 @@ Drift owns its own login. Caddy basic_auth used to gate `/drift/*` site-wide; th
 | Create apps / propose+apply revisions | ✗ | ✓ | ✓ |
 | Deploy / retry / delete deployments | ✗ | ✓ (their groups) | ✓ (any group) |
 | Commission / delete devices | ✗ | ✓ | ✓ |
-| Manage registry credentials | ✗ | ✗ | ✓ |
+| Manage registry credentials | ✗ | ✓ (their groups) | ✓ (any group) |
+| Open web terminal to a device | ✗ | ✓ (their groups, online devices only) | ✓ |
 | Manage users + groups | ✗ | ✗ | ✓ |
 
 **Groups:** each user has zero or more device groups (`drift_home`, `dev-cloud`, etc.). Non-admin users only see/act on devices in their groups. Admins always see everything. Apps and revisions are global — anyone can see them, but deploying still requires `deploy` role + group access on the target device.
@@ -171,9 +172,10 @@ While the device is offline the CP target shows the last-reported state (`status
 
 Apps whose compose references images on private registries (e.g. `ghcr.io/<you>/*`) need each device's docker daemon to authenticate. Drift handles this end-to-end:
 
-- **Sidebar footer → 🔑 icon** opens the credentials modal.
-- Operator enters `registry`, `username`, `password` (a PAT for GHCR). Saved as Fernet ciphertext in Postgres (key = `DRIFT_SECRET_KEY` env var).
-- Every agent check-in returns the decrypted creds as a docker `auths` map. The agent writes them atomically to `/root/.docker/config.json` inside its container. From the next `docker compose pull` onwards, private pulls authenticate.
+- **Sidebar footer → 🔑 icon** opens the credentials modal (visible to `deploy` + `admin`).
+- Operator enters `registry`, **`group`**, `username`, `password` (a PAT for GHCR). Saved as Fernet ciphertext in Postgres (key = `DRIFT_SECRET_KEY` env var).
+- **Group-scoped**: each row is keyed on `(registry, group_id)`. The same registry can have different credentials in different groups (e.g. `ghcr.io` with one account for `cloud`, another for `client-x`). Devices only receive credentials whose `group_id` matches their own at check-in — a compromised token for a `client-x` device cannot read a `client-y` registry secret.
+- Every agent check-in returns the decrypted creds for that device's group as a docker `auths` map. The agent writes them atomically to `/root/.docker/config.json` inside its container. From the next `docker compose pull` onwards, private pulls authenticate.
 - To rotate: re-paste the new PAT and click Save. Password is never echoed back from the server — every save replaces both fields.
 - To revoke: delete the row in the modal. The agents' `config.json` files are *not* automatically rotated; restart the agent container or wait for the next bundle apply.
 
@@ -184,6 +186,47 @@ Apps whose compose references images on private registries (e.g. `ghcr.io/<you>/
 Without `DRIFT_SECRET_KEY` set, the `/registry-creds` endpoints return 503 and the modal surfaces the disabled state.
 
 > **Threat model:** secrets at rest are encrypted with `DRIFT_SECRET_KEY` (Fernet/AES-128 + HMAC). In transit they ride over Caddy-terminated TLS to the agent. They're decrypted on the CP per check-in (no cache) and written `chmod 600` to the agent container's filesystem. A DB dump alone doesn't expose them; an attacker would also need the key from `.env`.
+
+---
+
+## Web terminal (remote shell)
+
+`deploy` and `admin` users can open an in-browser terminal to any online device in their groups. The flow:
+
+1. **Sidebar Devices section** lists every device the user has access to with a status dot. Click an online row → `TerminalModal` (xterm.js) opens.
+2. Browser opens a WebSocket to the CP, CP inserts a `pending` row in `terminal_sessions`, and waits for the agent.
+3. Agent picks up `pending_sessions[id]` on its next check-in (≤ POLL_INTERVAL seconds, default 30s) and forks `terminal-bridge.py` — a tiny python helper bundled in the agent image that allocates a pty and execs `nsenter -t 1 -m -p -u -i -- /bin/login` against PID 1 of the host.
+4. The user sees a `login:` prompt, types `drift` + the device's drift-user password.
+5. PAM authenticates, login execs bash, the user has a host shell. `sudo` works (drift is in the sudoers group) and re-prompts for the same password.
+
+Chat also opens terminals: ask the agent to "open a terminal to dev-hetzner" and it emits a `make_terminal_action` card with an Open button.
+
+**`drift` host user**: provisioned per-device by `install.sh` with a 16-character random password printed once at install. Member of the host's sudoers group (auto-detected: `sudo` / `wheel` / `administrators`). Re-running `install.sh` is idempotent — it leaves the existing password alone, so save the install-time output to a password manager.
+
+**Auth surface**: cookie-authenticated on the browser side, bootstrap-token cross-checked on the agent side. `terminal_sessions` rows record `(user_id, device_id, status, started_at, ended_at, bytes_browser_to_agent, bytes_agent_to_browser)` for audit. **No keystroke capture.**
+
+**Pre-flight guard**: the CP rejects session creation with HTTP 409 (and `last_seen` in the body) when the device isn't online. The sidebar row is greyed out with a tooltip explaining why.
+
+**Container privileges**: install.sh runs the agent container with `--pid host --cap-add SYS_ADMIN --cap-add SYS_PTRACE` so nsenter can enter the host's namespaces. This is a real privilege bump but not a new trust boundary — anyone with the docker socket (which the agent already mounts) is root-equivalent on the host.
+
+**Synology DSM is not supported.** DSM's `/bin/login` exits silently when spawned outside a getty context. The install.sh skips `drift` user creation on DSM and prints a clear warning; use DSM's own SSH for shell access on those devices.
+
+---
+
+## Custom root certificates (corp PKI / TLS-intercepting proxies)
+
+Devices on corp networks often sit behind a TLS-intercepting proxy that re-signs HTTPS traffic with a private CA. Without trusting that CA, the agent's `curl` to the CP and every deployed app's outbound HTTPS will fail with `x509: certificate signed by unknown authority`.
+
+`install.sh` detects the host's combined CA bundle and surfaces it in two places:
+
+1. **Agent container's `curl`** — bind-mounts the bundle at `/host/etc/ssl/host-ca-bundle.crt` and sets `CURL_CA_BUNDLE` in `/etc/drift-deploy/env`. The agent's check-ins inherit it via `--env-file`.
+2. **All deployed apps** — exposes the host path as `${DRIFT_HOST_CA_BUNDLE}` in compose subshells. The auto-generated `compose.override.yaml` (per app) sets `SSL_CERT_FILE` + `CURL_CA_BUNDLE` env vars on every service and bind-mounts the bundle at both `/etc/ssl/certs/ca-certificates.crt` (Debian/Ubuntu path) AND `/etc/ssl/cert.pem` (Alpine/BSD path), so apps that read either trust the operator's PKI. Go programs, curl, openssl, and Python's `ssl` module all honor one of these.
+
+Detection order (first match wins): `/etc/ssl/certs/ca-certificates.crt` → `/etc/pki/tls/certs/ca-bundle.crt` → `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` → `/etc/ssl/cert.pem`. The host's bundle is what `update-ca-certificates` (or `update-ca-trust`) produces — it already contains both Mozilla roots and any corp CAs the operator added.
+
+Hosts without a recognized bundle file: `install.sh` logs `note: no host CA bundle found at standard locations`, the env var is unset, and both the agent and apps fall back to their container images' built-in Mozilla bundles. This is the right default for non-corp networks.
+
+If a bundle author declares their own volume at one of the standard CA paths, `docker compose up` will refuse to start the service with "duplicate mount point". Resolve by removing the bundle's redundant mount — Drift's injection covers it.
 
 ---
 

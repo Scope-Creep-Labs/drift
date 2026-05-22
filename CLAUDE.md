@@ -7,14 +7,17 @@ For the full architecture see [ARCHITECTURE.md](./ARCHITECTURE.md); for setup se
 
 ## What this repo is
 
-**Drift** — agentic observability for time-series systems. User asks free-form questions in the UI; a Claude Opus 4.7 agent picks tools, queries a Prometheus-compatible TSDB (VictoriaMetrics), runs stats, and assembles streaming render blocks (markdown, charts, tables, metric cards, timelines) that paint progressively into the UI.
+**Drift** — agentic observability + fleet management for time-series systems. User asks free-form questions in the UI; a Claude Opus 4.7 agent picks tools, queries a Prometheus-compatible TSDB (VictoriaMetrics), runs stats, and assembles streaming render blocks (markdown, charts, tables, metric cards, timelines, live-charts, terminal-actions) that paint progressively into the UI.
 
-Two services:
+Three services:
 
-- **`src/`** — React 18 + Vite + TypeScript + MUI v6 (dark) + Plotly + Zustand + TanStack Query.
-- **`drift-agent/`** — FastAPI + `anthropic` SDK + httpx + numpy/scipy. Streams SSE.
+- **`src/`** — React 18 + Vite + TypeScript + MUI v6 (dark) + Plotly + Zustand + xterm.js.
+- **`drift-agent/`** — FastAPI + `anthropic` SDK + httpx + numpy/scipy + SQLAlchemy. Streams SSE. Owns the agent loop, user auth, deploy state, terminal relay.
+- **`drift-postgres`** — durable state: users + sessions + groups, devices + apps + revisions + deployments, registry credentials, terminal session audit. Alembic migrations under `drift-agent/alembic/`.
 
-Communication: SSE over `POST /api/investigate`. nginx proxies `/api/*` in Docker; Vite proxies in dev.
+There's also an **edge agent** (`edge-agent/`) — a bash script + python bridge that runs as a container on each managed device. Self-updates via a SHA-comparing bootstrap. Polls the CP every 30s.
+
+Communication: SSE over `POST /api/investigate`; WS for the web terminal (`/api/deploy/.../terminal/ws/...`). nginx proxies `/api/*` in Docker; Vite proxies in dev.
 
 ---
 
@@ -110,6 +113,11 @@ The `MockAdapter` exists deliberately for offline UI work — keep it working wh
 | New telemetry source (Influx, MQTT, etc.) | New file under `drift-agent/app/tools/<source>.py` mirroring `metrics.py`; add settings to `app/config.py`; register in `agent.py:all_tools()` / `all_handlers()`; mention in `SYSTEM_PROMPT`. |
 | New engine | `src/adapters/<X>Adapter.ts` implementing `EngineAdapter`; wire in `getAdapter()` behind a `VITE_ENGINE` value. |
 | Tweak agent behavior | `drift-agent/app/agent.py:SYSTEM_PROMPT` (prefer prompt edits over hard-coded logic — and remember §3 above). |
+| New deploy admin route | `drift-agent/app/deploy/routes_admin.py`. Auth via `Depends(require_role("deploy"))` or `Depends(get_current_user)`. Call `_check_group_access(user, group_id)` on any mutation that targets a device. Schema in `deploy/schemas.py`; model in `deploy/models.py`; migration in `alembic/versions/`. |
+| New edge-agent behavior | `edge-agent/drift-deploy-agent.sh`. Bump `AGENT_VERSION`. Devices self-update on next check-in (≤ POLL_INTERVAL) via SHA comparison. Image-level changes (Dockerfile, terminal-bridge.py, host CA) need `install.sh` rerun on each device — those don't auto-update. |
+| Bridge new capability through to apps | Compose `.env` interpolation: install.sh writes the value to `/etc/drift-deploy/env`, the agent script `export`s it into `docker compose` subshells, bundle authors reference it as `${DRIFT_…}`. Already wired: `DRIFT_DEVICE_NAME`, `DRIFT_GROUP_ID`, `DRIFT_DOCKER_DATA_DIR`, `DRIFT_HOST_CA_BUNDLE`. |
+| Web-terminal change | `drift-agent/app/deploy/terminal.py` (relay), `edge-agent/terminal-bridge.py` (pty + nsenter spawner), `src/components/TerminalModal.tsx` (xterm.js + WS lifecycle). Auth via `resolve_user_from_cookie(websocket)` on the browser side; bearer cross-check against the session's `device_id` on the agent side. |
+| New live-chart shape | The block lives in `src/components/blocks/LiveChartBlock.tsx` and Plotly diffs via `Plotly.react`. The agent emits it via `make_live_chart` — reuse the same `chart_key` to mutate in place. |
 
 ARCHITECTURE.md → "Extension points" has the full version.
 
@@ -118,10 +126,15 @@ ARCHITECTURE.md → "Extension points" has the full version.
 ## Non-obvious gotchas
 
 - **Persistence skips chart data.** `localStorage` holds investigations + blocks; the dataRegistry is in-memory only. Charts in past turns show "data not in cache" after a page reload — this is by design. Don't try to "fix" it by inlining trace data into blocks; that defeats the dataRef pattern.
+- **Live charts are mutable; immutable history blocks are not.** A new `live_chart` block with an existing `chart_key` replaces the prior block via `addBlock` in `investigationStore.ts` (scans past turns, strips the old one, appends the new). Older turns lose the chart visually — by design. Don't bolt this onto other block types.
 - **`drift-agent/` editable install creates `drift_agent.egg-info/`** — gitignored.
 - **Vite reads `.env.local`** (frontend) but uvicorn reads `drift-agent/.env` (backend). They're independent in local dev; only the root `.env` matters in Docker.
 - **CORS is allowlist-based** in `app/main.py` via `ALLOWED_ORIGINS`. Adding a new dev origin? Update the env var.
 - **The 20-iteration agent loop cap** in `agent.py` is a real ceiling. Investigations that need more than 20 LLM calls to complete will get truncated. Most finish in 4–8.
+- **WS routes can't use FastAPI's `Cookie` dep.** Use `resolve_user_from_cookie(websocket)` in `users/deps.py` for cookie-based auth on WebSocket endpoints. The cookie reads off `websocket.cookies` directly.
+- **Children of a flock'd subshell inherit fd 9.** When spawning a long-running background process inside `(flock 9 ... ) 9>"$LOCK_FILE"`, close fd 9 explicitly in the child: `nohup cmd 9>&- &`. Otherwise the child holds the lock for its entire lifetime and the next reconcile tick times out → container restart → child dies. We hit this with the terminal bridge.
+- **Self-update only touches `drift-deploy-agent.sh`.** Image-level changes (terminal-bridge.py, python deps, container flags, host-side users) need a fresh `install.sh` run per device. The SHA comparison is on the script alone.
+- **Per-user token usage comes from VM, not the in-process registry.** The sidebar uses `sum by (kind) (increase(drift_agent_tokens_total{user="..."}[30d]))` so the number survives drift-agent restarts. In-process counters reset; PromQL `increase()` is counter-reset-safe.
 
 ---
 
