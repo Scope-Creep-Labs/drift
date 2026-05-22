@@ -112,6 +112,13 @@ class DeploymentTarget(Base):
     # to retry. Default 5 = ~75–150s of retrying at POLL_INTERVAL=15–30s.
     max_retries: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     last_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # One-shot restart signal. Set by the LLM tools / admin route to
+    # tell the agent to `docker compose restart` this app's containers
+    # without re-pulling the bundle or recreating containers. The CP
+    # surfaces this as a DesiredApp(action='restart') on the next
+    # check-in and clears the flag immediately (optimistic — if the
+    # operator wants idempotent retries on failure, they re-issue).
+    pending_restart: Mapped[bool] = mapped_column(default=False, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc, onupdate=_now_utc, nullable=False
     )

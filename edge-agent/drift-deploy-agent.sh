@@ -98,7 +98,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.6.1"
+AGENT_VERSION="0.6.2"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -765,6 +765,40 @@ reconcile_once() {
       if ! remove_app "$app"; then
         log_error "[$app] remove failed; will retry next tick"
         state_inc apply_error
+      fi
+      continue
+    fi
+
+    if [ "$action" = "restart" ]; then
+      # One-shot restart signal from the CP. Run `docker compose
+      # restart` against the current revision's directory — no re-pull,
+      # no recreate, just SIGTERM-and-restart on every container in the
+      # project. The CP has already cleared its pending_restart flag,
+      # so a failure here just gets logged; operator re-issues if they
+      # want another try.
+      rev=$(echo "$row" | jq -r '.revision_id // empty')
+      if [ -z "$rev" ]; then
+        log_warn "[$app] restart requested with no revision_id; ignoring"
+        continue
+      fi
+      local rev_dir="$APPS_DIR/$app/revisions/$rev"
+      if [ ! -d "$rev_dir" ]; then
+        log_error "[$app] restart requested but rev_dir missing: $rev_dir"
+        state_inc apply_error
+        continue
+      fi
+      log_info "[$app] restart"
+      if ! err=$( cd "$rev_dir" \
+           && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+                     DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+                     DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+           && docker compose -p "$app" restart 2>&1 ); then
+        local err_tail
+        err_tail=$(printf '%s' "$err" | tail -n 5 | tr '\n' ' ')
+        log_error "[$app] docker compose restart failed: $err_tail"
+        state_inc apply_error
+      else
+        state_inc apply_ok
       fi
       continue
     fi

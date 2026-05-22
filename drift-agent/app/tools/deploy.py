@@ -866,6 +866,132 @@ async def retry_deployment(ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def restart_app_on_device(ctx: ToolContext, args: dict) -> dict:
+    """Tell the edge agent to `docker compose -p <app> restart` on one device.
+
+    Non-destructive: preserves volumes and the current image; just restarts
+    the containers. The CP marks pending_restart=true; the next check-in
+    surfaces a DesiredApp(action='restart') and clears the flag. If the
+    restart fails on the agent (compose returns non-zero), nothing is
+    automatically retried — re-issue if needed.
+
+    Common reasons to call this:
+      - process inside a container is stuck / unhealthy
+      - environment variables changed via a means other than a new revision
+      - need to clear in-memory state without re-pulling the image
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    if (err := _require_deploy_role(ctx)):
+        return err
+    app_name = args.get("app")
+    device_name = args.get("device")
+    if not app_name or not device_name:
+        return {"error": "app and device are required"}
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+        device = await _device_by_name(s, device_name)
+        if device is None:
+            return {"error": f"device '{device_name}' not found"}
+        if (err := _check_group_access(ctx, device.group_id)):
+            return err
+        target = (await s.execute(
+            select(DeploymentTarget).where(
+                DeploymentTarget.device_id == device.id,
+                DeploymentTarget.app_id == app.id,
+            )
+        )).scalar_one_or_none()
+        if target is None or target.current_revision_id is None:
+            return {
+                "error": (
+                    f"no running deployment for {device_name}/{app_name} — "
+                    "nothing to restart. Use deploy_revision to install first."
+                )
+            }
+        target.pending_restart = True
+        await s.commit()
+
+    return {
+        "device": device_name,
+        "app": app_name,
+        "pending_restart": True,
+        "note": (
+            "Edge agent will run `docker compose restart` on its next "
+            "check-in (≤30s). Volumes + image preserved."
+        ),
+    }
+
+
+async def restart_app_in_group(ctx: ToolContext, args: dict) -> dict:
+    """Restart an app across every device in a group that currently runs it.
+
+    Fans `restart_app_on_device` out to every (device, app) deployment_target
+    whose device.group_id matches. Devices that don't currently run the app
+    are skipped, not deployed-then-restarted. Offline devices are also
+    skipped by default — they wouldn't be able to pick up the signal anyway
+    until they're back online; set include_offline=true to mark them and
+    have the restart fire on their next check-in whenever they reappear.
+    """
+    if (err := _ensure_deploy_enabled()):
+        return err
+    if (err := _require_deploy_role(ctx)):
+        return err
+    app_name = args.get("app")
+    group_id = args.get("group_id")
+    include_offline = bool(args.get("include_offline", False))
+    if not app_name or not group_id:
+        return {"error": "app and group_id are required"}
+    if (err := _check_group_access(ctx, group_id)):
+        return err
+
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+        rows = (await s.execute(
+            select(DeploymentTarget, Device).join(
+                Device, Device.id == DeploymentTarget.device_id
+            ).where(
+                Device.group_id == group_id,
+                DeploymentTarget.app_id == app.id,
+            )
+        )).all()
+        if not rows:
+            return {
+                "app": app_name,
+                "group_id": group_id,
+                "restarted": [],
+                "skipped": [],
+                "note": "No deployments of this app in that group.",
+            }
+        restarted: list[str] = []
+        skipped: list[dict] = []
+        for target, device in rows:
+            if target.current_revision_id is None:
+                skipped.append({"device": device.name, "reason": "not currently running"})
+                continue
+            if not include_offline and device.status != "online":
+                skipped.append({"device": device.name, "reason": f"status={device.status}"})
+                continue
+            target.pending_restart = True
+            restarted.append(device.name)
+        await s.commit()
+
+    return {
+        "app": app_name,
+        "group_id": group_id,
+        "restarted": restarted,
+        "skipped": skipped,
+        "note": (
+            "Each restarted device runs `docker compose restart` on its next "
+            "check-in (≤30s). Volumes + image preserved."
+        ),
+    }
+
+
 async def delete_deployment(ctx: ToolContext, args: dict) -> dict:
     if (err := _require_deploy_role(ctx)):
         return err
@@ -1344,6 +1470,50 @@ DEPLOY_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "restart_app_on_device",
+        "description": (
+            "Restart an app's containers on one device — non-destructive (preserves "
+            "volumes + the running image, no re-pull, no recreate). Single one-shot "
+            "command via `docker compose -p <app> restart` on the edge agent's next "
+            "check-in (≤30s). Prefer this over delete_deployment + deploy_revision "
+            "when the user wants to 'restart', 'kick', 'bounce', or 'recycle' the app. "
+            "Use deploy_revision instead when the user wants a re-pull / recreate / "
+            "image refresh."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "device": {"type": "string"},
+            },
+            "required": ["app", "device"],
+        },
+    },
+    {
+        "name": "restart_app_in_group",
+        "description": (
+            "Restart an app across every device in a group that currently runs it. "
+            "Skips devices that don't have the app deployed and (by default) skips "
+            "offline devices. Set include_offline=true to queue the restart so it "
+            "fires on each offline device's next check-in when it comes back up."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "group_id": {
+                    "type": "string",
+                    "description": "Logical group reported by devices (e.g. cloud, edge, drift_home).",
+                },
+                "include_offline": {
+                    "type": "boolean",
+                    "description": "Queue the restart on devices that are not currently online. Default false.",
+                },
+            },
+            "required": ["app", "group_id"],
+        },
+    },
+    {
         "name": "delete_deployment",
         "description": (
             "Remove an app from one device. Marks the target for removal on the "
@@ -1432,6 +1602,8 @@ DEPLOY_HANDLERS = {
     "deploy_revision": deploy_revision,
     "deploy_revision_to_group": deploy_revision_to_group,
     "retry_deployment": retry_deployment,
+    "restart_app_on_device": restart_app_on_device,
+    "restart_app_in_group": restart_app_in_group,
     "delete_deployment": delete_deployment,
     "delete_deployment_from_group": delete_deployment_from_group,
 }

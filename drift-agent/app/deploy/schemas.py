@@ -158,7 +158,10 @@ class DesiredApp(BaseModel):
     # bundle_url / bundle_sha256 are populated.
     # "remove" — agent should stop the running compose project for this
     # app and drop it from local state. The bundle fields are unused.
-    action: Literal["deploy", "remove"] = "deploy"
+    # `restart` tells the agent to `docker compose restart` containers
+    # for the current revision without re-pulling or recreating. The
+    # bundle fields stay null (the agent uses its existing rev_dir).
+    action: Literal["deploy", "remove", "restart"] = "deploy"
     revision_id: Optional[uuid.UUID] = None
     bundle_url: Optional[str] = None
     bundle_sha256: Optional[str] = None

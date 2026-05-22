@@ -217,6 +217,23 @@ async def check_in(
                     target.last_error = None
             continue
 
+        # Restart signal takes precedence over deploy reconciliation:
+        # if the operator asked for a restart, ship that even when the
+        # target is otherwise in steady state. Optimistic clear — if
+        # the restart fails on the agent, the operator re-issues. The
+        # alternative (waiting for an ack) makes the loop more complex
+        # for marginal benefit.
+        if target.pending_restart:
+            desired.append(
+                DesiredApp(
+                    app=app.name,
+                    action="restart",
+                    revision_id=target.current_revision_id,
+                )
+            )
+            target.pending_restart = False
+            continue
+
         # Deploy path (existing logic): emit only when desired != current.
         if target.current_revision_id == target.desired_revision_id:
             continue
