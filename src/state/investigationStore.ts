@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware'
 import { nanoid } from 'nanoid'
 import type { RenderBlock } from '../types/blocks'
 import type { TraceEntry } from '../types/agentEvents'
+import { useLiveChartSession } from './liveChartSession'
 
 export type TurnMetadata = {
   engine?: string
@@ -203,6 +204,15 @@ export const useInvestigationStore = create<Store>()(
       },
 
       addBlock(block) {
+        // Side effect: record the live_chart emission in the (non-
+        // persisted) session store. LiveChartBlock reads this on mount
+        // to decide whether to start paused — anything not seen in the
+        // current session is assumed rehydrated from localStorage and
+        // mounts paused. Done outside set() because it's a different
+        // store; ordering doesn't matter for correctness.
+        if (block.type === 'live_chart') {
+          useLiveChartSession.getState().markEmitted(block.chart_key)
+        }
         set((s) => {
           if (!s.streaming) return s
           // Live charts replace in place by chart_key. When the agent

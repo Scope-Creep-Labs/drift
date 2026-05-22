@@ -5,6 +5,7 @@ import { Box, Chip, IconButton, Stack, Tooltip, Typography, useTheme } from '@mu
 import PauseIcon from '@mui/icons-material/Pause'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import type { LiveChartBlock as LiveChartBlockT } from '../../types/blocks'
+import { useLiveChartSession } from '../../state/liveChartSession'
 
 const Plot = createPlotlyComponent(Plotly as unknown as Parameters<typeof createPlotlyComponent>[0])
 
@@ -69,9 +70,18 @@ function seriesLabel(
 
 export function LiveChartBlock({ block }: { block: LiveChartBlockT }) {
   const theme = useTheme()
+  // Was this chart emitted in the current browser session, or did it
+  // come back from localStorage? Charts rehydrated from a prior session
+  // mount paused so a page refresh doesn't silently spam /api/query
+  // for every chart in your history. The store entry is added in
+  // investigationStore.addBlock; mutation (same chart_key re-emitted)
+  // bumps the timestamp → useEffect below auto-resumes.
+  const emittedAt = useLiveChartSession(
+    (s) => s.emissions[block.chart_key],
+  )
   const [data, setData] = useState<PlotlyTrace[]>([])
   const [error, setError] = useState<string | null>(null)
-  const [paused, setPaused] = useState(false)
+  const [paused, setPaused] = useState(!emittedAt)
   const [lastTickAt, setLastTickAt] = useState<number | null>(null)
   // Tracks the in-flight poll so we can cancel from a re-entrant tick.
   // setInterval can fire while a previous poll is still resolving (slow
@@ -83,6 +93,14 @@ export function LiveChartBlock({ block }: { block: LiveChartBlockT }) {
   // restart on every parent re-render (object identity changes even
   // when content is identical because the store rebuilds streaming.blocks).
   const tracesKey = useMemo(() => JSON.stringify(block.traces), [block.traces])
+
+  // Auto-resume when the agent re-emits this chart_key (mutation flow).
+  // Component instance survives the replace-in-place; this effect lets
+  // the latest emission un-pause if the user had paused or the chart
+  // had been rehydrated paused.
+  useEffect(() => {
+    if (emittedAt) setPaused(false)
+  }, [emittedAt])
 
   // Layout is memoized on the stable bits only — title and trace units.
   // Plotly.react sees a stable layout ref and only diffs data, which is
