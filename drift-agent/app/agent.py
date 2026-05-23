@@ -561,6 +561,13 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
             finish_reason: str | None = None
             iter_usage: Any = None
 
+            # `reasoning_effort` is litellm's cross-provider knob for
+            # internal-reasoning budget: maps to OpenAI's reasoning_effort
+            # (o-series), Anthropic's thinking.budget_tokens, and
+            # Gemini's thinking_config.thinking_budget. Non-reasoning
+            # models (gpt-4o etc.) ignore it silently. Values: low /
+            # medium / high — we lowercase whatever the EFFORT env var
+            # carries so "High" or "HIGH" still work.
             response = await litellm.acompletion(
                 model=settings.model,
                 messages=messages,
@@ -568,6 +575,7 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
                 stream=True,
                 stream_options={"include_usage": True},
                 max_tokens=settings.max_tokens,
+                reasoning_effort=(settings.effort or "high").lower(),
             )
 
             async for chunk in response:
