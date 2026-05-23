@@ -228,15 +228,18 @@ export function TerminalModal({
     <Dialog
       open={open}
       onClose={onClose}
-      maxWidth="lg"
-      fullWidth
+      fullScreen
       // disableAutoFocus: stop MUI from focusing the Dialog root after
       // mount — we want focus on the xterm canvas so keystrokes go to
       // the remote shell and the cursor blinks without an extra click.
       // disableRestoreFocus: cosmetic; avoids a focus jump on close.
+      // disableEscapeKeyDown: ESC is a real shell key (vim, less, etc.)
+      // — without this MUI would close the modal on every ESC press.
+      // Close button + onClose backdrop still work.
       disableAutoFocus
       disableRestoreFocus
-      PaperProps={{ sx: { bgcolor: '#0b0b0d' } }}
+      disableEscapeKeyDown
+      PaperProps={{ sx: { bgcolor: '#0b0b0d', display: 'flex', flexDirection: 'column' } }}
     >
       <DialogTitle sx={{ pr: 1 }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
@@ -280,18 +283,31 @@ export function TerminalModal({
           </Typography>
         )}
       </DialogTitle>
-      <DialogContent sx={{ p: 1.5, pt: 0 }}>
+      <DialogContent
+        sx={{
+          p: 1.5,
+          pt: 0,
+          // Fullscreen layout: content fills the remaining height under
+          // the DialogTitle. The xterm container takes flex:1 so the
+          // ResizeObserver/fit() recomputes rows/cols to the actual
+          // viewport on open and on window resize.
+          flex: 1,
+          minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
         <Box
           ref={containerRef}
           sx={{
+            flex: 1,
+            minHeight: 0,
             width: '100%',
-            height: '60vh',
-            minHeight: 320,
             bgcolor: '#0b0b0d',
             borderRadius: 1,
           }}
         />
-        <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1 }}>
+        <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1, flexShrink: 0 }}>
           Log in as <code>drift</code> with the device's terminal password. Use{' '}
           <code>sudo</code> for root operations.
         </Typography>
