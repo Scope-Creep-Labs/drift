@@ -1,13 +1,29 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, AsyncGenerator
 
-import anthropic
+import litellm
 
 from .config import settings
 from .schemas import PromptRequest
 from .stream import sse
+
+
+# Push the provider API keys into the env so LiteLLM picks them up via
+# its standard env-var lookup. Only the key for the configured model's
+# provider needs to be present; others stay empty. Done at module load
+# so a `litellm.acompletion` call anywhere just works.
+if settings.anthropic_api_key:
+    os.environ["ANTHROPIC_API_KEY"] = settings.anthropic_api_key
+if settings.openai_api_key:
+    os.environ["OPENAI_API_KEY"] = settings.openai_api_key
+if settings.gemini_api_key:
+    os.environ["GEMINI_API_KEY"] = settings.gemini_api_key
+
+# Drop verbose default logging; we surface failures via SSE error events.
+litellm.suppress_debug_info = True
 from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
 from .tools.deploy import DEPLOY_HANDLERS, DEPLOY_TOOLS
@@ -18,10 +34,11 @@ from .tools.metrics import METRICS_HANDLERS, METRICS_TOOLS, ToolContext, make_vm
 
 
 # Per-investigation conversation history. Keyed by investigation_id, value
-# is the list[dict] of Anthropic message objects accumulated across turns.
-# In-memory only — a server restart loses it. For v0 single-user usage this
-# is fine; the frontend's persisted Zustand store still shows past turns
-# for display, the agent just answers the next prompt fresh on a cold cache.
+# is the list[dict] of LiteLLM/OpenAI-shape message objects accumulated
+# across turns (role ∈ {system, user, assistant, tool}). In-memory only
+# — a server restart loses it. For v0 single-user usage this is fine;
+# the frontend's persisted Zustand store still shows past turns for
+# display, the agent just answers the next prompt fresh on a cold cache.
 _session_history: dict[str, list[dict]] = {}
 
 # Token-saving knobs for the session-history pipeline:
@@ -36,87 +53,114 @@ _MAX_TURNS = 20
 
 
 def _compact_history_for_save(messages: list[dict]) -> list[dict]:
-    """Cap large tool_result content before persisting to session history.
+    """Cap large tool-result content before persisting to session history.
 
-    The full content was consumed by the assistant on the turn that
-    produced it; later turns just need to remember the call happened.
-    If the agent really needs the raw output again (rare), it can
-    re-invoke the tool.
+    OpenAI-shape tool results live in `{role: "tool", tool_call_id, content}`
+    messages; the content is a JSON-stringified payload. We truncate the
+    string when it exceeds _MAX_TOOL_RESULT_BYTES — the assistant already
+    consumed the full output on the turn it was produced; later turns
+    only need to remember the call happened.
     """
     out: list[dict] = []
     for msg in messages:
-        content = msg.get("content")
-        if msg.get("role") == "user" and isinstance(content, list):
-            new_blocks: list[Any] = []
-            for c in content:
-                if isinstance(c, dict) and c.get("type") == "tool_result":
-                    body = c.get("content")
-                    if isinstance(body, str) and len(body) > _MAX_TOOL_RESULT_BYTES:
-                        truncated = (
-                            body[:_MAX_TOOL_RESULT_BYTES]
-                            + f"\n… [tool result truncated for history: "
-                              f"{len(body)} bytes total. Re-call the tool if "
-                              f"you need the full output.]"
-                        )
-                        new_blocks.append({**c, "content": truncated})
-                    else:
-                        new_blocks.append(c)
-                else:
-                    new_blocks.append(c)
-            out.append({**msg, "content": new_blocks})
-        else:
-            out.append(msg)
+        if msg.get("role") == "tool":
+            body = msg.get("content")
+            if isinstance(body, str) and len(body) > _MAX_TOOL_RESULT_BYTES:
+                truncated = (
+                    body[:_MAX_TOOL_RESULT_BYTES]
+                    + f"\n… [tool result truncated for history: "
+                      f"{len(body)} bytes total. Re-call the tool if "
+                      f"you need the full output.]"
+                )
+                out.append({**msg, "content": truncated})
+                continue
+        out.append(msg)
     return out
 
 
 def _trim_to_recent_turns(messages: list[dict], max_turns: int = _MAX_TURNS) -> list[dict]:
     """Drop older user-initiated turns from the front, keeping the last N.
 
-    Cut at user-prompt boundaries (role=user with string content), not
-    raw message indices, so every kept segment starts with a user prompt
-    and ends with a terminal assistant message — preserving the
-    tool_use ↔ tool_result pairing invariant the Anthropic API requires.
+    Cut at user-prompt boundaries (role=user) so every kept segment
+    starts with a user prompt and ends with a terminal assistant
+    message — preserving the assistant→tool_calls→tool→… pairing
+    invariant the OpenAI/LiteLLM API requires. The optional initial
+    system message is preserved by special-casing index 0.
     """
     prompt_indices = [
         i for i, m in enumerate(messages)
-        if m.get("role") == "user" and isinstance(m.get("content"), str)
+        if m.get("role") == "user"
     ]
     if len(prompt_indices) <= max_turns:
         return messages
-    return messages[prompt_indices[-max_turns]:]
+    cut = prompt_indices[-max_turns]
+    # If a system message leads the history, keep it in front.
+    if messages and messages[0].get("role") == "system":
+        return [messages[0], *messages[cut:]]
+    return messages[cut:]
 
 
-def _with_cache_breakpoint(messages: list[dict]) -> list[dict]:
-    """Place a cache_control marker on the last content block of the last
-    message. Anthropic's prompt cache keys on the prefix up to a marker,
-    so successive turns within the cache TTL (5 min) re-use the cached
-    history block-for-block instead of re-paying the input cost.
-
-    Only the freshly-appended user message follows the marker, so on the
-    next turn the *new* prior-history's last message gets a marker, and
-    the cache hits up to the previous marker position.
-    """
-    if not messages:
-        return messages
-    out = messages[:-1]
-    last = messages[-1]
-    content = last["content"]
-    if isinstance(content, str):
-        new_last = {
-            **last,
-            "content": [
-                {"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}
-            ],
+def _to_openai_tools(tools: list[dict]) -> list[dict]:
+    """Convert Drift's Anthropic-flavored tool schemas to OpenAI's
+    function-calling shape that LiteLLM expects."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t["name"],
+                "description": t.get("description", ""),
+                "parameters": t.get("input_schema", {"type": "object"}),
+            },
         }
-    elif isinstance(content, list) and content:
-        new_content = list(content[:-1]) + [
-            {**content[-1], "cache_control": {"type": "ephemeral"}}
-        ]
-        new_last = {**last, "content": new_content}
+        for t in tools
+    ]
+
+
+def _normalize_usage(u: Any) -> dict[str, int]:
+    """Map provider-specific usage to Drift's 4-kind shape.
+
+    The metric labels in `drift_agent_tokens_total{kind}` are stable
+    across providers. Mapping:
+      - input: uncached, billed-per-1k prompt tokens.
+      - output: completion / assistant tokens.
+      - cache_read: prompt tokens served from a cache hit.
+      - cache_creation: prompt tokens written to cache (Anthropic-only).
+
+    OpenAI's `prompt_tokens` INCLUDES `cached_tokens` (subset). Anthropic
+    via LiteLLM reports `cache_read_input_tokens` separately. We detect
+    which shape we got and subtract appropriately so "input" is always
+    fresh-only.
+    """
+    if u is None:
+        return {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+    prompt = getattr(u, "prompt_tokens", 0) or 0
+    completion = getattr(u, "completion_tokens", 0) or 0
+    # Anthropic shape (via LiteLLM):
+    cache_read_anthropic = getattr(u, "cache_read_input_tokens", 0) or 0
+    cache_creation = getattr(u, "cache_creation_input_tokens", 0) or 0
+    # OpenAI shape:
+    cache_read_openai = 0
+    details = getattr(u, "prompt_tokens_details", None)
+    if details is not None:
+        # details can be a dict or pydantic-like object
+        if isinstance(details, dict):
+            cache_read_openai = details.get("cached_tokens", 0) or 0
+        else:
+            cache_read_openai = getattr(details, "cached_tokens", 0) or 0
+    cache_read = cache_read_anthropic + cache_read_openai
+    if cache_read_anthropic:
+        # Anthropic via LiteLLM: prompt_tokens excludes cached; use as-is.
+        input_tokens = prompt
     else:
-        return messages
-    out.append(new_last)
-    return out
+        # OpenAI/Gemini: prompt_tokens INCLUDES cached; subtract for the
+        # "input" (fresh) component.
+        input_tokens = max(0, prompt - cache_read_openai)
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": completion,
+        "cache_read_input_tokens": cache_read,
+        "cache_creation_input_tokens": cache_creation,
+    }
 
 
 SYSTEM_PROMPT = """\
@@ -150,12 +194,13 @@ other series. Use them when the user asks about token usage, costs, conversation
 counts, or per-user activity: \
 `drift_agent_tokens_total{user, model, kind}` — kind ∈ {input, output, cache_read, \
 cache_creation} — and `drift_agent_turns_total{user, model}`. Both are CP-side \
-counters scraped on `host=dev-hetzner, job=drift-deploy-cp`. For cost computations, \
-canonical Anthropic Opus 4.7 pricing is $15/M input, $75/M output, $1.50/M cache \
-read, $18.75/M cache creation. Sonnet 4.6: $3/$15/$0.30/$3.75. Haiku 4.5: \
-$1/$5/$0.10/$1.25. Embed these as literals in PromQL when the user asks for \
-$-denominated answers, multiplying tokens by price/1e6. For "since when?" questions use \
-`increase(...[Xh|d|w])`; for "right now" use the raw counter value.
+counters scraped on `host=dev-hetzner, job=drift-deploy-cp`. The `model` label is \
+the literal model id Drift is configured with (claude-opus-4-7, gpt-4o, \
+gemini-2.5-pro, etc.); use it to slice usage by provider. When the user asks for \
+$-denominated answers, ask them which model's pricing to apply (or look up current \
+pricing for `model` if they say "the running model") and multiply tokens by \
+`price_per_million / 1e6`. For "since when?" use `increase(...[Xh|d|w])`; for \
+"right now" use the raw counter value.
 
 2. **Fetch data through `query_range` and `instant_query`.** Range queries return a `ref` (a \
 data handle) plus a compact summary — never raw arrays. Pass refs to analysis tools and emit \
@@ -299,42 +344,6 @@ def all_handlers() -> dict:
     }
 
 
-def _sanitize_assistant_content(blocks: Any) -> list[dict]:
-    """Re-serialize assistant blocks for inclusion in the next turn's `messages`.
-
-    The Anthropic API rejects server-only response fields if they're echoed back
-    (e.g. `parsed_output` on text blocks emitted under `output_config.effort`).
-    Whitelist what we send to keep round-trips valid.
-    """
-    out: list[dict] = []
-    for b in blocks:
-        d = b.model_dump(exclude_none=True)
-        t = d.get("type")
-        if t == "text":
-            keep = {"type": "text", "text": d.get("text", "")}
-            if d.get("citations"):
-                keep["citations"] = d["citations"]
-            out.append(keep)
-        elif t == "thinking":
-            keep = {"type": "thinking", "thinking": d.get("thinking", "")}
-            if d.get("signature"):
-                keep["signature"] = d["signature"]
-            out.append(keep)
-        elif t == "redacted_thinking":
-            out.append({"type": "redacted_thinking", "data": d.get("data", "")})
-        elif t == "tool_use":
-            out.append({
-                "type": "tool_use",
-                "id": d["id"],
-                "name": d["name"],
-                "input": d.get("input", {}),
-            })
-        else:
-            # Unknown block type — pass through and hope the API accepts it.
-            out.append(d)
-    return out
-
-
 def _summarize_for_event(name: str, result: Any) -> str:
     """Compact one-line preview for the UI's tool-call chip."""
     if not isinstance(result, dict):
@@ -452,7 +461,6 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
     test contexts). Tools that mutate deploy state consult user.role
     and user.groups; observability tools are role-agnostic.
     """
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
     vm = make_vm_client()
     alerts = make_alert_client()
     vl = make_vl_client()
@@ -504,17 +512,23 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
         )
 
     # Conversation memory: when the same investigation_id submits multiple
-    # turns, prepend prior assistant/user messages so propose_*/apply_* and
-    # any follow-up "ok" can chain coherently. History lives in process
-    # memory only — a restart loses it; the user sees their visible turns
-    # in localStorage but the agent answers their next prompt fresh.
+    # turns, prepend prior assistant/user/tool messages so propose_*/apply_*
+    # and any follow-up "ok" can chain coherently. History is OpenAI-shape
+    # (LiteLLM's canonical format). In-memory only — a restart loses it;
+    # the user sees their visible turns in localStorage but the agent
+    # answers their next prompt fresh.
     prior = _session_history.get(investigation_id, []) if investigation_id else []
-    # Mark a cache breakpoint at the end of the prior history. Within the
-    # 5-min cache TTL, subsequent turns re-use the cached prefix through
-    # the whole accumulated conversation instead of re-billing it.
-    if prior:
-        prior = _with_cache_breakpoint(prior)
-    messages: list[dict] = [*prior, {"role": "user", "content": user_content}]
+    # System message goes first; if `prior` already begins with one we
+    # don't duplicate it (we replace, since SYSTEM_PROMPT may have been
+    # edited between turns and we want the latest).
+    if prior and prior[0].get("role") == "system":
+        prior = prior[1:]
+    messages: list[dict] = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        *prior,
+        {"role": "user", "content": user_content},
+    ]
+    openai_tools = _to_openai_tools(tools)
 
     # Accumulate usage across every API call in this turn's tool loop.
     # `final.usage` only carries the LAST call's tokens — without this
@@ -532,79 +546,101 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
 
     try:
         for _iteration in range(20):  # hard cap on agent loop length
-            stream_kwargs = {
-                "model": settings.model,
-                "max_tokens": settings.max_tokens,
-                "thinking": {"type": "adaptive", "display": "summarized"},
-                "output_config": {"effort": settings.effort},
-                "system": [
-                    {
-                        "type": "text",
-                        "text": SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                "tools": tools,
-                "messages": messages,
-            }
+            # Per-iteration accumulators for the streaming assembly.
+            text_buf = ""
+            tool_calls_by_idx: dict[int, dict] = {}
+            finish_reason: str | None = None
+            iter_usage: Any = None
 
-            async with client.messages.stream(**stream_kwargs) as stream:
-                async for event in stream:
-                    et = getattr(event, "type", None)
-                    if et == "content_block_delta":
-                        d = event.delta
-                        if getattr(d, "type", None) == "text_delta":
-                            yield sse("narrative", {"text": d.text})
-                        elif getattr(d, "type", None) == "thinking_delta":
-                            yield sse("thinking", {"text": d.thinking})
-                    # input_json_delta, content_block_start/stop, message_*: ignored
+            response = await litellm.acompletion(
+                model=settings.model,
+                messages=messages,
+                tools=openai_tools,
+                stream=True,
+                stream_options={"include_usage": True},
+                max_tokens=settings.max_tokens,
+            )
 
-                final = await stream.get_final_message()
+            async for chunk in response:
+                choices = getattr(chunk, "choices", None) or []
+                if choices:
+                    delta = choices[0].delta
+                    if getattr(delta, "content", None):
+                        text_buf += delta.content
+                        yield sse("narrative", {"text": delta.content})
+                    # Some providers surface internal reasoning as
+                    # `reasoning_content` on the delta. LiteLLM normalizes
+                    # the attribute name across Claude / o-series / Gemini.
+                    rc = getattr(delta, "reasoning_content", None)
+                    if rc:
+                        yield sse("thinking", {"text": rc})
+                    tcs = getattr(delta, "tool_calls", None) or []
+                    for tc in tcs:
+                        # Streaming tool_calls arrive in pieces — assemble
+                        # by `index`. id + function.name appear on the
+                        # first delta for a slot; function.arguments is
+                        # a JSON-string stream that must be concatenated.
+                        idx = getattr(tc, "index", 0) or 0
+                        slot = tool_calls_by_idx.setdefault(idx, {"id": None, "name": None, "args": ""})
+                        if getattr(tc, "id", None):
+                            slot["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                slot["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                slot["args"] += fn.arguments
+                    if choices[0].finish_reason:
+                        finish_reason = choices[0].finish_reason
+                # Usage rides on the final chunk when include_usage=True.
+                if getattr(chunk, "usage", None):
+                    iter_usage = chunk.usage
 
             # Roll this iteration's usage into the per-turn accumulator.
-            turn_usage["input_tokens"] += final.usage.input_tokens
-            turn_usage["output_tokens"] += final.usage.output_tokens
-            turn_usage["cache_read_input_tokens"] += getattr(final.usage, "cache_read_input_tokens", 0)
-            turn_usage["cache_creation_input_tokens"] += getattr(final.usage, "cache_creation_input_tokens", 0)
+            iter_norm = _normalize_usage(iter_usage)
+            for k, v in iter_norm.items():
+                turn_usage[k] += v
 
-            # Drain any SSE bytes emit-tools queued during this iteration's tool execution
-            # (they're queued lazily — we'll flush after running tools below).
+            # Materialize the assistant message we just received so it
+            # can ride along in the next iteration's `messages`.
+            tool_calls: list[dict] = []
+            for idx in sorted(tool_calls_by_idx.keys()):
+                slot = tool_calls_by_idx[idx]
+                if not slot["id"] or not slot["name"]:
+                    continue  # malformed — skip
+                tool_calls.append({
+                    "id": slot["id"],
+                    "type": "function",
+                    "function": {
+                        "name": slot["name"],
+                        "arguments": slot["args"] or "{}",
+                    },
+                })
 
-            tool_uses = [b for b in final.content if b.type == "tool_use"]
-
-            if not tool_uses:
-                # No more tools — record the final assistant turn in
-                # session history, surface metadata, and stop.
+            if not tool_calls:
+                # No more tools — record the final assistant turn,
+                # surface metadata, and stop.
                 messages.append({
                     "role": "assistant",
-                    "content": _sanitize_assistant_content(final.content),
+                    "content": text_buf,
                 })
                 if investigation_id:
-                    # Two token-saving passes on the way to disk:
-                    # 1) compact large tool_result bodies — full content
-                    #    was already consumed by the assistant this turn.
-                    # 2) trim to the last N user-initiated turns so a
-                    #    long investigation can't grow unbounded.
                     compacted = _compact_history_for_save(messages)
                     _session_history[investigation_id] = _trim_to_recent_turns(compacted)
 
-                # Emit cumulative usage (sum across every API call in
-                # this turn's tool loop) as the turn's metadata.
                 yield sse(
                     "metadata",
                     {
                         "engine": settings.model,
-                        "stop_reason": final.stop_reason,
+                        "stop_reason": finish_reason or "stop",
                         "usage": dict(turn_usage),
                     },
                 )
 
-                # Export to Prometheus so the fleet's reporter-cp scrape
-                # picks it up. Per-user, per-model, per-kind breakdown
-                # lets operators ask "tokens by user this month" etc.
-                # Username "anonymous" only occurs in the deploy-disabled
-                # / no-auth dev path; in production every call is gated
-                # by get_current_user.
+                # Export to Prometheus so reporter-cp picks it up. The
+                # `model` label is the literal settings.model string —
+                # claude-opus-4-7, gpt-4o, gemini-2.5-pro, etc. — so
+                # operators can slice usage by provider.
                 from .deploy.observability import agent_tokens_total, agent_turns_total
                 username = getattr(user, "username", None) or "anonymous"
                 for kind, attr in (
@@ -623,53 +659,54 @@ async def run_agent(req: PromptRequest, user: Any = None) -> AsyncGenerator[byte
                 yield sse("done", {})
                 return
 
-            # Run tools and stream events.
-            messages.append({"role": "assistant", "content": _sanitize_assistant_content(final.content)})
+            # Run tools, append assistant + tool messages, stream events.
+            messages.append({
+                "role": "assistant",
+                "content": text_buf or None,
+                "tool_calls": tool_calls,
+            })
 
-            tool_results = []
-            for tu in tool_uses:
-                yield sse("tool_call", {"id": tu.id, "name": tu.name, "args": tu.input})
+            for slot in (tool_calls_by_idx[i] for i in sorted(tool_calls_by_idx)):
+                if not slot["id"] or not slot["name"]:
+                    continue
+                try:
+                    args = json.loads(slot["args"] or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                yield sse("tool_call", {"id": slot["id"], "name": slot["name"], "args": args})
 
-                handler = handlers.get(tu.name)
+                handler = handlers.get(slot["name"])
                 if handler is None:
-                    result: Any = {"error": f"unknown tool: {tu.name}"}
+                    result: Any = {"error": f"unknown tool: {slot['name']}"}
                 else:
                     try:
-                        result = await handler(ctx, tu.input or {})
+                        result = await handler(ctx, args)
                     except Exception as e:  # noqa: BLE001
                         result = {"error": f"{type(e).__name__}: {e}"}
 
-                # Flush any SSE the tool queued (block/data events from emit tools).
+                # Flush any SSE the tool queued (block/data events).
                 while events:
                     yield events.pop(0)
 
                 yield sse(
                     "tool_result",
                     {
-                        "id": tu.id,
-                        "name": tu.name,
-                        "summary": _summarize_for_event(tu.name, result),
+                        "id": slot["id"],
+                        "name": slot["name"],
+                        "summary": _summarize_for_event(slot["name"], result),
                         "is_error": isinstance(result, dict) and "error" in result,
                     },
                 )
 
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tu.id,
-                        "content": json.dumps(result, default=str),
-                        "is_error": isinstance(result, dict) and "error" in result,
-                    }
-                )
-
-            messages.append({"role": "user", "content": tool_results})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": slot["id"],
+                    "content": json.dumps(result, default=str),
+                })
 
         yield sse("error", {"error": "agent loop exceeded iteration cap"})
         yield sse("done", {})
-    except anthropic.APIError as e:
-        yield sse("error", {"error": f"anthropic_api_error: {e}"})
-        yield sse("done", {})
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — LiteLLM raises many provider-specific types
         yield sse("error", {"error": f"{type(e).__name__}: {e}"})
         yield sse("done", {})
     finally:

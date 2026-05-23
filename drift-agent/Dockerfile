@@ -9,11 +9,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /build
 COPY drift-agent/pyproject.toml ./
+# --ignore-installed forces install into /install even when the package is
+# already satisfied by the base image's system Python (e.g. `packaging` is
+# bundled with pip itself, so a vanilla `pip install --prefix=/install
+# packaging` silently no-ops and the runtime stage never gets the files
+# when it copies /install → /usr/local).
 RUN pip install --upgrade pip wheel \
- && pip install --prefix=/install \
+ && pip install --prefix=/install --ignore-installed \
         "fastapi>=0.115.0" \
         "uvicorn[standard]>=0.32.0" \
-        "anthropic>=0.40.0" \
+        "litellm>=1.63.0" \
+        "packaging>=24.0" \
         "httpx>=0.27.0" \
         "pydantic>=2.9.0" \
         "pydantic-settings>=2.6.0" \

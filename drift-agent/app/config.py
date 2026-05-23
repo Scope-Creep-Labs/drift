@@ -4,8 +4,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    anthropic_api_key: str
+    # LLM routing goes through litellm — `model` is a litellm model id.
+    # Examples: claude-opus-4-7, gpt-4o, gpt-4o-mini, o1, o3,
+    # gemini-2.5-pro. Provider is inferred from the prefix and the
+    # corresponding *_API_KEY is used. Only the key for the chosen
+    # provider needs to be set; the others stay empty.
     model: str = "claude-opus-4-7"
+    anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    gemini_api_key: str = ""
     effort: str = "high"
     max_tokens: int = 64000
 
