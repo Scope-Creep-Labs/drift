@@ -146,11 +146,25 @@ async def me(user: UserContext = Depends(get_current_user)) -> UserOut:
     )
 
 
+class MeUsageKinds(BaseModel):
+    """Per-model token breakdown for one model the user has touched."""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+
+
 class MeUsage(BaseModel):
     """Token + turn counts for the requesting user over the last 30
     days. Queried from VictoriaMetrics (which holds the time-series
     drift-agent's in-process counters get scraped into via reporter-cp),
     so the number is persistent across drift-agent restarts.
+
+    `models` carries the per-model breakdown — the frontend uses it to
+    apply the right $/M-token pricing per provider before summing into
+    a single cost number for the sidebar. The roll-up at the top level
+    (`input_tokens`, etc.) is kept for back-compat with old clients
+    that don't care about the breakdown.
 
     `window_days` makes the time horizon explicit on the wire so the
     UI's tooltip can label it; 30d strikes a reasonable balance between
@@ -162,6 +176,7 @@ class MeUsage(BaseModel):
     cache_creation_input_tokens: int
     turns: int
     window_days: int
+    models: dict[str, MeUsageKinds] = {}
 
 
 @router.get("/me/usage", response_model=MeUsage)
@@ -174,10 +189,15 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
     from ..tools.metrics import make_vm_client
 
     window_days = 30
+    _KIND_TO_ATTR = {
+        "input": "input_tokens",
+        "output": "output_tokens",
+        "cache_read": "cache_read_input_tokens",
+        "cache_creation": "cache_creation_input_tokens",
+    }
 
-    # Default empty result so we don't 500 the sidebar when VM is
-    # unreachable or hasn't scraped any drift_agent_* samples yet.
-    totals = {"input": 0, "output": 0, "cache_read": 0, "cache_creation": 0}
+    models: dict[str, MeUsageKinds] = {}
+    totals = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     turns = 0
 
     if _settings.vm_url:
@@ -188,7 +208,7 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
             # The Prometheus label value lexer also doesn't permit
             # arbitrary code injection; worst case is an empty result.
             tokens_q = (
-                f'sum by (kind) (increase(drift_agent_tokens_total'
+                f'sum by (model, kind) (increase(drift_agent_tokens_total'
                 f'{{user="{user.username}"}}[{window_days}d]))'
             )
             turns_q = (
@@ -197,12 +217,19 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
             )
             tokens_resp = await vm.instant_query(tokens_q)
             for row in tokens_resp.get("data", {}).get("result", []) or []:
-                kind = row.get("metric", {}).get("kind")
-                if kind in totals:
-                    try:
-                        totals[kind] = int(float(row.get("value", [0, "0"])[1]))
-                    except (ValueError, TypeError):
-                        pass
+                metric = row.get("metric", {})
+                model_name = metric.get("model") or "unknown"
+                kind = metric.get("kind")
+                attr = _KIND_TO_ATTR.get(kind)
+                if attr is None:
+                    continue
+                try:
+                    n = int(float(row.get("value", [0, "0"])[1]))
+                except (ValueError, TypeError):
+                    continue
+                slot = models.setdefault(model_name, MeUsageKinds())
+                setattr(slot, attr, getattr(slot, attr) + n)
+                totals[attr] += n
             turns_resp = await vm.instant_query(turns_q)
             for row in turns_resp.get("data", {}).get("result", []) or []:
                 try:
@@ -215,12 +242,13 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
             await vm.aclose()
 
     return MeUsage(
-        input_tokens=totals["input"],
-        output_tokens=totals["output"],
-        cache_read_input_tokens=totals["cache_read"],
-        cache_creation_input_tokens=totals["cache_creation"],
+        input_tokens=totals["input_tokens"],
+        output_tokens=totals["output_tokens"],
+        cache_read_input_tokens=totals["cache_read_input_tokens"],
+        cache_creation_input_tokens=totals["cache_creation_input_tokens"],
         turns=turns,
         window_days=window_days,
+        models=models,
     )
 
 

@@ -25,7 +25,7 @@ import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
 import { useTerminalUiStore } from '../../state/terminalUiStore'
-import { costForUsage, formatUsd, totalTokens } from '../../lib/pricing'
+import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
@@ -519,13 +519,38 @@ export function InvestigationList() {
               </Typography>
               {usage && usage.turns > 0 && (() => {
                 const tok = totalTokens(usage)
-                const cost = costForUsage(usage)
+                // Per-model cost using the right $/M-token per provider.
+                // Fall back to single-model pricing only when the backend
+                // didn't return a breakdown (older clients / pre-litellm).
+                const cost = usage.models && Object.keys(usage.models).length > 0
+                  ? costForUsageByModel(usage.models)
+                  : costForUsage(usage)
+                const modelEntries = Object.entries(usage.models ?? {})
+                  .map(([name, u]) => ({
+                    name,
+                    tok:
+                      (u.input_tokens ?? 0) +
+                      (u.output_tokens ?? 0) +
+                      (u.cache_read_input_tokens ?? 0) +
+                      (u.cache_creation_input_tokens ?? 0),
+                    usd: costForUsage(u, name),
+                  }))
+                  .sort((a, b) => b.usd - a.usd)
                 return (
                   <Tooltip
                     placement="top"
                     title={
                       <Box sx={{ fontSize: '0.7rem', lineHeight: 1.5 }}>
                         <div style={{ fontWeight: 600, marginBottom: 2 }}>last {usage.window_days}d</div>
+                        {modelEntries.length > 0 && (
+                          <Box sx={{ borderBottom: '1px solid rgba(255,255,255,0.12)', pb: 0.4, mb: 0.4 }}>
+                            {modelEntries.map((m) => (
+                              <div key={m.name}>
+                                {m.name}: {(m.tok / 1000).toFixed(1)}k tok · {formatUsd(m.usd)}
+                              </div>
+                            ))}
+                          </Box>
+                        )}
                         <div>in: {usage.input_tokens.toLocaleString()}</div>
                         <div>out: {usage.output_tokens.toLocaleString()}</div>
                         <div>cache read: {usage.cache_read_input_tokens.toLocaleString()}</div>

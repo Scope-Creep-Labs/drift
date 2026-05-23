@@ -195,12 +195,21 @@ counts, or per-user activity: \
 `drift_agent_tokens_total{user, model, kind}` — kind ∈ {input, output, cache_read, \
 cache_creation} — and `drift_agent_turns_total{user, model}`. Both are CP-side \
 counters scraped on `host=dev-hetzner, job=drift-deploy-cp`. The `model` label is \
-the literal model id Drift is configured with (claude-opus-4-7, gpt-4o, \
-gemini-2.5-pro, etc.); use it to slice usage by provider. When the user asks for \
-$-denominated answers, ask them which model's pricing to apply (or look up current \
-pricing for `model` if they say "the running model") and multiply tokens by \
-`price_per_million / 1e6`. For "since when?" use `increase(...[Xh|d|w])`; for \
-"right now" use the raw counter value.
+the literal model id Drift is configured with; use it to slice usage by provider. \
+For "$ spent" questions, group by `(model, kind)`, multiply each by the price below \
+(per 1M tokens), and sum. `cache_creation` only applies to Anthropic models (others \
+charge nothing extra to write the cache). Prices (USD per 1M tokens, input / output / \
+cache_read / cache_creation): \
+claude-opus-4-7: 15 / 75 / 1.50 / 18.75. \
+claude-sonnet-4-6: 3 / 15 / 0.30 / 3.75. \
+claude-haiku-4-5: 1 / 5 / 0.10 / 1.25. \
+gpt-4o (and gpt-5.4): 2.50 / 10 / 1.25 / 0. \
+gpt-4o-mini (and gpt-5.4-mini): 0.15 / 0.60 / 0.075 / 0. \
+o1: 15 / 60 / 7.50 / 0. \
+o3-mini: 1.10 / 4.40 / 0.55 / 0. \
+gemini-2.5-pro: 1.25 / 5 / 0.3125 / 0. \
+gemini-2.5-flash: 0.075 / 0.30 / 0.01875 / 0. \
+For "since when?" use `increase(...[Xh|d|w])`; for "right now" use the raw counter.
 
 2. **Fetch data through `query_range` and `instant_query`.** Range queries return a `ref` (a \
 data handle) plus a compact summary — never raw arrays. Pass refs to analysis tools and emit \

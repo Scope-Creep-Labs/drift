@@ -137,7 +137,10 @@ export function Turn({ turn, streaming = false }: { turn: TurnLike; streaming?: 
                 if (u.output_tokens) parts.push(`out ${u.output_tokens.toLocaleString()}`)
                 if (u.cache_read_input_tokens) parts.push(`cache hit ${u.cache_read_input_tokens.toLocaleString()}`)
                 if (u.cache_creation_input_tokens) parts.push(`cache write ${u.cache_creation_input_tokens.toLocaleString()}`)
-                const cost = costForUsage(u)
+                // Per-turn cost uses the actual model that ran the turn
+                // (set in agent.py's `metadata.engine`). Without this it
+                // would always price as Claude Opus 4.7.
+                const cost = costForUsage(u, turn.metadata.engine ?? undefined)
                 return (
                   <>
                     {parts.length > 0 && ` · ${parts.join(' · ')} tok`}

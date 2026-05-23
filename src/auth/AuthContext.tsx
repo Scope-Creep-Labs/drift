@@ -14,13 +14,20 @@ export type AuthUser = {
 // restarts. Backend uses `increase(...)` which detects + accounts for
 // counter resets between scrapes. Up to one reporter-cp scrape
 // interval (~30s) of staleness right after a turn.
-export type UsageSnapshot = {
+export type UsageKinds = {
   input_tokens: number
   output_tokens: number
   cache_read_input_tokens: number
   cache_creation_input_tokens: number
+}
+
+export type UsageSnapshot = UsageKinds & {
   turns: number
   window_days: number
+  // Per-model breakdown so the sidebar can apply the right $/M-token
+  // pricing per provider before summing. Roll-up fields above are
+  // kept for back-compat / display of total tokens regardless of model.
+  models: Record<string, UsageKinds>
 }
 
 type AuthState =
