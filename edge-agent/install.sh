@@ -212,17 +212,24 @@ for path in \
 done
 CA_BUNDLE_MOUNT=""
 CURL_CA_BUNDLE_ENVLINE=""
+SSL_CERT_FILE_ENVLINE=""
 DRIFT_HOST_CA_BUNDLE_ENVLINE=""
 if [ -n "$CA_BUNDLE_HOST" ]; then
   echo "detected host CA bundle: $CA_BUNDLE_HOST"
-  echo "  → mounted into agent at /host/etc/ssl/host-ca-bundle.crt (curl trust)"
+  echo "  → mounted into agent at /host/etc/ssl/host-ca-bundle.crt"
+  echo "  → CURL_CA_BUNDLE + SSL_CERT_FILE set so agent's curl AND python ssl trust it"
   echo "  → exposed to deployed apps as DRIFT_HOST_CA_BUNDLE=$CA_BUNDLE_HOST"
   CA_BUNDLE_MOUNT="-v $CA_BUNDLE_HOST:/host/etc/ssl/host-ca-bundle.crt:ro"
-  # CURL_CA_BUNDLE uses the IN-CONTAINER path (agent's own curl reads it).
-  # DRIFT_HOST_CA_BUNDLE uses the HOST path (passed through compose so the
-  # docker daemon — which lives on the host — can bind-mount it into app
-  # containers). Different values, same underlying file.
+  # Three env vars covering both stdlib paths the agent uses:
+  # - CURL_CA_BUNDLE: curl/openssl (the agent script's check-ins + the
+  #   self-update bootstrap + every `docker compose pull`).
+  # - SSL_CERT_FILE: python's `ssl` module (terminal-bridge.py's wss://
+  #   connection back to the CP — websockets uses ssl.create_default_context
+  #   which honors this, not CURL_CA_BUNDLE).
+  # - DRIFT_HOST_CA_BUNDLE: HOST path, passed through compose so the
+  #   docker daemon can bind-mount the file into app containers.
   CURL_CA_BUNDLE_ENVLINE="CURL_CA_BUNDLE=/host/etc/ssl/host-ca-bundle.crt"
+  SSL_CERT_FILE_ENVLINE="SSL_CERT_FILE=/host/etc/ssl/host-ca-bundle.crt"
   DRIFT_HOST_CA_BUNDLE_ENVLINE="DRIFT_HOST_CA_BUNDLE=$CA_BUNDLE_HOST"
 else
   echo "note: no host CA bundle found at standard locations; agent will rely on container's Mozilla bundle"
@@ -237,6 +244,7 @@ POLL_INTERVAL=$POLL_INTERVAL
 GROUP_ID=$GROUP_ID
 DRIFT_DOCKER_DATA_DIR=$DRIFT_DOCKER_DATA_DIR
 $CURL_CA_BUNDLE_ENVLINE
+$SSL_CERT_FILE_ENVLINE
 $DRIFT_HOST_CA_BUNDLE_ENVLINE
 EOF
 chmod 600 /etc/drift-deploy/env
