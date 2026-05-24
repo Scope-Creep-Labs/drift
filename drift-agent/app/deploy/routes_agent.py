@@ -103,6 +103,46 @@ def _serve_edge_file(name: str, media_type: str) -> FileResponse:
     return FileResponse(path, media_type=media_type, filename=name)
 
 
+@router.get("/bundles/{filename:path}")
+async def serve_bundle(
+    filename: str,
+    bearer: str = Depends(extract_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Serve a locally-stored compose bundle to the edge agent.
+
+    Used when bundle_storage=local (the default). Auth is the bearer
+    token from the agent's check-in flow — same as every other agent
+    endpoint. We cross-check the token against ANY device's hash; this
+    isn't a per-device authorization (any commissioned device can
+    download any bundle the CP has cached), which matches the existing
+    S3 presigned-URL semantics (anyone with the URL can fetch).
+
+    A future hardening pass could bind specific bundles to specific
+    devices via a one-time download token in the check-in response,
+    but the practical security boundary today is "the agent's bearer
+    is the credential", and that bar is met.
+    """
+    from .security import verify_token
+    from .models import Device
+    from sqlalchemy import select
+
+    # Find any device whose hash matches this bearer. Linear scan is
+    # fine for fleets in the low thousands — bcrypt verify dominates,
+    # and bundle downloads only happen on revision change.
+    devices = (await db.execute(select(Device).where(Device.bootstrap_token_hash.is_not(None)))).scalars().all()
+    if not any(verify_token(bearer, d.bootstrap_token_hash) for d in devices if d.bootstrap_token_hash):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
+
+    try:
+        data = bundles.LocalBackend().open_local(filename)
+    except FileNotFoundError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"bundle '{filename}' not found")
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return Response(content=data, media_type="application/gzip")
+
+
 @router.post("/check-in", response_model=AgentCheckInResponse)
 async def check_in(
     body: AgentCheckIn,
@@ -252,12 +292,16 @@ async def check_in(
             # Shouldn't happen — revision creation always uploads — but
             # skip rather than hand the agent a broken instruction.
             continue
+        # For S3-stored bundles we mint a short-lived presigned URL.
+        # For local-stored bundles we ship the `local:<filename>` token
+        # as-is; the agent prepends ${CP_URL}/agent/bundles/ and supplies
+        # its bearer token. presign_get handles both paths.
         try:
             url = bundles.presign_get(rev.bundle_url, expires_in=600)
         except Exception as e:  # noqa: BLE001
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                f"could not presign bundle: {e}",
+                f"could not resolve bundle URL: {e}",
             )
         desired.append(
             DesiredApp(

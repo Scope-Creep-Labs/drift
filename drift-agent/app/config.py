@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     # Drift Deploy — control plane state + bundle storage. All optional; an
     # empty drift_pg_url makes the deploy subsystem dormant.
     drift_pg_url: str = ""
+
+    # Bundle storage: "local" = CP-hosted filesystem (zero external deps;
+    # the drift-agent serves bundles via /api/deploy/agent/bundles/...).
+    # "s3" = upload to B2/AWS/MinIO; agents download via presigned URLs.
+    # Default is "local" because most self-hosters don't want an extra
+    # cloud bucket just to push compose bundles.
+    bundle_storage: str = "local"
+    bundle_storage_path: str = "/var/lib/drift/bundles"
+
+    # B2 / S3 — only consulted when bundle_storage=s3.
     b2_endpoint: str = ""
     b2_region: str = ""
     b2_access_key_id: str = ""

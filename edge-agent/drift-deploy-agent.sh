@@ -98,7 +98,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.6.2"
+AGENT_VERSION="0.7.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -328,30 +328,53 @@ write_textfile() {
 apply_revision() {
   local app=$1 rev_id=$2 url=$3 sha=$4
   local rev_dir="$APPS_DIR/$app/$rev_id"
-  local bundle="$rev_dir/bundle.tar.gz"
+  local bundle_gz="$rev_dir/bundle.tar.gz"
+  local bundle_tar="$rev_dir/bundle.tar"
   local err   # last error message, captured for state_set_error
 
   log_info "[$app] applying revision $rev_id"
   mkdir -p "$rev_dir"
 
-  if ! err=$(curl -fsSL --max-time 120 -o "$bundle" "$url" 2>&1); then
+  # CP-served bundles arrive as `local:<filename>` — prepend ${CP_URL}
+  # and add the bearer token. Presigned S3 URLs come through verbatim
+  # and need no auth header.
+  local curl_args=(-fsSL --max-time 120 -o "$bundle_gz")
+  if [[ "$url" == local:* ]]; then
+    local fname="${url#local:}"
+    url="${CP_URL%/}/agent/bundles/$fname"
+    curl_args+=(-H "Authorization: Bearer $BOOTSTRAP_TOKEN")
+  fi
+
+  if ! err=$(curl "${curl_args[@]}" "$url" 2>&1); then
     log_error "[$app] bundle download failed: $err"
     state_set_error "$app" "bundle download failed: $err"
     return 1
   fi
+
+  # Verify sha256 of the UNCOMPRESSED tar (not the gzip). gzip's
+  # output isn't byte-stable across implementations / dates, so
+  # verifying the inner tar gives us a deterministic fingerprint.
+  if ! err=$(gunzip -c "$bundle_gz" > "$bundle_tar" 2>&1); then
+    log_error "[$app] bundle gunzip failed: $err"
+    state_set_error "$app" "bundle gunzip failed: $err"
+    return 1
+  fi
   local got
-  got=$(sha256sum "$bundle" | awk '{print $1}')
+  got=$(sha256sum "$bundle_tar" | awk '{print $1}')
   if [ "$got" != "$sha" ]; then
     err="sha256 mismatch (got $got, expected $sha)"
     log_error "[$app] $err"
     state_set_error "$app" "$err"
     return 1
   fi
-  if ! err=$(tar -xzf "$bundle" -C "$rev_dir" 2>&1); then
+  if ! err=$(tar -xf "$bundle_tar" -C "$rev_dir" 2>&1); then
     log_error "[$app] extract failed: $err"
     state_set_error "$app" "extract failed: $err"
     return 1
   fi
+  # Don't keep the uncompressed tar around — only the .gz needs to
+  # stick around for redeploys after a CP outage.
+  rm -f "$bundle_tar"
 
   if bundle_touches_protected "$rev_dir"; then
     err="REFUSED: bundle touches a protected service/container name — bricking safeguard"

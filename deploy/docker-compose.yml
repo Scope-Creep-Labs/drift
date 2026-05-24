@@ -1,32 +1,41 @@
 # Drift — single-server bundle.
-# Everything required to run a complete Drift deployment on one Linux box:
-#   - Caddy terminates TLS via Let's Encrypt and reverse-proxies every
-#     public path (drift SPA, vmalert/alertmanager UIs, grafana, vmauth
-#     gateway for remote vmagents).
-#   - The VictoriaMetrics stack (vm, vlogs, vmagent gateway via vmauth,
-#     vmalert + alertmanager + alertmanager-ntfy).
-#   - The Drift control plane (drift-postgres + drift-agent + drift-frontend).
-#   - A "reporter" trio (vmagent + cadvisor + vector) so this host
-#     scrapes its own metrics into the local VM. Node-exporter runs on
-#     the host network namespace.
 #
-# Start with: install.sh (prompts for domain, admin creds, model + key,
-# ntfy topic, optional B2 creds). It writes .env + renders the config
-# templates, then runs `docker compose up -d`.
+# Everything to run a complete Drift deployment on one Linux box:
+#   - Drift control plane (drift-postgres + drift-agent + drift-frontend)
+#   - VictoriaMetrics stack (vm, vlogs, vmauth for remote agents,
+#     vmalert + alertmanager + alertmanager-ntfy)
+#   - Grafana for dashboards
+#   - Reporter (vmagent + cadvisor + vector + node-exporter) so this
+#     host scrapes its own metrics into the local VM
+#   - Caddy (OPTIONAL — only with `--profile caddy`) for public TLS
 #
-# All variables live in .env. Path conventions:
-#   ./config/<service>       static & rendered config files
-#   ./data/<service>         (bind-mounted state; gitignored)
-#   named volumes            ephemeral or large state (postgres, VM, etc.)
+# Port-binding convention: every web-facing service binds to
+# 127.0.0.1:<port>:<port>. That lets an external reverse proxy on the
+# same host (your existing Caddy / Traefik / nginx) front everything,
+# OR the bundled Caddy (opt-in profile) take over with no port
+# conflicts. Nothing public-facing is exposed without an explicit
+# reverse proxy.
+#
+# Start:
+#   ./install.sh                       # interactive bootstrap; picks
+#                                       # whether to use bundled Caddy
+#
+# Or by hand:
+#   docker compose up -d                          # without bundled Caddy
+#   docker compose --profile caddy up -d          # with bundled Caddy
 
 services:
   # ------------------------------------------------------------------
-  # Caddy — public-facing TLS reverse proxy
+  # Caddy — OPTIONAL. Opt-in with `--profile caddy`. When disabled,
+  # drift-frontend / vmalert / alertmanager / grafana / vmauth are
+  # reachable on 127.0.0.1:<port> for the operator's existing reverse
+  # proxy to forward to.
   # ------------------------------------------------------------------
   caddy:
     image: caddy:2
     container_name: caddy
     restart: unless-stopped
+    profiles: [caddy]
     ports:
       - "80:80"
       - "443:443"
@@ -38,7 +47,7 @@ services:
       DOMAIN: ${DOMAIN}
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
       WEB_AUTH_USER: ${WEB_AUTH_USER:-drift}
-      WEB_AUTH_HASH: ${WEB_AUTH_HASH}
+      WEB_AUTH_HASH: ${WEB_AUTH_HASH:-}
     networks: [drift]
     depends_on:
       - drift-frontend
@@ -76,8 +85,9 @@ services:
     networks: [drift]
 
   # ------------------------------------------------------------------
-  # vmauth — gateway for remote vmagents pushing metrics + logs
-  # Exposed via Caddy at /vm/* (writes) and /vl/* (logs)
+  # vmauth — gateway for remote vmagents pushing metrics + logs.
+  # Exposed on 127.0.0.1 so the host's reverse proxy (bundled Caddy or
+  # external) can front it. Remote agents hit it via that proxy.
   # ------------------------------------------------------------------
   vmauth:
     image: victoriametrics/vmauth:stable
@@ -87,6 +97,8 @@ services:
       - "--auth.config=/etc/auth.yml"
     volumes:
       - ./config/auth.yml:/etc/auth.yml:ro
+    ports:
+      - "127.0.0.1:${VMAUTH_HOST_PORT:-8427}:8427"
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -104,13 +116,12 @@ services:
       - "--notifier.url=http://alertmanager:9093/am"
       - "--rule=/etc/alerts/*.yml"
       - "--evaluationInterval=30s"
-      - "--external.url=https://${DOMAIN}/vmalert"
+      - "--external.url=${PUBLIC_URL:-http://localhost}/vmalert"
       - "--http.pathPrefix=/vmalert"
     volumes:
-      # Bind the alerts dir read-write so drift-agent's LLM tools can
-      # write drift-managed.yml. vmalert re-reads on SIGHUP (which the
-      # agent triggers via /-/reload after writing).
       - ./config/alerts:/etc/alerts:rw
+    ports:
+      - "127.0.0.1:${VMALERT_HOST_PORT:-8880}:8880"
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -123,18 +134,19 @@ services:
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
       - "--storage.path=/alertmanager"
-      - "--web.external-url=https://${DOMAIN}/am"
+      - "--web.external-url=${PUBLIC_URL:-http://localhost}/am"
     volumes:
       # Directory bind so atomic file replaces by drift-agent are visible
-      # to alertmanager without a container restart. (File-level bind
-      # pins the inode and silently strands edits.)
+      # to alertmanager without a container restart.
       - ./config/alertmanager:/etc/alertmanager:rw
       - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
       - alertmanager-data:/alertmanager
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_HOST_PORT:-9093}:9093"
     networks: [drift]
 
   # ------------------------------------------------------------------
-  # alertmanager-ntfy — Alertmanager webhook → ntfy.sh translator
+  # alertmanager-ntfy — AM webhook → ntfy.sh translator
   # ------------------------------------------------------------------
   alertmanager-ntfy:
     image: ghcr.io/alexbakker/alertmanager-ntfy:latest
@@ -157,6 +169,8 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./config/grafana.ini:/etc/grafana/grafana.ini:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_HOST_PORT:-3000}:3000"
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -180,12 +194,9 @@ services:
       retries: 5
 
   # ------------------------------------------------------------------
-  # drift-agent — FastAPI backend (agent loop, deploy CP, terminal relay)
+  # drift-agent — FastAPI backend
   # ------------------------------------------------------------------
   drift-agent:
-    # Pulled from GHCR — built + pushed by scripts/release.sh from the
-    # `main` branch. To build from a fork, override locally with a
-    # docker-compose.override.yml that adds `build:` to this service.
     image: ghcr.io/kidproquo/drift-agent:latest
     container_name: drift-agent
     restart: unless-stopped
@@ -199,10 +210,12 @@ services:
       VL_URL: http://victorialogs:9428
       VMALERT_URL: http://vmalert:8880/vmalert
       ALERTMANAGER_URL: http://alertmanager:9093/am
-      ALLOWED_ORIGINS: "https://${DOMAIN}"
+      ALLOWED_ORIGINS: ${PUBLIC_URL:-http://localhost}
       DRIFT_PG_URL: postgresql+asyncpg://${DRIFT_PG_USER:-drift}:${DRIFT_PG_PASSWORD}@drift-postgres:5432/${DRIFT_PG_DB:-drift}
-      # Where the agent writes alert rules + reads alertmanager.yml. The
-      # bind mounts below match these container paths.
+      # Local-storage bundle backend by default; flip to s3 + fill the
+      # B2_* env vars to push bundles to an external bucket.
+      BUNDLE_STORAGE: ${BUNDLE_STORAGE:-local}
+      BUNDLE_STORAGE_PATH: /var/lib/drift/bundles
       VMALERT_RULES_DIR: /etc/alerts
       ALERTMANAGER_CONFIG_FILE: /etc/alertmanager/alertmanager.yml
       ALERTMANAGER_SECRETS_DIR: /etc/alertmanager/secrets
@@ -210,22 +223,23 @@ services:
       - ./config/alerts:/etc/alerts:rw
       - ./config/alertmanager:/etc/alertmanager:rw
       - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
+      - drift-bundles:/var/lib/drift/bundles
     networks: [drift]
 
   # ------------------------------------------------------------------
   # drift-frontend — React SPA + nginx /api proxy to drift-agent
   # ------------------------------------------------------------------
-  # Pulled from GHCR. This tag is built by scripts/release.sh with
-  # VITE_BASE=/ so the SPA serves at the domain root.
   drift-frontend:
     image: ghcr.io/kidproquo/drift-frontend:latest
     container_name: drift-frontend
     restart: unless-stopped
     depends_on: [drift-agent]
+    ports:
+      - "127.0.0.1:${DRIFT_HOST_PORT:-10001}:80"
     networks: [drift]
 
   # ==================================================================
-  # Reporter — this host scrapes its own metrics into local VM.
+  # Reporter — this host scrapes its own metrics into local VM
   # ==================================================================
   reporter-vmagent:
     image: victoriametrics/vmagent:latest
@@ -241,8 +255,6 @@ services:
     command:
       - "-promscrape.config=/etc/prometheus/prometheus.yml"
       - "-promscrape.config.strictParse=false"
-      # Push directly to the local VM (no need to round-trip through
-      # vmauth on a single-server deploy).
       - "-remoteWrite.url=http://vm:8428/api/v1/write"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -302,6 +314,7 @@ volumes:
   vl-data:
   grafana-data:
   drift-pg-data:
+  drift-bundles:
   alertmanager-data:
   vector-data:
 
