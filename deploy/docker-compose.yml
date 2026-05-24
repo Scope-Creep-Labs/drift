@@ -183,12 +183,9 @@ services:
   # drift-agent — FastAPI backend (agent loop, deploy CP, terminal relay)
   # ------------------------------------------------------------------
   drift-agent:
-    # Build from the parent drift repo (this deploy/ dir lives inside it).
-    # Pulls ghcr.io/kidproquo/drift-agent:latest first to keep first-run
-    # fast; falls back to build if the pull fails (private repo, fork, etc.).
-    build:
-      context: ..
-      dockerfile: drift-agent/Dockerfile
+    # Pulled from GHCR — built + pushed by scripts/release.sh from the
+    # `main` branch. To build from a fork, override locally with a
+    # docker-compose.override.yml that adds `build:` to this service.
     image: ghcr.io/kidproquo/drift-agent:latest
     container_name: drift-agent
     restart: unless-stopped
@@ -218,17 +215,10 @@ services:
   # ------------------------------------------------------------------
   # drift-frontend — React SPA + nginx /api proxy to drift-agent
   # ------------------------------------------------------------------
-  # Built locally with VITE_BASE=/ so the SPA serves at the domain root
-  # rather than under /drift/. (The existing ghcr.io/kidproquo/drift-
-  # frontend tag is built with VITE_BASE=/drift/ for the dabba.* deploy.)
+  # Pulled from GHCR. This tag is built by scripts/release.sh with
+  # VITE_BASE=/ so the SPA serves at the domain root.
   drift-frontend:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-      args:
-        VITE_ENGINE: agent
-        VITE_BASE: /
-    image: drift-frontend:single-server
+    image: ghcr.io/kidproquo/drift-frontend:latest
     container_name: drift-frontend
     restart: unless-stopped
     depends_on: [drift-agent]

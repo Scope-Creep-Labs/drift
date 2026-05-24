@@ -291,8 +291,8 @@ chmod -R u+rwX,g+rX,o+rX config/alerts config/alertmanager
 # ---------- launch ----------
 
 heading "Launching"
-docker compose pull --ignore-buildable >/dev/null 2>&1 || true
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 echo
 heading "Status"
 docker compose ps --format "table {{.Name}}\t{{.Status}}"
