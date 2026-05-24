@@ -1,0 +1,12 @@
+# Grafana config — rendered by install.sh with __DOMAIN__ substituted.
+[server]
+domain = __DOMAIN__
+root_url = https://%(domain)s/grafana/
+serve_from_sub_path = true
+
+[plugins]
+allow_loading_unsigned_plugins = victoriametrics-datasource
+
+[security]
+# Allow embedding Grafana panels into the Drift SPA via iframe.
+allow_embedding = true

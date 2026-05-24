@@ -7,6 +7,8 @@
 > 🚨 For the alerting subsystem (vmalert + Alertmanager + the agent's 14 alert tools, with end-to-end workflows), see [ALERTING.md](./ALERTING.md).
 >
 > 🚀 For Drift Deploy — fleet management & compose-app deployment via the prompt UI — see [DEPLOY.md](./DEPLOY.md) (currently in the `drift-deploy` branch).
+>
+> 📦 For a **single-server bundle** (VM stack + Drift CP + Caddy/TLS on one box) with a guided installer, see [deploy/README.md](./deploy/README.md).
 
 ---
 

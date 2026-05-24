@@ -1,0 +1,320 @@
+# Drift — single-server bundle.
+# Everything required to run a complete Drift deployment on one Linux box:
+#   - Caddy terminates TLS via Let's Encrypt and reverse-proxies every
+#     public path (drift SPA, vmalert/alertmanager UIs, grafana, vmauth
+#     gateway for remote vmagents).
+#   - The VictoriaMetrics stack (vm, vlogs, vmagent gateway via vmauth,
+#     vmalert + alertmanager + alertmanager-ntfy).
+#   - The Drift control plane (drift-postgres + drift-agent + drift-frontend).
+#   - A "reporter" trio (vmagent + cadvisor + vector) so this host
+#     scrapes its own metrics into the local VM. Node-exporter runs on
+#     the host network namespace.
+#
+# Start with: install.sh (prompts for domain, admin creds, model + key,
+# ntfy topic, optional B2 creds). It writes .env + renders the config
+# templates, then runs `docker compose up -d`.
+#
+# All variables live in .env. Path conventions:
+#   ./config/<service>       static & rendered config files
+#   ./data/<service>         (bind-mounted state; gitignored)
+#   named volumes            ephemeral or large state (postgres, VM, etc.)
+
+services:
+  # ------------------------------------------------------------------
+  # Caddy — public-facing TLS reverse proxy
+  # ------------------------------------------------------------------
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    environment:
+      DOMAIN: ${DOMAIN}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL}
+      WEB_AUTH_USER: ${WEB_AUTH_USER:-drift}
+      WEB_AUTH_HASH: ${WEB_AUTH_HASH}
+    networks: [drift]
+    depends_on:
+      - drift-frontend
+      - vmalert
+      - alertmanager
+      - grafana
+      - vmauth
+
+  # ------------------------------------------------------------------
+  # VictoriaMetrics — time-series database
+  # ------------------------------------------------------------------
+  vm:
+    image: victoriametrics/victoria-metrics:stable
+    container_name: vm
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=${VM_RETENTION:-90d}"
+    volumes:
+      - vm-data:/victoria-metrics-data
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # VictoriaLogs — log database
+  # ------------------------------------------------------------------
+  victorialogs:
+    image: victoriametrics/victoria-logs:stable
+    container_name: victorialogs
+    restart: unless-stopped
+    command:
+      - "-storageDataPath=/victoria-logs-data"
+      - "-retentionPeriod=${VL_RETENTION:-30d}"
+    volumes:
+      - vl-data:/victoria-logs-data
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # vmauth — gateway for remote vmagents pushing metrics + logs
+  # Exposed via Caddy at /vm/* (writes) and /vl/* (logs)
+  # ------------------------------------------------------------------
+  vmauth:
+    image: victoriametrics/vmauth:stable
+    container_name: vmauth
+    restart: unless-stopped
+    command:
+      - "--auth.config=/etc/auth.yml"
+    volumes:
+      - ./config/auth.yml:/etc/auth.yml:ro
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # vmalert — alert rule evaluation
+  # ------------------------------------------------------------------
+  vmalert:
+    image: victoriametrics/vmalert:latest
+    container_name: vmalert
+    restart: unless-stopped
+    depends_on: [vm, alertmanager]
+    command:
+      - "--datasource.url=http://vm:8428"
+      - "--remoteWrite.url=http://vm:8428"
+      - "--remoteRead.url=http://vm:8428"
+      - "--notifier.url=http://alertmanager:9093/am"
+      - "--rule=/etc/alerts/*.yml"
+      - "--evaluationInterval=30s"
+      - "--external.url=https://${DOMAIN}/vmalert"
+      - "--http.pathPrefix=/vmalert"
+    volumes:
+      # Bind the alerts dir read-write so drift-agent's LLM tools can
+      # write drift-managed.yml. vmalert re-reads on SIGHUP (which the
+      # agent triggers via /-/reload after writing).
+      - ./config/alerts:/etc/alerts:rw
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # Alertmanager — alert routing + silencing
+  # ------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alertmanager
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+      - "--web.external-url=https://${DOMAIN}/am"
+    volumes:
+      # Directory bind so atomic file replaces by drift-agent are visible
+      # to alertmanager without a container restart. (File-level bind
+      # pins the inode and silently strands edits.)
+      - ./config/alertmanager:/etc/alertmanager:rw
+      - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
+      - alertmanager-data:/alertmanager
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # alertmanager-ntfy — Alertmanager webhook → ntfy.sh translator
+  # ------------------------------------------------------------------
+  alertmanager-ntfy:
+    image: ghcr.io/alexbakker/alertmanager-ntfy:latest
+    container_name: alertmanager-ntfy
+    restart: unless-stopped
+    command:
+      - "--configs=/etc/alertmanager-ntfy/config.yml"
+    volumes:
+      - ./config/alertmanager-ntfy.yml:/etc/alertmanager-ntfy/config.yml:ro
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # Grafana — dashboards
+  # ------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: grafana
+    restart: unless-stopped
+    depends_on: [vm]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./config/grafana.ini:/etc/grafana/grafana.ini:ro
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # drift-postgres — control plane state
+  # ------------------------------------------------------------------
+  drift-postgres:
+    image: postgres:16-alpine
+    container_name: drift-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DRIFT_PG_USER:-drift}
+      POSTGRES_PASSWORD: ${DRIFT_PG_PASSWORD:?set DRIFT_PG_PASSWORD in .env}
+      POSTGRES_DB: ${DRIFT_PG_DB:-drift}
+    volumes:
+      - drift-pg-data:/var/lib/postgresql/data
+    networks: [drift]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ------------------------------------------------------------------
+  # drift-agent — FastAPI backend (agent loop, deploy CP, terminal relay)
+  # ------------------------------------------------------------------
+  drift-agent:
+    # Build from the parent drift repo (this deploy/ dir lives inside it).
+    # Pulls ghcr.io/kidproquo/drift-agent:latest first to keep first-run
+    # fast; falls back to build if the pull fails (private repo, fork, etc.).
+    build:
+      context: ..
+      dockerfile: drift-agent/Dockerfile
+    image: ghcr.io/kidproquo/drift-agent:latest
+    container_name: drift-agent
+    restart: unless-stopped
+    depends_on:
+      drift-postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # Local services — internal docker DNS.
+      VM_URL: http://vm:8428
+      VL_URL: http://victorialogs:9428
+      VMALERT_URL: http://vmalert:8880/vmalert
+      ALERTMANAGER_URL: http://alertmanager:9093/am
+      ALLOWED_ORIGINS: "https://${DOMAIN}"
+      DRIFT_PG_URL: postgresql+asyncpg://${DRIFT_PG_USER:-drift}:${DRIFT_PG_PASSWORD}@drift-postgres:5432/${DRIFT_PG_DB:-drift}
+      # Where the agent writes alert rules + reads alertmanager.yml. The
+      # bind mounts below match these container paths.
+      VMALERT_RULES_DIR: /etc/alerts
+      ALERTMANAGER_CONFIG_FILE: /etc/alertmanager/alertmanager.yml
+      ALERTMANAGER_SECRETS_DIR: /etc/alertmanager/secrets
+    volumes:
+      - ./config/alerts:/etc/alerts:rw
+      - ./config/alertmanager:/etc/alertmanager:rw
+      - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
+    networks: [drift]
+
+  # ------------------------------------------------------------------
+  # drift-frontend — React SPA + nginx /api proxy to drift-agent
+  # ------------------------------------------------------------------
+  # Built locally with VITE_BASE=/ so the SPA serves at the domain root
+  # rather than under /drift/. (The existing ghcr.io/kidproquo/drift-
+  # frontend tag is built with VITE_BASE=/drift/ for the dabba.* deploy.)
+  drift-frontend:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VITE_ENGINE: agent
+        VITE_BASE: /
+    image: drift-frontend:single-server
+    container_name: drift-frontend
+    restart: unless-stopped
+    depends_on: [drift-agent]
+    networks: [drift]
+
+  # ==================================================================
+  # Reporter — this host scrapes its own metrics into local VM.
+  # ==================================================================
+  reporter-vmagent:
+    image: victoriametrics/vmagent:latest
+    container_name: reporter-vmagent
+    restart: unless-stopped
+    depends_on: [vm, victorialogs]
+    hostname: ${REPORTER_HOSTNAME:-drift-host}
+    environment:
+      HOSTNAME: ${REPORTER_HOSTNAME:-drift-host}
+      GROUP_ID: ${REPORTER_GROUP:-cloud}
+    volumes:
+      - ./config/reporter/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+      - "-promscrape.config.strictParse=false"
+      # Push directly to the local VM (no need to round-trip through
+      # vmauth on a single-server deploy).
+      - "-remoteWrite.url=http://vm:8428/api/v1/write"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [drift]
+
+  reporter-cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: reporter-cadvisor
+    restart: unless-stopped
+    command:
+      - "-housekeeping_interval=10s"
+      - "-docker_only=true"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks: [drift]
+
+  reporter-vector:
+    image: timberio/vector:0.43.0-alpine
+    container_name: reporter-vector
+    restart: unless-stopped
+    hostname: vector-${REPORTER_HOSTNAME:-drift-host}
+    environment:
+      VECTOR_CONFIG: /etc/vector/vector.yaml
+      VECTOR_DATA_DIR: /var/lib/vector
+    volumes:
+      - ./config/reporter/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-data:/var/lib/vector
+    networks: [drift]
+
+  reporter-node-exporter:
+    image: prom/node-exporter:latest
+    container_name: reporter-node-exporter
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|cgroup2|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+      - "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+      - /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector:ro
+
+volumes:
+  caddy-data:
+  caddy-config:
+  vm-data:
+  vl-data:
+  grafana-data:
+  drift-pg-data:
+  alertmanager-data:
+  vector-data:
+
+networks:
+  drift:
+    driver: bridge

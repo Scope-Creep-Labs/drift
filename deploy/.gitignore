@@ -1,0 +1,7 @@
+.env
+config/Caddyfile
+config/auth.yml
+config/alertmanager-ntfy.yml
+config/grafana.ini
+config/alertmanager-secrets/*
+!config/alertmanager-secrets/.gitkeep

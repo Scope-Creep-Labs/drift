@@ -1,0 +1,82 @@
+# Caddy config for the Drift single-server bundle.
+#
+# install.sh renders this into config/Caddyfile by substituting:
+#   __DOMAIN__              public DNS name (e.g. drift.example.com)
+#   __LETSENCRYPT_EMAIL__   for ACME registration
+#   __WEB_AUTH_USER__       basic-auth username for vmalert + alertmanager UIs
+#   __WEB_AUTH_HASH__       bcrypt hash of the password
+#
+# Path-prefix layout — everything is reachable under one hostname:
+#   /                       → Drift SPA (drift-frontend)
+#   /api/*                  → drift-agent (via the frontend's nginx /api proxy)
+#   /api/deploy/agent/*     → drift-agent (NOT gated by basic_auth; the agent
+#                             carries its own bearer token per device)
+#   /vmalert/*              → vmalert (gated by basic_auth)
+#   /am/*                   → Alertmanager (gated by basic_auth)
+#   /grafana/*              → Grafana (own auth)
+#   /vm/*                   → vmauth → VictoriaMetrics (vmauth's own auth)
+#   /vl/*                   → vmauth → VictoriaLogs (vmauth's own auth)
+#
+# Caddy auto-issues + renews Let's Encrypt certs for the configured domain.
+
+{
+	email __LETSENCRYPT_EMAIL__
+}
+
+__DOMAIN__ {
+	# Drift Deploy edge-agent surface — every device's curl POSTs land here.
+	# NOT gated by basic_auth: the bearer token in /etc/drift-deploy/env on
+	# each device is the credential, and install.sh / agent.sh fetches need
+	# to work anonymously so a fresh box can bootstrap.
+	handle /api/deploy/agent/* {
+		reverse_proxy drift-frontend:80 {
+			flush_interval -1
+		}
+	}
+
+	# vmalert UI + API — gated.
+	redir /vmalert /vmalert/ 301
+	handle /vmalert/* {
+		basic_auth {
+			__WEB_AUTH_USER__ __WEB_AUTH_HASH__
+		}
+		reverse_proxy vmalert:8880
+	}
+
+	# Alertmanager UI + API — gated.
+	redir /am /am/ 301
+	handle /am/* {
+		basic_auth {
+			__WEB_AUTH_USER__ __WEB_AUTH_HASH__
+		}
+		reverse_proxy alertmanager:9093
+	}
+
+	# Grafana — has its own auth, no Caddy gate.
+	redir /grafana /grafana/ 301
+	handle /grafana/* {
+		reverse_proxy grafana:3000
+	}
+
+	# vmauth — front door for remote vmagents pushing metrics + logs.
+	# Authenticated by vmauth (reporter user/password in config/auth.yml);
+	# Caddy doesn't double-up basic_auth here so vmagent's basic-auth
+	# header gets passed through cleanly.
+	handle /vm/* {
+		uri strip_prefix /vm
+		reverse_proxy vmauth:8427
+	}
+	handle /vl/* {
+		uri strip_prefix /vl
+		reverse_proxy vmauth:8427
+	}
+
+	# Everything else → Drift SPA. The frontend's nginx terminates /api/*
+	# internally (proxies to drift-agent:8000) so we forward the whole
+	# tree to one upstream.
+	handle {
+		reverse_proxy drift-frontend:80 {
+			flush_interval -1
+		}
+	}
+}

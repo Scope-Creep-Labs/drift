@@ -1,0 +1,41 @@
+groups:
+- name: drift-managed
+  interval: 30s
+  rules:
+  - alert: ContainerErrorSpike
+    # Bumped from 30 → 150 on 2026-05-23: a single rogue device pinging
+    # /agent/check-in with a stale bootstrap token generates ~50-100 401s
+    # in 10m (Vector ships 4xx access lines as level=error), which is
+    # the dominant noise floor on drift-drift-frontend-1. 150 still
+    # catches genuine application-error storms (50+ errors/min) without
+    # firing on a single misconfigured device.
+    expr: sum by (host, container_name) (increase(container_log_lines_total{level="error"}[10m]))
+      > 150
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: '{{ $labels.container_name }} on {{ $labels.host }} is spewing errors'
+      description: '{{ $labels.container_name }} on {{ $labels.host }} logged {{ $value
+        | printf "%.0f" }} error lines in the last 10m (threshold 150, sustained 5m).
+        Use `query_logs host:{{ $labels.host }} AND container_name:{{ $labels.container_name
+        }}` to see the actual messages.'
+  # HostHighMemory removed 2026-05-24: jetson-001 lives near 90% by
+  # design; the alert just kept noisily firing. Re-add with a
+  # per-host threshold (or use HostHighCPU's similar shape with a
+  # host=~ filter) if a real memory-pressure SLO is needed.
+  - alert: VmagentQueueGrowing
+    expr: sum by (host) (vmagent_remotewrite_pending_data_bytes) > 52428800
+    for: 10m
+    labels:
+      severity: warning
+      team: platform
+    annotations:
+      summary: vmagent on {{ $labels.host }} has >50MB queued for remote write
+      description: "vmagent_remotewrite_pending_data_bytes on host {{ $labels.host\
+        \ }} has exceeded 50MB for 10m. The central VictoriaMetrics endpoint is likely\
+        \ unreachable or slow. The on-disk queue is capped at 500MB/url \u2014 once\
+        \ full, oldest samples are dropped. Investigate the remote endpoint and network\
+        \ path before that happens."
+      runbook: Check up{job="victoriametrics"} on the central host, then vmagent logs
+        on {{ $labels.host }} for remote-write errors.

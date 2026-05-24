@@ -1,0 +1,56 @@
+# Vector — extracts metric counters from container stdout/stderr.
+#
+# Pipeline:
+#   docker_logs  →  classify (regex → level)  →  log_to_metric  →  /metrics
+#
+# Output: container_log_lines_total{host, container_name, image, level}
+#   level ∈ {error, warning, info}. `host` is attached by vmagent's
+#   external_labels at scrape time (see prometheus.yml).
+#
+# Reload: vector reloads on SIGHUP, or just restart the container.
+
+sources:
+  docker:
+    type: docker_logs
+    docker_host: unix:///var/run/docker.sock
+    # Don't ingest our own log stream — would create a feedback loop where
+    # vector's "starting up" lines get classified and incremented forever.
+    exclude_containers:
+      - vector
+
+transforms:
+  classify:
+    type: remap
+    inputs: [docker]
+    source: |
+      msg = string!(.message)
+      # Order matters: error patterns checked first so "warn: error happened"
+      # classifies as error, not warning.
+      if match(msg, r'(?i)\b(error|exception|panic|traceback|fatal|stack ?trace|critical)\b') {
+        .level = "error"
+      } else if match(msg, r'(?i)\bwarn(ing)?\b') {
+        .level = "warning"
+      } else {
+        .level = "info"
+      }
+
+  to_metrics:
+    type: log_to_metric
+    inputs: [classify]
+    metrics:
+      - type: counter
+        field: level
+        name: container_log_lines_total
+        tags:
+          container_name: "{{ container_name }}"
+          image: "{{ image }}"
+          level: "{{ level }}"
+
+sinks:
+  prom:
+    type: prometheus_exporter
+    inputs: [to_metrics]
+    address: 0.0.0.0:9598
+    # Counters accumulate forever in memory by default. Flush stale series
+    # so a container that never runs again stops appearing in /metrics.
+    flush_period_secs: 600

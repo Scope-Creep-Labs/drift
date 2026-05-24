@@ -1,0 +1,36 @@
+# Starter alert rules. vmalert evaluates every file matching /etc/alerts/*.yml.
+# Reload after editing: `docker exec vmalert kill -HUP 1` (or restart the container).
+groups:
+- name: starter
+  interval: 30s
+  rules:
+  - alert: InstanceDown
+    expr: up == 0
+    for: 5m
+    labels:
+      severity: warning
+    annotations:
+      summary: "{{ $labels.host }} / {{ $labels.job }} is down"
+      description: "Target {{ $labels.instance }} ({{ $labels.job }}) on {{ $labels.host }} has been unreachable for 5m."
+
+  - alert: HostHighCPU
+    # node_exporter: idle CPU < 10% sustained for 10m
+    expr: 100 - (avg by (host) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: "{{ $labels.host }} CPU > 90%"
+      description: "Sustained CPU usage above 90% for 10m on {{ $labels.host }}."
+
+  - alert: HostLowDisk
+    # node_exporter: free root disk < 10%
+    expr: |
+      (node_filesystem_avail_bytes{mountpoint="/"} /
+       node_filesystem_size_bytes{mountpoint="/"}) * 100 < 10
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: "{{ $labels.host }} root disk < 10% free"
+      description: "{{ $labels.host }} has less than 10% free disk on /."

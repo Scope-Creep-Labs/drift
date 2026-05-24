@@ -1,0 +1,312 @@
+#!/usr/bin/env bash
+# Drift single-server installer.
+#
+# Run from the deploy/ directory:
+#   ./install.sh
+#
+# Prompts for: public domain + email (for Let's Encrypt), Drift admin
+# user/password, LLM model + matching API key, ntfy topic, optional B2
+# credentials.
+#
+# Auto-generates: Fernet secret key, Postgres password, vmauth reporter
+# password, basic-auth password + bcrypt hash for the vmalert/AM gate.
+#
+# Idempotent: re-running keeps existing values (reads current .env if
+# present) and only prompts for missing/empty ones, then renders the
+# templated configs and runs `docker compose up -d`.
+
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+DEPLOY_DIR=$(pwd)
+ENV_FILE="$DEPLOY_DIR/.env"
+ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
+
+# ---------- helpers ----------
+
+err() { echo "ERROR: $*" >&2; exit 1; }
+warn() { echo "warn:  $*" >&2; }
+info() { echo "       $*"; }
+heading() { echo; echo "═══ $* ═══"; }
+
+# Read a single value from the existing .env (if any). Empty string if
+# unset / missing. We use this so re-runs keep prior choices.
+env_get() {
+  local key=$1
+  [ -f "$ENV_FILE" ] || { echo ""; return; }
+  # Grep the assignment; allow leading whitespace; strip 'KEY=' prefix.
+  local line
+  line=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 || true)
+  [ -z "$line" ] && { echo ""; return; }
+  echo "${line#${key}=}"
+}
+
+# Prompt for a value, accepting Enter to keep the current value.
+ask() {
+  local key=$1 prompt=$2
+  local default=${3:-}
+  local current
+  current=$(env_get "$key")
+  local hint
+  if [ -n "$current" ]; then
+    hint=" [current: $current]"
+  elif [ -n "$default" ]; then
+    hint=" [default: $default]"
+  else
+    hint=""
+  fi
+  local answer
+  read -rp "$prompt$hint: " answer
+  if [ -n "$answer" ]; then
+    eval "$key=\"\$answer\""
+  elif [ -n "$current" ]; then
+    eval "$key=\"\$current\""
+  else
+    eval "$key=\"\$default\""
+  fi
+}
+
+# Same as ask() but for secrets — echo is disabled and we don't show
+# the current value (only a "(unchanged)" hint when present).
+ask_secret() {
+  local key=$1 prompt=$2
+  local current
+  current=$(env_get "$key")
+  local hint=""
+  [ -n "$current" ] && hint=" [Enter to keep current]"
+  local answer
+  read -rsp "$prompt$hint: " answer
+  echo
+  if [ -n "$answer" ]; then
+    eval "$key=\"\$answer\""
+  else
+    eval "$key=\"\$current\""
+  fi
+}
+
+# Generate a URL-safe random string. Used for passwords + secret keys
+# that don't have a fixed format requirement.
+rand_token() {
+  local n=${1:-24}
+  head -c $((n * 2)) /dev/urandom | base64 | tr -d '/+=\n' | head -c "$n"
+}
+
+# Generate a Fernet key (32 bytes urlsafe base64). Required for the
+# drift secrets subsystem; format is enforced by the cryptography lib.
+gen_fernet() {
+  python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" 2>/dev/null \
+    || head -c 32 /dev/urandom | base64 | tr '+/' '-_'
+}
+
+# bcrypt-hash a password for Caddy's basic_auth directive. Uses Caddy
+# itself (we already need the image) so we don't add a python crypt dep.
+bcrypt_caddy() {
+  local plain=$1
+  docker run --rm caddy:2 caddy hash-password --plaintext "$plain"
+}
+
+# ---------- preflight ----------
+
+heading "Preflight"
+command -v docker >/dev/null || err "docker not installed"
+docker compose version >/dev/null 2>&1 || err "docker compose plugin missing"
+info "docker $(docker --version | awk '{print $3}' | tr -d ',')"
+info "compose $(docker compose version | awk '{print $4}')"
+info "deploy dir: $DEPLOY_DIR"
+
+[ -f "$ENV_FILE" ] && info "found existing .env (will prompt to keep or change values)"
+
+# ---------- prompts ----------
+
+heading "Public DNS & TLS"
+ask DOMAIN              "Public hostname (must already resolve to this host's IP)" drift.example.com
+ask LETSENCRYPT_EMAIL   "Email for Let's Encrypt registration"                      ops@example.com
+
+heading "Drift admin"
+ask DRIFT_ADMIN_USERNAME "Drift admin username" admin
+ask_secret DRIFT_ADMIN_PASSWORD "Drift admin password"
+[ -z "${DRIFT_ADMIN_PASSWORD:-}" ] && err "admin password is required"
+
+heading "Web-auth gate (vmalert + Alertmanager UIs)"
+ask WEB_AUTH_USER "Username for the /vmalert and /am basic-auth gate" drift
+ask_secret WEB_AUTH_PASSWORD_PLAINTEXT "Password for the same gate"
+[ -z "${WEB_AUTH_PASSWORD_PLAINTEXT:-}" ] && err "web-auth password is required"
+
+heading "LLM"
+echo "  Pick the model Drift's agent will run. The matching API key is asked next."
+echo "  Common picks: claude-opus-4-7 | gpt-4o | gpt-4o-mini | o3 | gemini-2.5-pro"
+ask MODEL "Model id" claude-opus-4-7
+ask EFFORT "Reasoning effort (low/medium/high)" high
+ask MAX_TOKENS "Max output tokens per call" 64000
+# Only prompt for the key that matches the chosen model's provider.
+case "$MODEL" in
+  claude-*|*/claude-*) ask_secret ANTHROPIC_API_KEY "Anthropic API key" ;;
+  gpt-*|o1*|o3*|*/gpt-*|*/o1*|*/o3*) ask_secret OPENAI_API_KEY "OpenAI API key" ;;
+  gemini-*|*/gemini-*) ask_secret GEMINI_API_KEY "Gemini API key" ;;
+  *) warn "Unknown model prefix '$MODEL' — set the right *_API_KEY in .env manually after install." ;;
+esac
+
+heading "ntfy push (Alertmanager → phone)"
+echo "  Pick any unique-ish topic; subscribe to https://ntfy.sh/<topic> on your phone."
+DEFAULT_NTFY="drift-$(rand_token 8)"
+ask NTFY_TOPIC "ntfy topic" "$DEFAULT_NTFY"
+
+heading "B2 / S3 bundle storage (optional — for Drift Deploy)"
+echo "  Leave empty to skip. Bundle pushes from chat will surface a clear"
+echo "  'storage not configured' error and everything else works."
+ask B2_ENDPOINT      "B2 endpoint URL" ""
+ask B2_REGION        "B2 region" ""
+ask B2_ACCESS_KEY_ID "B2 access key id" ""
+ask_secret B2_SECRET_ACCESS_KEY "B2 secret access key"
+ask B2_BUCKET        "B2 bucket name" ""
+
+heading "Self-scrape (reporter on this host)"
+ask REPORTER_HOSTNAME "Hostname label for self-scraped metrics" "$(hostname -s 2>/dev/null || echo drift-host)"
+ask REPORTER_GROUP    "Group label for self-scraped metrics" cloud
+
+heading "Auto-generated secrets"
+# These get rolled fresh on each rotation but preserved when re-running
+# without an explicit rotate request.
+DRIFT_PG_PASSWORD=$(env_get DRIFT_PG_PASSWORD)
+DRIFT_SECRET_KEY=$(env_get DRIFT_SECRET_KEY)
+REPORTER_PASSWORD=$(env_get REPORTER_PASSWORD)
+if [ -z "$DRIFT_PG_PASSWORD" ]; then
+  DRIFT_PG_PASSWORD=$(rand_token 24)
+  info "generated DRIFT_PG_PASSWORD"
+else
+  info "kept existing DRIFT_PG_PASSWORD"
+fi
+if [ -z "$DRIFT_SECRET_KEY" ]; then
+  DRIFT_SECRET_KEY=$(gen_fernet)
+  info "generated DRIFT_SECRET_KEY (Fernet)"
+else
+  info "kept existing DRIFT_SECRET_KEY"
+fi
+if [ -z "$REPORTER_PASSWORD" ]; then
+  REPORTER_PASSWORD=$(rand_token 24)
+  info "generated REPORTER_PASSWORD (for remote vmagents)"
+else
+  info "kept existing REPORTER_PASSWORD"
+fi
+
+heading "Hashing web-auth password (bcrypt via caddy:2)"
+WEB_AUTH_HASH=$(bcrypt_caddy "$WEB_AUTH_PASSWORD_PLAINTEXT")
+info "bcrypt hash generated"
+
+# ---------- write .env ----------
+
+heading "Writing .env"
+umask 077
+cat > "$ENV_FILE" <<EOF
+# Generated by install.sh — re-run install.sh to update.
+DOMAIN=$DOMAIN
+LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
+
+WEB_AUTH_USER=$WEB_AUTH_USER
+WEB_AUTH_HASH=$WEB_AUTH_HASH
+
+MODEL=$MODEL
+EFFORT=$EFFORT
+MAX_TOKENS=$MAX_TOKENS
+ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+OPENAI_API_KEY=${OPENAI_API_KEY:-}
+GEMINI_API_KEY=${GEMINI_API_KEY:-}
+
+DRIFT_ADMIN_USERNAME=$DRIFT_ADMIN_USERNAME
+DRIFT_ADMIN_PASSWORD=$DRIFT_ADMIN_PASSWORD
+
+DRIFT_PG_USER=drift
+DRIFT_PG_DB=drift
+DRIFT_PG_PASSWORD=$DRIFT_PG_PASSWORD
+
+DRIFT_SECRET_KEY=$DRIFT_SECRET_KEY
+
+NTFY_TOPIC=$NTFY_TOPIC
+
+REPORTER_PASSWORD=$REPORTER_PASSWORD
+REPORTER_HOSTNAME=$REPORTER_HOSTNAME
+REPORTER_GROUP=$REPORTER_GROUP
+
+VM_RETENTION=90d
+VL_RETENTION=30d
+
+B2_ENDPOINT=${B2_ENDPOINT:-}
+B2_REGION=${B2_REGION:-}
+B2_ACCESS_KEY_ID=${B2_ACCESS_KEY_ID:-}
+B2_SECRET_ACCESS_KEY=${B2_SECRET_ACCESS_KEY:-}
+B2_BUCKET=${B2_BUCKET:-}
+B2_PREFIX=drift-bundles
+
+VM_BASIC_AUTH=
+VM_BEARER_TOKEN=
+EOF
+chmod 600 "$ENV_FILE"
+info ".env written ($(wc -l < "$ENV_FILE") lines, mode 600)"
+
+# ---------- render config templates ----------
+
+heading "Rendering config templates"
+render() {
+  local src=$1 dst=$2
+  shift 2
+  # Pairs of __KEY__ value [__KEY__ value …]; rendered via sed.
+  local input
+  input=$(cat "$src")
+  while [ $# -gt 0 ]; do
+    local key=$1 val=$2
+    shift 2
+    # Escape sed delimiter (|) and ampersand in replacement.
+    local esc=${val//\\/\\\\}
+    esc=${esc//|/\\|}
+    esc=${esc//&/\\&}
+    input=$(printf '%s' "$input" | sed "s|$key|$esc|g")
+  done
+  printf '%s\n' "$input" > "$dst"
+  info "  rendered $dst"
+}
+
+render config/Caddyfile.tmpl                config/Caddyfile \
+  __DOMAIN__                "$DOMAIN" \
+  __LETSENCRYPT_EMAIL__     "$LETSENCRYPT_EMAIL" \
+  __WEB_AUTH_USER__         "$WEB_AUTH_USER" \
+  __WEB_AUTH_HASH__         "$WEB_AUTH_HASH"
+
+render config/auth.yml.tmpl                 config/auth.yml \
+  __REPORTER_PASSWORD__     "$REPORTER_PASSWORD"
+
+render config/alertmanager-ntfy.yml.tmpl    config/alertmanager-ntfy.yml \
+  __NTFY_TOPIC__            "$NTFY_TOPIC"
+
+render config/grafana.ini.tmpl              config/grafana.ini \
+  __DOMAIN__                "$DOMAIN"
+
+# Ensure the alerts and alertmanager dirs are writable by the drift-agent
+# container's `app` user (uid 999 inside the image). vmalert + Alertmanager
+# still read fine.
+chown -R 999:999 config/alerts config/alertmanager 2>/dev/null || \
+  warn "couldn't chown config/alerts + config/alertmanager (run as root?)"
+chmod -R u+rwX,g+rX,o+rX config/alerts config/alertmanager
+
+# ---------- launch ----------
+
+heading "Launching"
+docker compose pull --ignore-buildable >/dev/null 2>&1 || true
+docker compose up -d --build
+echo
+heading "Status"
+docker compose ps --format "table {{.Name}}\t{{.Status}}"
+echo
+echo "✓ install complete"
+echo
+echo "  SPA:           https://$DOMAIN"
+echo "  vmalert:       https://$DOMAIN/vmalert/   (basic_auth $WEB_AUTH_USER:…)"
+echo "  alertmanager:  https://$DOMAIN/am/        (basic_auth $WEB_AUTH_USER:…)"
+echo "  grafana:       https://$DOMAIN/grafana/   (own auth — see grafana docs)"
+echo "  vmauth gateway: https://$DOMAIN/vm/       (basic_auth reporter:$REPORTER_PASSWORD)"
+echo
+echo "First-run notes:"
+echo "  - DNS must resolve $DOMAIN → this host's IP before TLS can issue."
+echo "  - Watch issuance progress: docker compose logs -f caddy"
+echo "  - Drift admin login: $DRIFT_ADMIN_USERNAME / (the password you entered)"
+echo "  - ntfy: subscribe to https://ntfy.sh/$NTFY_TOPIC on your phone"

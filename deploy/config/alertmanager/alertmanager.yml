@@ -1,0 +1,29 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: ntfy
+  group_by: [alertname, host]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+  # Add specialized routes here (override receiver per match), e.g.:
+  # routes:
+  # - matchers: [severity="critical"]
+  #   receiver: ntfy
+  #   group_wait: 0s
+
+receivers:
+- name: ntfy
+  # Forwards to the alertmanager-ntfy shim, which publishes to ntfy.sh
+  # with title/priority/tags derived from severity + firing/resolved
+  # status. Topic + templates are in config/alertmanager-ntfy.yml.
+  webhook_configs:
+  - url: 'http://alertmanager-ntfy:8000/hook'
+    send_resolved: true
+
+inhibit_rules:
+- source_matchers: [severity="critical"]
+  target_matchers: [severity="warning"]
+  equal: [alertname, host]

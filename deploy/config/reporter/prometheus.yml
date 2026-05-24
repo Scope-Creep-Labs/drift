@@ -1,0 +1,38 @@
+global:
+  # Attached to every metric before remote write. Lets you group by host
+  # OR by group_id (logical grouping — client, cloud/edge, environment).
+  # Example queries:
+  #   node_load1{host="server-a"}
+  #   sum by (group_id) (rate(container_log_lines_total{level="error"}[5m]))
+  external_labels:
+    host: %{HOSTNAME}
+    group_id: %{GROUP_ID}
+
+scrape_configs:
+- job_name: cadvisor
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - cadvisor:8080
+
+- job_name: node
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - host.docker.internal:9100
+
+- job_name: vector
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - vector:9598
+
+# Drift Deploy control plane. Reached via the host gateway because
+# drift-agent sits on the `drift` bridge network in a different compose
+# project; its host-exposed port is 8000.
+- job_name: drift-deploy-cp
+  scrape_interval: 30s
+  static_configs:
+  - targets:
+    - host.docker.internal:8000
+  metrics_path: /metrics

@@ -1,0 +1,18 @@
+# vmauth gateway config. Remote vmagents (running on edge devices)
+# authenticate as the `reporter` user; vmauth routes writes to VM and
+# logs to VictoriaLogs by path. Rendered by install.sh — the
+# __REPORTER_PASSWORD__ placeholder is replaced with the generated
+# password before mounting.
+users:
+- username: reporter
+  password: __REPORTER_PASSWORD__
+  url_map:
+  # Any /insert/* or /select/logsql/* hits VictoriaLogs
+  - src_paths:
+    - "/insert/.*"
+    - "/select/logsql/.*"
+    url_prefix: "http://victorialogs:9428"
+  # Everything else falls through to VictoriaMetrics
+  - src_paths:
+    - ".*"
+    url_prefix: "http://vm:8428"

@@ -1,0 +1,40 @@
+# Translates Alertmanager webhook payloads to ntfy.sh notifications.
+# install.sh substitutes __NTFY_TOPIC__ from the .env value.
+
+http:
+  addr: ":8000"
+
+ntfy:
+  baseurl: https://ntfy.sh
+  notification:
+    topic: __NTFY_TOPIC__
+    # severity → ntfy priority. critical firing → urgent (rings through DND),
+    # warning → high, info → default, resolved → low.
+    priority: |
+      status == "firing"
+        ? (labels["severity"] == "critical" ? "urgent"
+          : labels["severity"] == "warning" ? "high"
+          : "default")
+        : "low"
+    tags:
+      - tag: rotating_light
+        condition: status == "firing"
+      - tag: white_check_mark
+        condition: status == "resolved"
+    templates:
+      title: |
+        {{- if eq .Status "resolved" -}}
+          Resolved: {{ if index .Annotations "summary" }}{{ index .Annotations "summary" }}{{ else }}{{ .Labels.alertname }}{{ end }}
+        {{- else -}}
+          {{ if index .Annotations "summary" }}{{ index .Annotations "summary" }}{{ else }}{{ .Labels.alertname }}{{ end }}
+        {{- end -}}
+      description: |
+        {{- if index .Annotations "description" -}}
+          {{ index .Annotations "description" }}
+        {{- else -}}
+          {{ .Labels.alertname }} on {{ if .Labels.host }}{{ .Labels.host }}{{ else if .Labels.instance }}{{ .Labels.instance }}{{ else }}unknown{{ end }}
+        {{- end -}}
+      headers:
+        X-Click: |
+          {{ .GeneratorURL }}
+  async: false
