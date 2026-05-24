@@ -1,12 +1,7 @@
-// Typed client for the Drift Deploy admin endpoints. Mirrors the agent's
-// base-URL handling so the same component works under `/drift/` in prod.
-// All endpoints expect Caddy basic_auth at the edge — the browser sends
-// the cached credentials automatically; we don't supply them here.
+// Typed client for the Drift Deploy admin endpoints.
+import { deployApiBase } from './apiBase'
 
-const API_BASE: string =
-  import.meta.env.VITE_API_BASE || `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`
-
-const DEPLOY_BASE = `${API_BASE}/deploy`
+const DEPLOY_BASE = deployApiBase()
 
 export type App = {
   id: string

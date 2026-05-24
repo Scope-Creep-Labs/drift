@@ -98,9 +98,11 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_ENGINE: agent
-        # Served at https://drift.example.com/drift/ behind Caddy.
-        # Use '/' for root-served deployments.
-        VITE_BASE: /drift/
+        # VITE_BASE intentionally NOT set — the Dockerfile default './'
+        # produces a portable build that derives API URLs from
+        # document.baseURI at runtime (see src/lib/apiBase.ts). The same
+        # image works whether Caddy serves the SPA at /, /drift/, or any
+        # subpath.
     image: drift-frontend:latest
     depends_on:
       - drift-agent

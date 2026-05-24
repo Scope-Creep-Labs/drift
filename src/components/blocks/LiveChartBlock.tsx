@@ -6,11 +6,11 @@ import PauseIcon from '@mui/icons-material/Pause'
 import PlayArrowIcon from '@mui/icons-material/PlayArrow'
 import type { LiveChartBlock as LiveChartBlockT } from '../../types/blocks'
 import { useLiveChartSession } from '../../state/liveChartSession'
+import { apiBase } from '../../lib/apiBase'
 
 const Plot = createPlotlyComponent(Plotly as unknown as Parameters<typeof createPlotlyComponent>[0])
 
-const API_BASE: string =
-  import.meta.env.VITE_API_BASE || `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`
+const API_BASE = apiBase()
 
 type VmRangeResponse = {
   status: string

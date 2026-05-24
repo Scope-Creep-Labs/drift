@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
 import { useFleetStore } from '../state/fleetStore'
+import { apiBase } from '../lib/apiBase'
 
 // Mirrors UserOut from the backend (drift-agent/app/users/routes.py).
 export type AuthUser = {
@@ -45,8 +46,9 @@ type AuthValue = AuthState & {
 
 const AuthCtx = createContext<AuthValue | null>(null)
 
-const API_BASE: string =
-  import.meta.env.VITE_API_BASE || `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api`
+// Resolves against document.baseURI so the same build works at /, /drift/,
+// or any path Caddy/nginx serves the SPA at.
+const API_BASE = apiBase()
 
 // Predicates layered on top of role. Mirrors UserContext.is_admin / is_deploy
 // on the backend — observe < deploy < admin.

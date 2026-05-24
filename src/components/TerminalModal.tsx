@@ -15,18 +15,9 @@ import TerminalIcon from '@mui/icons-material/Terminal'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { deployApiBase, deployWsBase } from '../lib/apiBase'
 
-const DEPLOY_BASE: string =
-  import.meta.env.VITE_DEPLOY_API_BASE ||
-  `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/deploy`
-
-// ws(s)?://host/... — derive from the page's URL so we inherit the same
-// scheme + host the SPA is served from. Browsers reject ws:// from an
-// https:// page so this also gives us automatic upgrade to wss.
-function wsBase(): string {
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${scheme}//${window.location.host}${DEPLOY_BASE}`
-}
+const DEPLOY_BASE = deployApiBase()
 
 type Phase = 'creating' | 'waiting' | 'connected' | 'closed' | 'error'
 
@@ -113,7 +104,7 @@ export function TerminalModal({
       // 3) Open the browser-side WS. The session cookie travels via the
       // browser's cookie jar automatically (same-origin).
       const ws = new WebSocket(
-        `${wsBase()}/devices/${encodeURIComponent(deviceName)}/terminal/ws/${sessionId}`,
+        `${deployWsBase()}/devices/${encodeURIComponent(deviceName)}/terminal/ws/${sessionId}`,
       )
       ws.binaryType = 'arraybuffer'
       wsRef.current = ws

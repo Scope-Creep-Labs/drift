@@ -5,9 +5,12 @@ import path from 'node:path'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const agentTarget = env.VITE_AGENT_DEV_URL || 'http://localhost:8000'
-  // Subroute support: set VITE_BASE=/drift/ to serve from https://host/drift/.
-  // Must include a trailing slash. Defaults to '/' for root-served deployments and dev.
-  const base = env.VITE_BASE || '/'
+  // `./` emits asset URLs relative to index.html so the SAME build serves
+  // at /, /drift/, or any subpath the operator wants. Runtime code reads
+  // document.baseURI (set by Vite's injected <base href>) to derive API
+  // URLs — see src/lib/apiBase.ts. Override via VITE_BASE=/foo/ only if
+  // you need absolute-prefix paths for a CDN.
+  const base = env.VITE_BASE || './'
 
   return {
     base,

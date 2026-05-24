@@ -61,11 +61,11 @@ build_agent() {
 }
 
 build_frontend() {
-  echo "→ Building $FRONTEND_IMAGE:$TAG (VITE_BASE=/)"
+  echo "→ Building $FRONTEND_IMAGE:$TAG (portable build — assets relative to baseURI)"
+  # Dockerfile defaults VITE_BASE to './' which makes the build serve at
+  # any path. No --build-arg override needed.
   docker build \
     -t "$FRONTEND_IMAGE:$TAG" \
-    --build-arg VITE_ENGINE=agent \
-    --build-arg VITE_BASE=/ \
     -f Dockerfile \
     .
   echo "→ Pushing $FRONTEND_IMAGE:$TAG"
