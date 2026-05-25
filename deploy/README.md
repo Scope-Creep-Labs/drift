@@ -38,13 +38,13 @@ The installer prompts for:
 
 - **Public domain** + email (Let's Encrypt registration)
 - **Drift admin** username + password (bootstrapped on first agent start)
-- **Web-auth gate** username + password (for `/vmalert/` and `/am/`)
+- **vmalert / Alertmanager UI password** — basic-auth credential for `/vmalert/` + `/am/`. Separate from your Drift admin login.
 - **LLM model** + matching API key (one of `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY`)
 - **ntfy topic** for Alertmanager push notifications
 - **B2 / S3** credentials (optional — only needed for Drift Deploy's bundle uploads)
 - **Self-scrape labels** (hostname + group used for this host's metrics)
 
-It auto-generates: `DRIFT_SECRET_KEY` (Fernet), `DRIFT_PG_PASSWORD`, the vmauth `reporter` password, and the bcrypt hash of your web-auth password (via the Caddy image). Everything lands in `.env` (mode 600) plus rendered config files under `config/`.
+It auto-generates: `DRIFT_SECRET_KEY` (Fernet), `DRIFT_PG_PASSWORD`, the vmauth `reporter` password, and (if you press Enter at the prompts) the Drift admin password + the vmalert/AM UI password. The latter is bcrypt-hashed via the Caddy image. Everything lands in `.env` (mode 600) plus rendered config files under `config/`.
 
 Then `docker compose up -d --build` brings the whole stack up. First start takes a few minutes (image pulls + build).
 
