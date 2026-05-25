@@ -24,6 +24,12 @@
 #   docker compose up -d                          # without bundled Caddy
 #   docker compose --profile caddy up -d          # with bundled Caddy
 
+# Fixed project name + container names so `docker ps` is the same
+# wherever the operator cloned the repo (the default project name is
+# derived from the parent directory, which would yield e.g.
+# `deploy-vm-1` for a fresh clone in `~/drift/deploy/`).
+name: drift
+
 services:
   # ------------------------------------------------------------------
   # Caddy — OPTIONAL. Opt-in with `--profile caddy`. When disabled,
@@ -33,7 +39,7 @@ services:
   # ------------------------------------------------------------------
   caddy:
     image: caddy:2
-    container_name: caddy
+    container_name: drift-caddy
     restart: unless-stopped
     profiles: [caddy]
     ports:
@@ -61,7 +67,7 @@ services:
   # ------------------------------------------------------------------
   vm:
     image: victoriametrics/victoria-metrics:latest
-    container_name: vm
+    container_name: drift-vm
     restart: unless-stopped
     command:
       - "-storageDataPath=/victoria-metrics-data"
@@ -75,7 +81,7 @@ services:
   # ------------------------------------------------------------------
   victorialogs:
     image: victoriametrics/victoria-logs:latest
-    container_name: victorialogs
+    container_name: drift-victorialogs
     restart: unless-stopped
     command:
       - "-storageDataPath=/victoria-logs-data"
@@ -91,7 +97,7 @@ services:
   # ------------------------------------------------------------------
   vmauth:
     image: victoriametrics/vmauth:latest
-    container_name: vmauth
+    container_name: drift-vmauth
     restart: unless-stopped
     command:
       - "--auth.config=/etc/auth.yml"
@@ -106,7 +112,7 @@ services:
   # ------------------------------------------------------------------
   vmalert:
     image: victoriametrics/vmalert:latest
-    container_name: vmalert
+    container_name: drift-vmalert
     restart: unless-stopped
     depends_on: [vm, alertmanager]
     command:
@@ -129,7 +135,7 @@ services:
   # ------------------------------------------------------------------
   alertmanager:
     image: prom/alertmanager:latest
-    container_name: alertmanager
+    container_name: drift-alertmanager
     restart: unless-stopped
     command:
       - "--config.file=/etc/alertmanager/alertmanager.yml"
@@ -150,7 +156,7 @@ services:
   # ------------------------------------------------------------------
   alertmanager-ntfy:
     image: ghcr.io/alexbakker/alertmanager-ntfy:latest
-    container_name: alertmanager-ntfy
+    container_name: drift-alertmanager-ntfy
     restart: unless-stopped
     command:
       - "--configs=/etc/alertmanager-ntfy/config.yml"
@@ -163,7 +169,7 @@ services:
   # ------------------------------------------------------------------
   grafana:
     image: grafana/grafana-oss:latest
-    container_name: grafana
+    container_name: drift-grafana
     restart: unless-stopped
     depends_on: [vm]
     volumes:
@@ -243,7 +249,7 @@ services:
   # ==================================================================
   reporter-vmagent:
     image: victoriametrics/vmagent:latest
-    container_name: reporter-vmagent
+    container_name: drift-reporter-vmagent
     restart: unless-stopped
     depends_on: [vm, victorialogs]
     hostname: ${REPORTER_HOSTNAME:-drift-host}
@@ -262,7 +268,7 @@ services:
 
   reporter-cadvisor:
     image: gcr.io/cadvisor/cadvisor:latest
-    container_name: reporter-cadvisor
+    container_name: drift-reporter-cadvisor
     restart: unless-stopped
     command:
       - "-housekeeping_interval=10s"
@@ -276,7 +282,7 @@ services:
 
   reporter-vector:
     image: timberio/vector:0.43.0-alpine
-    container_name: reporter-vector
+    container_name: drift-reporter-vector
     restart: unless-stopped
     hostname: vector-${REPORTER_HOSTNAME:-drift-host}
     environment:
@@ -290,7 +296,7 @@ services:
 
   reporter-node-exporter:
     image: prom/node-exporter:latest
-    container_name: reporter-node-exporter
+    container_name: drift-reporter-node-exporter
     restart: unless-stopped
     network_mode: host
     pid: host
