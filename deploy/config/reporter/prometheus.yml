@@ -37,12 +37,14 @@ scrape_configs:
   - targets:
     - reporter-process-exporter:9256
 
-# Drift Deploy control plane. Reached via the host gateway because
-# drift-agent sits on the `drift` bridge network in a different compose
-# project; its host-exposed port is 8000.
+# Drift Deploy control plane. reporter-vmagent and drift-agent both
+# live on the `drift` compose network now, so docker DNS resolves
+# the service name directly — no host gateway needed. In external-
+# proxy mode drift-agent isn't host-bound, so the old
+# host.docker.internal:8000 target was a 0.
 - job_name: drift-deploy-cp
   scrape_interval: 30s
   static_configs:
   - targets:
-    - host.docker.internal:8000
+    - drift-agent:8000
   metrics_path: /metrics
