@@ -233,17 +233,87 @@ heading "Drift admin"
 ask DRIFT_ADMIN_USERNAME "Drift admin username" admin
 ask_secret_autogen DRIFT_ADMIN_PASSWORD "Drift admin password"
 
+# Validate an LLM API key against the provider's `/models` endpoint.
+# Returns 0 on success, 1 on auth failure, 2 on network error.
+# Doesn't echo the key — only the status code.
+validate_llm_key() {
+  local provider=$1 key=$2 code
+  case "$provider" in
+    anthropic)
+      code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+        -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" \
+        https://api.anthropic.com/v1/models)
+      ;;
+    openai)
+      code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+        -H "Authorization: Bearer $key" \
+        https://api.openai.com/v1/models)
+      ;;
+    gemini)
+      # Gemini's API key is a URL param. Use a different host probe so
+      # we don't leak the key in process listings.
+      code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
+        "https://generativelanguage.googleapis.com/v1beta/models?key=$key")
+      ;;
+    *) return 2 ;;
+  esac
+  case "$code" in
+    200) return 0 ;;
+    000) return 2 ;;
+    *)   echo "  ↳ provider returned HTTP $code" >&2; return 1 ;;
+  esac
+}
+
+# Prompt for the API key + validate against the live API. On auth
+# failure, re-prompt up to 3 times; on network failure, warn but
+# accept the key (operator may be on a restrictive network during
+# install).
+ask_and_validate_llm_key() {
+  local key_name=$1 provider=$2 prompt=$3
+  local attempts=0
+  while [ $attempts -lt 3 ]; do
+    ask_secret "$key_name" "$prompt"
+    local key
+    eval "key=\$$key_name"
+    if [ -z "$key" ]; then
+      warn "API key is empty — chat will fail until you set it in .env."
+      return
+    fi
+    echo -n "  validating against $provider… "
+    if validate_llm_key "$provider" "$key"; then
+      echo "✓ key works"
+      return
+    fi
+    rc=$?
+    if [ "$rc" = 2 ]; then
+      warn "couldn't reach $provider (network issue?). Accepting key as-is — verify after install."
+      return
+    fi
+    warn "$provider rejected the key. Try again."
+    attempts=$((attempts + 1))
+    # Clear the bad value from the in-memory + persisted slot so the
+    # next ask_secret prompt offers re-entry instead of "keep current".
+    eval "$key_name=''"
+    # Edit .env if it already had a stale value so re-runs don't
+    # silently re-use the rejected key.
+    if [ -f "$ENV_FILE" ] && grep -qE "^${key_name}=" "$ENV_FILE"; then
+      sed -i.bak "s/^${key_name}=.*/${key_name}=/" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    fi
+  done
+  err "API key validation failed 3 times — aborting. Fix the key and re-run install.sh."
+}
+
 heading "LLM"
 echo "  Pick the model Drift's agent will run. The matching API key is asked next."
 echo "  Common picks: claude-opus-4-7 | gpt-5.4-mini | gpt-4o | o3 | gemini-2.5-pro"
 ask MODEL "Model id" claude-opus-4-7
 ask EFFORT "Reasoning effort (low/medium/high)" medium
 ask MAX_TOKENS "Max output tokens per call" 64000
-# Only prompt for the key that matches the chosen model's provider.
+# Only prompt for + validate the key that matches the chosen model's provider.
 case "$MODEL" in
-  claude-*|*/claude-*) ask_secret ANTHROPIC_API_KEY "Anthropic API key" ;;
-  gpt-*|o1*|o3*|*/gpt-*|*/o1*|*/o3*) ask_secret OPENAI_API_KEY "OpenAI API key" ;;
-  gemini-*|*/gemini-*) ask_secret GEMINI_API_KEY "Gemini API key" ;;
+  claude-*|*/claude-*) ask_and_validate_llm_key ANTHROPIC_API_KEY anthropic "Anthropic API key" ;;
+  gpt-*|o1*|o3*|*/gpt-*|*/o1*|*/o3*) ask_and_validate_llm_key OPENAI_API_KEY openai "OpenAI API key" ;;
+  gemini-*|*/gemini-*) ask_and_validate_llm_key GEMINI_API_KEY gemini "Gemini API key" ;;
   *) warn "Unknown model prefix '$MODEL' — set the right *_API_KEY in .env manually after install." ;;
 esac
 
