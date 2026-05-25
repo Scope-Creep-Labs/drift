@@ -1,0 +1,69 @@
+sources:
+  docker:
+    type: docker_logs
+    docker_host: unix:///var/run/docker.sock
+    exclude_containers:
+      - vector
+
+transforms:
+  classify:
+    type: remap
+    inputs: [docker]
+    source: |
+      msg = string!(.message)
+      if match(msg, r'(?i)\b(error|exception|panic|traceback|fatal|stack ?trace|critical)\b') {
+        .level = "error"
+      } else if match(msg, r'(?i)\bwarn(ing)?\b') {
+        .level = "warning"
+      } else {
+        .level = "info"
+      }
+
+  to_metrics:
+    type: log_to_metric
+    inputs: [classify]
+    metrics:
+      - type: counter
+        field: level
+        name: container_log_lines_total
+        tags:
+          container_name: "{{ container_name }}"
+          image: "{{ image }}"
+          level: "{{ level }}"
+
+  errors_only:
+    type: filter
+    inputs: [classify]
+    condition: '.level == "error"'
+
+  enrich:
+    type: remap
+    inputs: [errors_only]
+    source: |
+      .host = "${DRIFT_DEVICE_NAME}"
+      .group_id = "${DRIFT_GROUP_ID}"
+
+sinks:
+  prom:
+    type: prometheus_exporter
+    inputs: [to_metrics]
+    address: 0.0.0.0:9598
+    flush_period_secs: 600
+
+  victorialogs:
+    type: http
+    inputs: [enrich]
+    uri: "${DRIFT_CP_PUBLIC_URL}/vl/insert/jsonline?_stream_fields=host,container_name&_msg_field=message&_time_field=timestamp"
+    method: post
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
+    compression: gzip
+    request:
+      headers:
+        Content-Type: application/stream+json
+    auth:
+      strategy: basic
+      user: "${DRIFT_VM_WRITE_USER}"
+      password: "${DRIFT_VM_WRITE_PASSWORD}"

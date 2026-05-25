@@ -186,6 +186,16 @@ class AgentCheckInResponse(BaseModel):
     # list on every check-in until an operator clicks "Terminal" in the
     # UI, which inserts a `pending` row in terminal_sessions.
     pending_sessions: list[uuid.UUID] = Field(default_factory=list)
+    # CP-side facts that bundles can reference via ${DRIFT_*}. The
+    # edge agent persists these to /etc/drift-deploy/env on every
+    # check-in and exports them into compose subshells, alongside the
+    # device-local DRIFT_DEVICE_NAME / DRIFT_GROUP_ID. This makes
+    # reporter-style bundles (vmagent → CP's vmauth, vector → vl,
+    # etc.) host-agnostic — same bundle works against any CP, and
+    # password rotation propagates without per-device touch.
+    cp_public_url: Optional[str] = None
+    vm_write_user: Optional[str] = None
+    vm_write_password: Optional[str] = None
 
 
 class AgentBootstrap(BaseModel):

@@ -1,0 +1,91 @@
+services:
+  vmagent:
+    container_name: vmagent
+    hostname: vmagent-${DRIFT_DEVICE_NAME}
+    image: victoriametrics/vmagent:latest
+    environment:
+      HOSTNAME: ${DRIFT_DEVICE_NAME}
+      GROUP_ID: ${DRIFT_GROUP_ID}
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - vmagent-data:/vmagent-remotewrite-data
+    command:
+      - "-promscrape.config=/etc/prometheus/prometheus.yml"
+      - "-promscrape.config.strictParse=false"
+      - "-remoteWrite.url=${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write"
+      - "-remoteWrite.basicAuth.username=${DRIFT_VM_WRITE_USER}"
+      - "-remoteWrite.basicAuth.password=${DRIFT_VM_WRITE_PASSWORD}"
+      - "-remoteWrite.tmpDataPath=/vmagent-remotewrite-data"
+      - "-remoteWrite.maxDiskUsagePerURL=500MB"
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - cadvisor
+      - node-exporter
+      - vector
+      - process-exporter
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    command:
+      - "-housekeeping_interval=10s"
+      - "-docker_only=true"
+    restart: unless-stopped
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      # ${DRIFT_DOCKER_DATA_DIR} resolves to /var/lib/docker on vanilla
+      # Linux and /volume1/@docker on Synology. The agent auto-detects
+      # the host's docker root at install time via `docker info`.
+      - ${DRIFT_DOCKER_DATA_DIR:-/var/lib/docker}:/var/lib/docker:ro
+
+  vector:
+    image: timberio/vector:0.43.0-alpine
+    container_name: vector
+    hostname: vector-${DRIFT_DEVICE_NAME}
+    volumes:
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - vector-data:/var/lib/vector
+    environment:
+      VECTOR_CONFIG: /etc/vector/vector.yaml
+      VECTOR_DATA_DIR: /var/lib/vector
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    network_mode: host
+    pid: host
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)"
+      - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|cgroup2|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
+      - "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro,rslave
+      - /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector:ro
+    restart: unless-stopped
+
+  process-exporter:
+    image: ncabatoff/process-exporter:latest
+    container_name: process-exporter
+    pid: host
+    command:
+      - "--procfs=/host/proc"
+      - "--config.path=/config/process-exporter.yml"
+    volumes:
+      - /proc:/host/proc:ro
+      - ./process-exporter.yml:/config/process-exporter.yml:ro
+    restart: unless-stopped
+
+volumes:
+  vector-data:
+  vmagent-data:

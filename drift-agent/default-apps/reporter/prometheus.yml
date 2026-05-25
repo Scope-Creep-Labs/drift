@@ -1,0 +1,44 @@
+global:
+  external_labels:
+    host: %{HOSTNAME}
+    group_id: %{GROUP_ID}
+
+scrape_configs:
+- job_name: cadvisor
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - cadvisor:8080
+  metric_relabel_configs:
+    # cAdvisor emits ~25 container_label_* tags per metric. Combined
+    # with drift.* + image/name/id we cross VictoriaMetrics's default
+    # -maxLabelsPerTimeseries=30 cap, which causes VM to drop the
+    # `host` label and log a warning every minute. Strip the
+    # docker-compose / OCI image metadata at scrape time — nobody
+    # queries on those, but they push us over the limit.
+    - regex: 'container_label_(com_docker_compose|org_opencontainers)_.*'
+      action: labeldrop
+
+- job_name: node
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - host.docker.internal:9100
+
+- job_name: vector
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - vector:9598
+
+- job_name: process
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - process-exporter:9256
+
+- job_name: vmagent
+  scrape_interval: 60s
+  static_configs:
+  - targets:
+    - vmagent:8429

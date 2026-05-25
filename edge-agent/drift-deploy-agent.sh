@@ -82,6 +82,35 @@ DRIFT_GROUP_ID="$GROUP_ID"
 # none was detected — the override generator gates injection on it.
 DRIFT_HOST_CA_BUNDLE="${DRIFT_HOST_CA_BUNDLE:-}"
 
+# CP-side facts (public URL, vmauth write credentials) — populated on
+# each check-in (see reconcile_once). Persisted to /etc/drift-deploy/cp-env
+# so values survive across the flock'd reconcile subshells. Bundles can
+# reference these as ${DRIFT_CP_PUBLIC_URL}, ${DRIFT_VM_WRITE_USER},
+# ${DRIFT_VM_WRITE_PASSWORD} — e.g. a vmagent's `-remoteWrite.url=
+# ${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write`.
+CP_ENV_FILE=/etc/drift-deploy/cp-env
+if [ -f "$CP_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$CP_ENV_FILE"
+fi
+DRIFT_CP_PUBLIC_URL="${DRIFT_CP_PUBLIC_URL:-}"
+DRIFT_VM_WRITE_USER="${DRIFT_VM_WRITE_USER:-}"
+DRIFT_VM_WRITE_PASSWORD="${DRIFT_VM_WRITE_PASSWORD:-}"
+
+# Atomic-write the cp-env file. Values bash-quote-escape '"' and '\'
+# defensively — current rand_token output doesn't contain either, but
+# operator-set values might.
+write_cp_env() {
+  local cp_url=$1 vm_user=$2 vm_pw=$3
+  local tmp
+  tmp=$(mktemp -p /etc/drift-deploy cp-env.XXXXXX 2>/dev/null) || return 0
+  {
+    printf 'DRIFT_CP_PUBLIC_URL=%q\n' "$cp_url"
+    printf 'DRIFT_VM_WRITE_USER=%q\n' "$vm_user"
+    printf 'DRIFT_VM_WRITE_PASSWORD=%q\n' "$vm_pw"
+  } > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CP_ENV_FILE" || rm -f "$tmp"
+}
+
 # Bricking protection. Bundles whose compose file declares any of these
 # as a service name OR via container_name: are rejected with apply_error.
 # Extend if you add critical infra that should never be self-redeployed.
@@ -98,7 +127,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.7.0"
+AGENT_VERSION="0.8.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -173,7 +202,7 @@ generate_drift_override() {
   services=$(cd "$rev_dir" \
     && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
        DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
-       DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+       DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
        docker compose config --services 2>/dev/null)
   if [ -z "$services" ]; then
     log_warn "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
@@ -230,7 +259,7 @@ bundle_touches_protected() {
   names=$(cd "$rev_dir" && \
     DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
     DRIFT_APP="" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
-    DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+    DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
     docker compose config --format json 2>/dev/null \
     | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
     | sort -u)
@@ -438,7 +467,7 @@ apply_revision() {
   if ! err=$( cd "$rev_dir" \
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
-                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
        && docker compose -p "$app" pull 2>&1 \
        && docker compose -p "$app" up -d --remove-orphans 2>&1 ); then
     # err contains the combined output; take the last few lines for the
@@ -455,7 +484,7 @@ apply_revision() {
   bad=$( cd "$rev_dir" \
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
-                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+                 DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
@@ -737,6 +766,20 @@ reconcile_once() {
     exit 100
   fi
 
+  # CP-side facts: refresh the DRIFT_CP_PUBLIC_URL / DRIFT_VM_WRITE_USER /
+  # DRIFT_VM_WRITE_PASSWORD values from the response. Update in-memory so
+  # this tick's apply phase sees the latest values, AND persist to
+  # /etc/drift-deploy/cp-env so the NEXT tick's subshell (which can't
+  # inherit shell-var state across the flock) re-sources them at startup.
+  local _cp_url _vm_user _vm_pw
+  _cp_url=$(echo "$resp" | jq -r '.cp_public_url // empty' 2>/dev/null)
+  _vm_user=$(echo "$resp" | jq -r '.vm_write_user // empty' 2>/dev/null)
+  _vm_pw=$(echo "$resp" | jq -r '.vm_write_password // empty' 2>/dev/null)
+  [ -n "$_cp_url" ]  && DRIFT_CP_PUBLIC_URL="$_cp_url"
+  [ -n "$_vm_user" ] && DRIFT_VM_WRITE_USER="$_vm_user"
+  [ -n "$_vm_pw" ]   && DRIFT_VM_WRITE_PASSWORD="$_vm_pw"
+  write_cp_env "$DRIFT_CP_PUBLIC_URL" "$DRIFT_VM_WRITE_USER" "$DRIFT_VM_WRITE_PASSWORD"
+
   # Pending terminal sessions: the CP creates a row when an operator
   # clicks "Terminal" in the UI, then surfaces the session id here.
   # Fork one terminal-bridge.py subprocess per session — it owns its
@@ -814,7 +857,7 @@ reconcile_once() {
       if ! err=$( cd "$rev_dir" \
            && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                      DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
-                     DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" \
+                     DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
            && docker compose -p "$app" restart 2>&1 ); then
         local err_tail
         err_tail=$(printf '%s' "$err" | tail -n 5 | tr '\n' ' ')

@@ -354,4 +354,10 @@ async def check_in(
         agent_target_sha=_agent_target_sha(),
         registry_credentials=creds_map,
         pending_sessions=pending_sessions,
+        # CP-side facts piped through to compose subshells as DRIFT_*.
+        # Empty string ↔ unset on the edge (the edge agent treats None
+        # and "" identically when writing /etc/drift-deploy/env).
+        cp_public_url=_settings.public_url or None,
+        vm_write_user="reporter",
+        vm_write_password=_settings.reporter_password or None,
     )

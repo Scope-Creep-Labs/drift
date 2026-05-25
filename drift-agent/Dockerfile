@@ -55,6 +55,14 @@ COPY drift-agent/entrypoint.sh ./
 # can curl-bootstrap. Lives at the repo top-level under edge-agent/ and
 # is copied in here at build time.
 COPY edge-agent /opt/edge-agent
+# Default-apps seeded on first startup (see app/deploy/seed.py). Each
+# subdir under default-apps/ becomes an App row + initial revision in
+# the new install's DB, with the directory's contents as the bundle.
+COPY drift-agent/default-apps /opt/drift-defaults/apps
+# Pre-create the bundle storage path with `app:app` ownership so an
+# empty named volume mounted here inherits writable perms on first up
+# (docker copies the image directory's ownership into a fresh volume).
+RUN mkdir -p /var/lib/drift/bundles && chown -R app:app /var/lib/drift
 RUN chmod +x entrypoint.sh
 
 USER app

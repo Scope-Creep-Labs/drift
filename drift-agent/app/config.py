@@ -79,6 +79,15 @@ class Settings(BaseSettings):
     drift_admin_username: str = ""
     drift_admin_password: str = ""
 
+    # CP-side facts surfaced to edge devices on every check-in (see
+    # AgentCheckInResponse.cp_public_url / vm_write_password). The
+    # edge agent persists them to /etc/drift-deploy/env and exports
+    # them as DRIFT_CP_PUBLIC_URL / DRIFT_VM_WRITE_USER /
+    # DRIFT_VM_WRITE_PASSWORD into compose subshells, so reporter-style
+    # bundles can reference the CP without baking the URL/password in.
+    public_url: str = ""
+    reporter_password: str = ""
+
     # When true, session cookies are sent without Secure so plain-http
     # localhost dev works. Production should leave this false (default)
     # so cookies require HTTPS.

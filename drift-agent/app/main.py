@@ -39,6 +39,7 @@ if settings.drift_pg_url:
     )
     from .deploy.routes_admin import router as deploy_admin_router
     from .deploy.routes_agent import router as deploy_agent_router
+    from .deploy.seed import seed_default_apps
     from .deploy.terminal import router as terminal_router
     from .users.bootstrap import ensure_bootstrap_admin
     from .users.routes import router as auth_router
@@ -51,6 +52,12 @@ if settings.drift_pg_url:
     @app.on_event("startup")
     async def _on_startup() -> None:
         await ensure_bootstrap_admin()
+        # Default-apps (e.g. reporter) — only if deploy subsystem is
+        # configured; pre-deploy installs have no DRIFT_PG_URL and
+        # there's nothing to seed against.
+        from .config import settings
+        if settings.deploy_enabled:
+            await seed_default_apps()
         start_background_refresh()
 
     @app.on_event("shutdown")
