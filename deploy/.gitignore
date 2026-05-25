@@ -1,4 +1,5 @@
 .env
+logs/
 config/Caddyfile
 config/Caddyfile.sample
 config/auth.yml

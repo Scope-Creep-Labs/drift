@@ -23,6 +23,20 @@ DEPLOY_DIR=$(pwd)
 ENV_FILE="$DEPLOY_DIR/.env"
 ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
 
+# Tee the entire run to a timestamped log so the operator has a
+# permanent record of what was set + what was generated. Mode 600
+# because the log captures the prompt feedback (including the
+# auto-generated passwords printed in the exit summary). Tee runs
+# in a coprocess via process substitution; this works under
+# `set -euo pipefail` because the outer shell's pipeline status
+# isn't affected by the tee.
+LOG_DIR="$DEPLOY_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/install-$(date -u +%Y%m%dT%H%M%SZ).log"
+touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "→ logging this run to $LOG_FILE"
+
 # ---------- helpers ----------
 
 err() { echo "ERROR: $*" >&2; exit 1; }
@@ -452,3 +466,6 @@ if [ ${#GENERATED_SECRETS[@]} -gt 0 ]; then
   echo "  (Also written to $ENV_FILE, mode 600.)"
   echo "════════════════════════════════════════════════════════════════════"
 fi
+
+echo
+echo "Full install log: $LOG_FILE"
