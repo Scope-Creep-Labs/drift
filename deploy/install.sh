@@ -219,8 +219,7 @@ fi
 # notifications link directly to vmalert and Alertmanager has no
 # native auth, so we gate them.
 heading "vmalert / Alertmanager UI password"
-echo "  This is a SEPARATE credential from your Drift admin login."
-echo "  It gates the raw vmalert + Alertmanager web UIs at /vmalert/ and /am/."
+echo "  Gates the raw vmalert + Alertmanager web UIs at /vmalert/ and /am/."
 ask WEB_AUTH_USER "Username (basic-auth)" drift
 ask_secret_autogen WEB_AUTH_PASSWORD_PLAINTEXT "Password (basic-auth)"
 
