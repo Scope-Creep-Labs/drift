@@ -320,6 +320,22 @@ services:
       - /:/rootfs:ro,rslave
       - /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector:ro
 
+  # Per-process metrics from /proc — fills the gap between node-exporter
+  # (host totals) and cadvisor (containers only). Covers host-level
+  # daemons like sshd, dockerd, systemd-journald.
+  reporter-process-exporter:
+    image: ncabatoff/process-exporter:latest
+    container_name: drift-reporter-process-exporter
+    restart: unless-stopped
+    pid: host
+    command:
+      - "--procfs=/host/proc"
+      - "--config.path=/config/process-exporter.yml"
+    volumes:
+      - /proc:/host/proc:ro
+      - ./config/reporter/process-exporter.yml:/config/process-exporter.yml:ro
+    networks: [drift]
+
 volumes:
   caddy-data:
   caddy-config:

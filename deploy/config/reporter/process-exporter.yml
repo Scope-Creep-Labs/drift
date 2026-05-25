@@ -1,0 +1,6 @@
+# One series per command name (groups all postgres procs together, etc.).
+# Tweak this file if you want finer-grained groupings (e.g. split by cmdline).
+process_names:
+  - name: "{{.Comm}}"
+    cmdline:
+      - '.+'
