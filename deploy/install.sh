@@ -219,15 +219,23 @@ else
   ask DRIFT_HOST_PORT "Local port to bind drift-frontend on (127.0.0.1:<port>)" 10001
 fi
 
-# Basic-auth credential that gates the raw vmalert + Alertmanager web
-# UIs — NOT Drift's own login (which is set up below with the admin
-# user). Drift's chat covers most of what these UIs do, but ntfy
-# notifications link directly to vmalert and Alertmanager has no
-# native auth, so we gate them.
-heading "vmalert / Alertmanager UI password"
-echo "  Gates the raw vmalert + Alertmanager web UIs at /vmalert/ and /am/."
-ask WEB_AUTH_USER "Username (basic-auth)" drift
-ask_secret_autogen WEB_AUTH_PASSWORD_PLAINTEXT "Password (basic-auth)"
+# Basic-auth gate on the raw vmalert + Alertmanager web UIs. Only
+# asked when the bundled Caddy is in use — in external-proxy mode the
+# operator's existing reverse proxy handles auth however it wants
+# (basic_auth / OAuth / mTLS / etc.) and we'd be pulling the caddy
+# image just to bcrypt. The rendered Caddyfile.sample in external mode
+# shows the path routing without a basic_auth block; operator adds
+# their own.
+if [ "$USE_BUNDLED_CADDY" = "true" ]; then
+  heading "vmalert / Alertmanager UI password"
+  echo "  Gates the raw vmalert + Alertmanager web UIs at /vmalert/ and /am/."
+  ask WEB_AUTH_USER "Username (basic-auth)" drift
+  ask_secret_autogen WEB_AUTH_PASSWORD_PLAINTEXT "Password (basic-auth)"
+else
+  WEB_AUTH_USER=""
+  WEB_AUTH_PASSWORD_PLAINTEXT=""
+  WEB_AUTH_HASH=""
+fi
 
 heading "Drift admin"
 ask DRIFT_ADMIN_USERNAME "Drift admin username" admin
@@ -381,16 +389,20 @@ rotate_or_keep DRIFT_PG_PASSWORD   "Postgres"          _gen_pw
 rotate_or_keep DRIFT_SECRET_KEY    "Fernet key"        gen_fernet
 rotate_or_keep REPORTER_PASSWORD   "vmauth reporter"   _gen_pw
 
-heading "Hashing vmalert/AM UI password (bcrypt via caddy:2)"
-WEB_AUTH_HASH=$(bcrypt_caddy "$WEB_AUTH_PASSWORD_PLAINTEXT")
-info "bcrypt hash generated"
-# Compose interpolates `$X` syntax inside .env values. Bcrypt hashes
-# start with `$2a$14$...` which compose would otherwise read as three
-# variable references. Double the dollars so compose treats them
-# literally — caddy still sees the original hash because compose
-# un-escapes `$$` → `$` when it injects the value into the container's
-# env. Same trick docker-compose.yml uses for $$ in command args.
-WEB_AUTH_HASH_ENV=${WEB_AUTH_HASH//$/$$}
+if [ "$USE_BUNDLED_CADDY" = "true" ]; then
+  heading "Hashing vmalert/AM UI password (bcrypt via caddy:2)"
+  WEB_AUTH_HASH=$(bcrypt_caddy "$WEB_AUTH_PASSWORD_PLAINTEXT")
+  info "bcrypt hash generated"
+  # Compose interpolates `$X` syntax inside .env values. Bcrypt hashes
+  # start with `$2a$14$...` which compose would otherwise read as three
+  # variable references. Double the dollars so compose treats them
+  # literally — caddy still sees the original hash because compose
+  # un-escapes `$$` → `$` when it injects the value into the container's
+  # env. Same trick docker-compose.yml uses for $$ in command args.
+  WEB_AUTH_HASH_ENV=${WEB_AUTH_HASH//$/$$}
+else
+  WEB_AUTH_HASH_ENV=""
+fi
 
 # ---------- write .env ----------
 
@@ -485,16 +497,15 @@ else
   # External reverse-proxy mode. Render a sample site block the
   # operator can paste into their existing Caddyfile (or translate
   # to nginx/Traefik). Uses 127.0.0.1:<port> upstreams that match
-  # the loopback bindings in docker-compose.yml.
+  # the loopback bindings in docker-compose.external.yml. No
+  # basic_auth — operator's existing proxy handles auth.
   render config/Caddyfile.external.tmpl     config/Caddyfile.sample \
     __DOMAIN__                "$DOMAIN" \
     __DRIFT_HOST_PORT__       "${DRIFT_HOST_PORT:-10001}" \
     __VMALERT_HOST_PORT__     "${VMALERT_HOST_PORT:-8880}" \
     __ALERTMANAGER_HOST_PORT__ "${ALERTMANAGER_HOST_PORT:-9093}" \
     __GRAFANA_HOST_PORT__     "${GRAFANA_HOST_PORT:-3000}" \
-    __VMAUTH_HOST_PORT__      "${VMAUTH_HOST_PORT:-8427}" \
-    __WEB_AUTH_USER__         "$WEB_AUTH_USER" \
-    __WEB_AUTH_HASH__         "$WEB_AUTH_HASH"
+    __VMAUTH_HOST_PORT__      "${VMAUTH_HOST_PORT:-8427}"
   info "  config/Caddyfile.sample written — paste into your existing reverse-proxy config"
 fi
 
@@ -560,7 +571,9 @@ else
   echo
   echo "  Sample Caddyfile for the above is at:"
   echo "    $DEPLOY_DIR/config/Caddyfile.sample"
-  echo "  (Translate to nginx/Traefik if you don't use Caddy.)"
+  echo "  (Translate to nginx/Traefik if you don't use Caddy. The sample"
+  echo "   has no basic_auth on /vmalert and /am — see the header comment"
+  echo "   in the file if you want to add one.)"
 fi
 echo
 echo "  ntfy: subscribe to https://ntfy.sh/$NTFY_TOPIC on your phone"
