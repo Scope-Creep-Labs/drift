@@ -240,6 +240,16 @@ services:
     depends_on: [drift-agent]
     # See docker-compose.external.yml for the host-port binding.
     networks: [drift]
+    # Override the image's baked-in healthcheck: it uses busybox wget
+    # against http://localhost/, which resolves to ::1 first; nginx
+    # listens on 0.0.0.0:80 only (no IPv6 bind), so wget gets
+    # "connection refused" even though the service is healthy. Pin
+    # the loopback to 127.0.0.1.
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
 
   # ==================================================================
   # Reporter — this host scrapes its own metrics into local VM
