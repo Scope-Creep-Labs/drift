@@ -290,6 +290,9 @@ GRAFANA_HOST_PORT=${GRAFANA_HOST_PORT:-3000}
 VMAUTH_HOST_PORT=${VMAUTH_HOST_PORT:-8427}
 
 WEB_AUTH_USER=$WEB_AUTH_USER
+# Plaintext kept here so re-running install.sh prefills the prompt
+# instead of silently rotating the password. .env is mode 600.
+WEB_AUTH_PASSWORD_PLAINTEXT=$WEB_AUTH_PASSWORD_PLAINTEXT
 WEB_AUTH_HASH=$WEB_AUTH_HASH_ENV
 
 MODEL=$MODEL
