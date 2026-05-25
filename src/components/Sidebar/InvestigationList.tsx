@@ -222,7 +222,7 @@ export function InvestigationList() {
         }}
       >
         <Tab value="conversations" label="Conversations" />
-        {canDeploy && accessibleDevices.length > 0 && (
+        {canDeploy && (
           <Tab value="devices" label={`Devices · ${accessibleDevices.length}`} />
         )}
         <Tab value="apps" label={`Apps · ${apps.length}`} />
@@ -299,6 +299,31 @@ export function InvestigationList() {
           ...(tab === 'conversations' ? { display: 'none' } : {}),
         }}
       >
+        {tab === 'devices' && canDeploy && accessibleDevices.length === 0 && (
+          <Box sx={{ px: 2, pt: 3, pb: 2, textAlign: 'center' }}>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+              No devices yet.
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+              Ask Drift to commission one in chat, e.g.:
+            </Typography>
+            <Typography
+              variant="caption"
+              sx={{
+                display: 'inline-block',
+                mt: 1,
+                px: 1,
+                py: 0.5,
+                fontFamily: 'monospace',
+                bgcolor: 'action.hover',
+                borderRadius: 0.5,
+                color: 'text.primary',
+              }}
+            >
+              add device pi-001 to group home
+            </Typography>
+          </Box>
+        )}
         {tab === 'devices' && canDeploy && accessibleDevices.length > 0 && (
           <>
             <Box sx={{ px: 1, pt: 1, pb: 0.4 }}>

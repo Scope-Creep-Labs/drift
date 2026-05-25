@@ -93,8 +93,15 @@ class Settings(BaseSettings):
 
     @property
     def deploy_enabled(self) -> bool:
-        """Deploy subsystem requires both Postgres and B2 storage."""
-        return bool(self.drift_pg_url) and bool(self.b2_bucket)
+        """Deploy subsystem requires Postgres + a bundle storage backend.
+        Local-fs storage (BUNDLE_STORAGE=local) is now the default — the
+        old check required a B2 bucket, which silently disabled all
+        deploy tools on a fresh single-server install."""
+        if not self.drift_pg_url:
+            return False
+        if self.bundle_storage == "local":
+            return True
+        return bool(self.b2_bucket)
 
     @property
     def secrets_enabled(self) -> bool:

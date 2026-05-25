@@ -77,7 +77,7 @@ async def _device_by_name(s, name: str) -> Device | None:
 
 def _ensure_deploy_enabled() -> dict | None:
     if not settings.deploy_enabled:
-        return {"error": "Drift Deploy is not configured (DRIFT_PG_URL / B2_BUCKET unset)"}
+        return {"error": "Drift Deploy is not configured — DRIFT_PG_URL must be set, and either BUNDLE_STORAGE=local or a valid B2_BUCKET is required."}
     return None
 
 
