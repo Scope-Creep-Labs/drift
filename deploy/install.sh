@@ -520,10 +520,17 @@ chmod -R u+rwX,g+rX,o+rX config/alerts config/alertmanager
 # ---------- launch ----------
 
 heading "Launching"
+# Mode picks the compose-file set:
+#   bundled Caddy:  only docker-compose.yml + the `caddy` profile.
+#                   Services stay docker-network-only (no host ports
+#                   bound) — Caddy reaches them via service DNS.
+#   external proxy: layer docker-compose.external.yml on top to bind
+#                   127.0.0.1:<port> for each service the external
+#                   reverse proxy needs to reach.
 if [ "$USE_BUNDLED_CADDY" = "true" ]; then
   COMPOSE_ARGS=(--profile caddy)
 else
-  COMPOSE_ARGS=()
+  COMPOSE_ARGS=(-f docker-compose.yml -f docker-compose.external.yml)
 fi
 docker compose "${COMPOSE_ARGS[@]}" pull
 docker compose "${COMPOSE_ARGS[@]}" up -d

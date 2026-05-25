@@ -103,8 +103,9 @@ services:
       - "--auth.config=/etc/auth.yml"
     volumes:
       - ./config/auth.yml:/etc/auth.yml:ro
-    ports:
-      - "127.0.0.1:${VMAUTH_HOST_PORT:-8427}:8427"
+    # Host port only added in external-proxy mode via
+    # docker-compose.external.yml — in bundled-Caddy mode the
+    # in-network Caddy reaches us via DNS, no host port needed.
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -126,8 +127,7 @@ services:
       - "--http.pathPrefix=/vmalert"
     volumes:
       - ./config/alerts:/etc/alerts:rw
-    ports:
-      - "127.0.0.1:${VMALERT_HOST_PORT:-8880}:8880"
+    # See docker-compose.external.yml for the host-port binding.
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -147,8 +147,7 @@ services:
       - ./config/alertmanager:/etc/alertmanager:rw
       - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
       - alertmanager-data:/alertmanager
-    ports:
-      - "127.0.0.1:${ALERTMANAGER_HOST_PORT:-9093}:9093"
+    # See docker-compose.external.yml for the host-port binding.
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -175,8 +174,7 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./config/grafana.ini:/etc/grafana/grafana.ini:ro
-    ports:
-      - "127.0.0.1:${GRAFANA_HOST_PORT:-3000}:3000"
+    # See docker-compose.external.yml for the host-port binding.
     networks: [drift]
 
   # ------------------------------------------------------------------
@@ -240,8 +238,7 @@ services:
     container_name: drift-frontend
     restart: unless-stopped
     depends_on: [drift-agent]
-    ports:
-      - "127.0.0.1:${DRIFT_HOST_PORT:-10001}:80"
+    # See docker-compose.external.yml for the host-port binding.
     networks: [drift]
 
   # ==================================================================

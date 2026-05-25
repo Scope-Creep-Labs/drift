@@ -1,0 +1,32 @@
+# Override applied in EXTERNAL-REVERSE-PROXY mode.
+#
+# Adds 127.0.0.1:<port> bindings for the services your existing
+# reverse proxy (Caddy / Traefik / nginx on the host) needs to reach.
+# In bundled-Caddy mode this override is NOT loaded, so the same
+# services stay docker-network-only (the in-network Caddy reaches
+# them via service DNS) — reducing the local attack surface.
+#
+# install.sh picks between:
+#   docker compose -f docker-compose.yml -f docker-compose.external.yml up   # external proxy
+#   docker compose --profile caddy -f docker-compose.yml up                  # bundled Caddy
+
+services:
+  vmauth:
+    ports:
+      - "127.0.0.1:${VMAUTH_HOST_PORT:-8427}:8427"
+
+  vmalert:
+    ports:
+      - "127.0.0.1:${VMALERT_HOST_PORT:-8880}:8880"
+
+  alertmanager:
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_HOST_PORT:-9093}:9093"
+
+  grafana:
+    ports:
+      - "127.0.0.1:${GRAFANA_HOST_PORT:-3000}:3000"
+
+  drift-frontend:
+    ports:
+      - "127.0.0.1:${DRIFT_HOST_PORT:-10001}:80"
