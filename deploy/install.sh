@@ -56,11 +56,46 @@ chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "→ logging this run to $LOG_FILE"
 
-# Print the log path on EVERY exit (success, error, Ctrl-C). The trap
-# fires after the failing command's own message, so the operator sees
-# both the error AND where to read the full transcript. Replaces the
-# single end-of-script echo we had previously.
-trap 'rc=$?; echo; echo "Full install log: $LOG_FILE"; exit $rc' EXIT
+# Arrays + state referenced inside the EXIT trap. Declared up here so
+# they're guaranteed-defined even if the script errors before reaching
+# the section that populates them (set -u would otherwise trip the
+# trap itself).
+GENERATED_SECRETS=()
+COMPOSE_ARGS=()
+
+# Print a summary block on EVERY exit (success, error, Ctrl-C). On
+# success the inline output already showed URLs + healthcheck; the
+# trap just prints the log path. On error, the trap is the only place
+# the operator sees recoverable state — .env path, generated creds,
+# current container status — so we print all of that here.
+on_exit() {
+  local rc=$1
+  echo
+  if [ "$rc" -ne 0 ]; then
+    echo "════════════════════════════════════════════════════════════════════"
+    echo "  ✗ install exited with status $rc — partial state below"
+    echo "════════════════════════════════════════════════════════════════════"
+    [ -f "$ENV_FILE" ]                         && echo "  .env:          $ENV_FILE  (mode 600)"
+    [ -f "$ANSWERS_FILE" ] && [ -s "$ANSWERS_FILE" ] && \
+                                                  echo "  prompt answers so far: $ANSWERS_FILE"
+    if [ "${#GENERATED_SECRETS[@]}" -gt 0 ]; then
+      echo
+      echo "  Credentials generated this run — save these:"
+      for s in "${GENERATED_SECRETS[@]}"; do
+        echo "    $s"
+      done
+    fi
+    if docker compose "${COMPOSE_ARGS[@]}" ps -q 2>/dev/null | grep -q .; then
+      echo
+      echo "  Container state at exit:"
+      docker compose "${COMPOSE_ARGS[@]}" ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | sed 's/^/    /'
+    fi
+    echo
+  fi
+  echo "Full install log: $LOG_FILE"
+  exit "$rc"
+}
+trap 'on_exit $?' EXIT
 
 # ---------- helpers ----------
 
@@ -154,9 +189,9 @@ ask_secret() {
 #   - Enter        → keep current if one exists, else auto-generate.
 #   - "!"          → explicit rotation (force fresh auto-gen).
 #   - any other    → use the typed value verbatim.
-# Tracks generated values in $GENERATED_SECRETS for the "save these"
-# exit summary.
-GENERATED_SECRETS=()
+# Tracks generated values in $GENERATED_SECRETS (declared above the
+# EXIT trap so the trap can read it safely under set -u) for the
+# "save these" exit summary.
 ask_secret_autogen() {
   local key=$1 prompt=$2 length=${3:-20}
   local current
