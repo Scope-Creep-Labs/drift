@@ -1,5 +1,6 @@
 .env
 config/Caddyfile
+config/Caddyfile.sample
 config/auth.yml
 config/alertmanager-ntfy.yml
 config/grafana.ini

@@ -1,0 +1,71 @@
+# Sample Caddyfile snippet for an EXTERNAL Caddy already running on
+# this host (the bundled-Caddy mode wasn't selected during install).
+#
+# Drop this site block into your existing Caddyfile and reload Caddy.
+# The bundle's services bind to 127.0.0.1:<port> so any reverse proxy
+# on the same host can reach them via loopback.
+#
+# Substitutions applied by install.sh:
+#   __DOMAIN__                 public hostname (extracted from PUBLIC_URL)
+#   __DRIFT_HOST_PORT__        drift-frontend host port (default 10001)
+#   __VMALERT_HOST_PORT__      vmalert host port (default 8880)
+#   __ALERTMANAGER_HOST_PORT__ Alertmanager host port (default 9093)
+#   __GRAFANA_HOST_PORT__      Grafana host port (default 3000)
+#   __VMAUTH_HOST_PORT__       vmauth host port (default 8427)
+#   __WEB_AUTH_USER__          basic-auth user for /vmalert /am UIs
+#   __WEB_AUTH_HASH__          bcrypt hash of the same password
+
+__DOMAIN__ {
+	# Drift Deploy edge-agent surface — NOT gated by basic_auth (each
+	# device's bootstrap token is the credential).
+	handle /api/deploy/agent/* {
+		reverse_proxy 127.0.0.1:__DRIFT_HOST_PORT__ {
+			flush_interval -1
+		}
+	}
+
+	# vmalert UI + API — gated (ntfy notifications link here).
+	redir /vmalert /vmalert/ 301
+	handle /vmalert/* {
+		basic_auth {
+			__WEB_AUTH_USER__ __WEB_AUTH_HASH__
+		}
+		reverse_proxy 127.0.0.1:__VMALERT_HOST_PORT__
+	}
+
+	# Alertmanager UI + API — gated.
+	redir /am /am/ 301
+	handle /am/* {
+		basic_auth {
+			__WEB_AUTH_USER__ __WEB_AUTH_HASH__
+		}
+		reverse_proxy 127.0.0.1:__ALERTMANAGER_HOST_PORT__
+	}
+
+	# Grafana — has its own auth, no extra gate.
+	redir /grafana /grafana/ 301
+	handle /grafana/* {
+		reverse_proxy 127.0.0.1:__GRAFANA_HOST_PORT__
+	}
+
+	# vmauth — gateway for remote vmagents pushing metrics + logs.
+	# Authenticated by vmauth itself (reporter user/password); the
+	# basic-auth header is passed through unmodified.
+	handle /vm/* {
+		uri strip_prefix /vm
+		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
+	}
+	handle /vl/* {
+		uri strip_prefix /vl
+		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
+	}
+
+	# Everything else → Drift SPA. The frontend's nginx terminates
+	# /api/* internally (proxies to drift-agent:8000) so we forward
+	# the whole tree to one upstream.
+	handle {
+		reverse_proxy 127.0.0.1:__DRIFT_HOST_PORT__ {
+			flush_interval -1
+		}
+	}
+}
