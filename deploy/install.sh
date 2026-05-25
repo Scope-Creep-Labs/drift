@@ -37,6 +37,12 @@ touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "→ logging this run to $LOG_FILE"
 
+# Print the log path on EVERY exit (success, error, Ctrl-C). The trap
+# fires after the failing command's own message, so the operator sees
+# both the error AND where to read the full transcript. Replaces the
+# single end-of-script echo we had previously.
+trap 'rc=$?; echo; echo "Full install log: $LOG_FILE"; exit $rc' EXIT
+
 # ---------- helpers ----------
 
 err() { echo "ERROR: $*" >&2; exit 1; }
@@ -496,5 +502,3 @@ if [ ${#GENERATED_SECRETS[@]} -gt 0 ]; then
   echo "════════════════════════════════════════════════════════════════════"
 fi
 
-echo
-echo "Full install log: $LOG_FILE"
