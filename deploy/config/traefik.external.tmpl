@@ -1,0 +1,108 @@
+# Sample Traefik dynamic config (file provider) for fronting the
+# Drift bundle in external-reverse-proxy mode.
+#
+# Drop this into your Traefik dynamic config directory — usually
+# /etc/traefik/dynamic/ — and reload Traefik (it watches the dir).
+#
+# Assumes your Traefik already has:
+#   - an entrypoint named `websecure` listening on :443 with TLS
+#   - certResolver `letsencrypt` (or whatever name you use); change
+#     `certResolver` below to match
+#   - file provider pointed at /etc/traefik/dynamic/
+#
+# If you'd rather attach these labels directly to the drift-frontend
+# container, copy the labels under `drift-frontend.labels` in the
+# bundle's docker-compose.yml — but the file-provider approach below
+# keeps Traefik config decoupled from the Drift bundle.
+
+http:
+  routers:
+    drift:
+      rule: "Host(`__DOMAIN__`)"
+      entryPoints: [websecure]
+      service: drift-frontend
+      tls:
+        certResolver: letsencrypt
+      priority: 1
+
+    drift-vmalert:
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vmalert`)"
+      entryPoints: [websecure]
+      service: drift-vmalert
+      tls:
+        certResolver: letsencrypt
+      # middlewares: [drift-basic-auth]   # uncomment to gate; see below
+      priority: 10
+
+    drift-am:
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`/am`)"
+      entryPoints: [websecure]
+      service: drift-alertmanager
+      tls:
+        certResolver: letsencrypt
+      # middlewares: [drift-basic-auth]   # uncomment to gate; see below
+      priority: 10
+
+    drift-grafana:
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`/grafana`)"
+      entryPoints: [websecure]
+      service: drift-grafana
+      tls:
+        certResolver: letsencrypt
+      priority: 10
+
+    drift-vm:
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vm`)"
+      entryPoints: [websecure]
+      service: drift-vmauth
+      tls:
+        certResolver: letsencrypt
+      middlewares: [strip-vm-prefix]
+      priority: 10
+
+    drift-vl:
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vl`)"
+      entryPoints: [websecure]
+      service: drift-vmauth
+      tls:
+        certResolver: letsencrypt
+      middlewares: [strip-vl-prefix]
+      priority: 10
+
+  services:
+    drift-frontend:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:__DRIFT_HOST_PORT__"
+    drift-vmalert:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:__VMALERT_HOST_PORT__"
+    drift-alertmanager:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:__ALERTMANAGER_HOST_PORT__"
+    drift-grafana:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:__GRAFANA_HOST_PORT__"
+    drift-vmauth:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:__VMAUTH_HOST_PORT__"
+
+  middlewares:
+    strip-vm-prefix:
+      stripPrefix:
+        prefixes: ["/vm"]
+    strip-vl-prefix:
+      stripPrefix:
+        prefixes: ["/vl"]
+
+    # Uncomment + populate `users` to gate /vmalert and /am with
+    # basic_auth. Generate the hash with `htpasswd -nBC 14 '' '<pw>' |
+    # sed -E 's/^:|:$//g'` and copy the bcrypt portion.
+    # drift-basic-auth:
+    #   basicAuth:
+    #     users:
+    #       - "drift:$2a$14$YOUR_BCRYPT_HASH_HERE"

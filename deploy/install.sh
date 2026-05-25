@@ -494,19 +494,27 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
     __WEB_AUTH_USER__         "$WEB_AUTH_USER" \
     __WEB_AUTH_HASH__         "$WEB_AUTH_HASH"
 else
-  # External reverse-proxy mode. Render a sample site block the
-  # operator can paste into their existing Caddyfile (or translate
-  # to nginx/Traefik). Uses 127.0.0.1:<port> upstreams that match
-  # the loopback bindings in docker-compose.external.yml. No
-  # basic_auth — operator's existing proxy handles auth.
-  render config/Caddyfile.external.tmpl     config/Caddyfile.sample \
-    __DOMAIN__                "$DOMAIN" \
-    __DRIFT_HOST_PORT__       "${DRIFT_HOST_PORT:-10001}" \
-    __VMALERT_HOST_PORT__     "${VMALERT_HOST_PORT:-8880}" \
-    __ALERTMANAGER_HOST_PORT__ "${ALERTMANAGER_HOST_PORT:-9093}" \
-    __GRAFANA_HOST_PORT__     "${GRAFANA_HOST_PORT:-3000}" \
+  # External reverse-proxy mode. Render one sample per common reverse
+  # proxy so the operator picks the right one for their existing
+  # setup. All three use 127.0.0.1:<port> upstreams that match the
+  # loopback bindings in docker-compose.external.yml. No auth blocks
+  # by default — operator's existing proxy handles auth however it
+  # already does.
+  _sub=(
+    __DOMAIN__                "$DOMAIN"
+    __DRIFT_HOST_PORT__       "${DRIFT_HOST_PORT:-10001}"
+    __VMALERT_HOST_PORT__     "${VMALERT_HOST_PORT:-8880}"
+    __ALERTMANAGER_HOST_PORT__ "${ALERTMANAGER_HOST_PORT:-9093}"
+    __GRAFANA_HOST_PORT__     "${GRAFANA_HOST_PORT:-3000}"
     __VMAUTH_HOST_PORT__      "${VMAUTH_HOST_PORT:-8427}"
-  info "  config/Caddyfile.sample written — paste into your existing reverse-proxy config"
+  )
+  render config/Caddyfile.external.tmpl  config/Caddyfile.sample  "${_sub[@]}"
+  render config/nginx.external.tmpl      config/nginx.conf.sample "${_sub[@]}"
+  render config/traefik.external.tmpl    config/traefik.yml.sample "${_sub[@]}"
+  info "  reverse-proxy samples written:"
+  info "    - config/Caddyfile.sample"
+  info "    - config/nginx.conf.sample"
+  info "    - config/traefik.yml.sample"
 fi
 
 render config/auth.yml.tmpl                 config/auth.yml \
@@ -569,11 +577,12 @@ else
   echo "    grafana:          127.0.0.1:${GRAFANA_HOST_PORT:-3000}     →  $PUBLIC_URL/grafana/"
   echo "    vmauth (writes):  127.0.0.1:${VMAUTH_HOST_PORT:-8427}      →  $PUBLIC_URL/vm/ + /vl/"
   echo
-  echo "  Sample Caddyfile for the above is at:"
-  echo "    $DEPLOY_DIR/config/Caddyfile.sample"
-  echo "  (Translate to nginx/Traefik if you don't use Caddy. The sample"
-  echo "   has no basic_auth on /vmalert and /am — see the header comment"
-  echo "   in the file if you want to add one.)"
+  echo "  Sample reverse-proxy configs (paste into your existing setup):"
+  echo "    Caddy:    $DEPLOY_DIR/config/Caddyfile.sample"
+  echo "    nginx:    $DEPLOY_DIR/config/nginx.conf.sample"
+  echo "    Traefik:  $DEPLOY_DIR/config/traefik.yml.sample"
+  echo "  None include basic_auth on /vmalert and /am — see each file's"
+  echo "  header comment for how to add one if desired."
 fi
 echo
 echo "  ntfy: subscribe to https://ntfy.sh/$NTFY_TOPIC on your phone"

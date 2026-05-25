@@ -1,0 +1,128 @@
+# Sample nginx server block for fronting the Drift bundle in external-
+# reverse-proxy mode. The Drift bundle binds its services on
+# 127.0.0.1:<port> — this block tells your existing nginx to forward
+# the public paths to those loopback ports.
+#
+# Drop this file into /etc/nginx/conf.d/ (or include from your main
+# nginx.conf) and reload nginx:
+#
+#     sudo nginx -t && sudo systemctl reload nginx
+#
+# TLS / cert files come from your existing nginx setup — we don't
+# duplicate that here. If you don't already have certs for __DOMAIN__,
+# the simplest path is `certbot --nginx -d __DOMAIN__` once the DNS
+# record points at this host.
+#
+# basic_auth on /vmalert and /am: not included by default — your
+# existing nginx might already gate things differently. To add it:
+#
+#     sudo apt install apache2-utils       # or yum install httpd-tools
+#     sudo htpasswd -c /etc/nginx/.drift_htpasswd drift
+#
+# Then add `auth_basic`/`auth_basic_user_file` inside the /vmalert/
+# and /am/ blocks (see commented-out lines below).
+
+server {
+    listen 443 ssl http2;
+    server_name __DOMAIN__;
+
+    # Provide your own TLS certs here (or rely on `certbot --nginx`).
+    # ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+
+    # Larger uploads (compose bundles are tiny but headroom never hurts).
+    client_max_body_size 50m;
+
+    # Drift Deploy edge-agent surface — NOT gated by basic_auth (each
+    # device's bootstrap token is the credential).
+    location /api/deploy/agent/ {
+        proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_buffering    off;
+    }
+
+    # Web-terminal WebSocket (browser → drift-frontend → drift-agent).
+    location ~ ^/api/deploy/(agent/terminal/ws|devices/[^/]+/terminal/ws) {
+        proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+        proxy_set_header   Host              $host;
+        proxy_read_timeout  3600s;
+        proxy_send_timeout  3600s;
+    }
+
+    # Drift agent SSE for chat (disable buffering, long timeouts).
+    location /api/investigate {
+        proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Connection        "";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        chunked_transfer_encoding on;
+    }
+
+    # vmalert UI + API.
+    location /vmalert/ {
+        # Uncomment for basic_auth (see header comment):
+        # auth_basic           "vmalert";
+        # auth_basic_user_file /etc/nginx/.drift_htpasswd;
+        proxy_pass         http://127.0.0.1:__VMALERT_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # Alertmanager UI + API.
+    location /am/ {
+        # Uncomment for basic_auth (see header comment):
+        # auth_basic           "alertmanager";
+        # auth_basic_user_file /etc/nginx/.drift_htpasswd;
+        proxy_pass         http://127.0.0.1:__ALERTMANAGER_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # Grafana — has its own auth.
+    location /grafana/ {
+        proxy_pass         http://127.0.0.1:__GRAFANA_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+
+    # vmauth — front door for remote vmagents pushing metrics + logs.
+    # vmauth handles its own basic-auth (reporter:password), so we
+    # forward the Authorization header unmodified.
+    location /vm/ {
+        rewrite ^/vm/(.*)$ /$1 break;
+        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+    location /vl/ {
+        rewrite ^/vl/(.*)$ /$1 break;
+        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+
+    # Everything else → Drift web UI.
+    location / {
+        proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}

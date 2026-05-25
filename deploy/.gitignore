@@ -2,6 +2,8 @@
 logs/
 config/Caddyfile
 config/Caddyfile.sample
+config/nginx.conf.sample
+config/traefik.yml.sample
 config/auth.yml
 config/alertmanager-ntfy.yml
 config/grafana.ini
