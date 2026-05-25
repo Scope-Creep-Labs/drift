@@ -1,5 +1,6 @@
 .env
 logs/
+dist/
 config/Caddyfile
 config/Caddyfile.sample
 config/nginx.conf.sample

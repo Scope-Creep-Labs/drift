@@ -23,6 +23,19 @@ DEPLOY_DIR=$(pwd)
 ENV_FILE="$DEPLOY_DIR/.env"
 ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
 
+# Sidecar file that mirrors every collected prompt answer as soon
+# as it's typed. Lives in logs/ (mode 700) so it survives any
+# accident that nukes .env (manual rm, `git clean -fdx`, mode
+# switches, errors before the end-of-script .env write). env_get
+# falls back to this file when .env is missing a key, so prefill
+# always works as long as logs/ survives between runs.
+LOG_DIR="$DEPLOY_DIR/logs"
+umask 077
+mkdir -p "$LOG_DIR"
+chmod 700 "$LOG_DIR" 2>/dev/null || true
+ANSWERS_FILE="$LOG_DIR/.last-answers.env"
+touch "$ANSWERS_FILE" && chmod 600 "$ANSWERS_FILE"
+
 # Tee the entire run to a timestamped log so the operator has a
 # permanent record of what was set + what was generated. Mode 600
 # because the log captures the prompt feedback (including the
@@ -30,8 +43,6 @@ ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
 # in a coprocess via process substitution; this works under
 # `set -euo pipefail` because the outer shell's pipeline status
 # isn't affected by the tee.
-LOG_DIR="$DEPLOY_DIR/logs"
-mkdir -p "$LOG_DIR"
 LOG_FILE="$LOG_DIR/install-$(date -u +%Y%m%dT%H%M%SZ).log"
 touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -50,16 +61,36 @@ warn() { echo "warn:  $*" >&2; }
 info() { echo "       $*"; }
 heading() { echo; echo "═══ $* ═══"; }
 
-# Read a single value from the existing .env (if any). Empty string if
-# unset / missing. We use this so re-runs keep prior choices.
+# Read a single value, preferring .env (the canonical source) and
+# falling back to the in-progress sidecar at logs/.last-answers.env.
+# The sidecar survives anything that nukes .env between runs (mode
+# switch, manual rm, mid-script abort), so prefill is robust.
 env_get() {
-  local key=$1
-  [ -f "$ENV_FILE" ] || { echo ""; return; }
-  # Grep the assignment; allow leading whitespace; strip 'KEY=' prefix.
-  local line
-  line=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 || true)
+  local key=$1 line=""
+  if [ -f "$ENV_FILE" ]; then
+    line=$(grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 || true)
+  fi
+  if [ -z "$line" ] && [ -f "$ANSWERS_FILE" ]; then
+    # Tail -1 so the *last* save wins (we append-and-dedupe on save).
+    line=$(grep -E "^${key}=" "$ANSWERS_FILE" 2>/dev/null | tail -1 || true)
+  fi
   [ -z "$line" ] && { echo ""; return; }
   echo "${line#${key}=}"
+}
+
+# Persist a single KEY=VALUE to the sidecar immediately, so prefill
+# survives a mid-script abort. Strips any prior entry for the same
+# key, then appends — order in the file doesn't matter (env_get
+# tail -1's per key).
+save_answer() {
+  local key=$1 value=$2
+  [ -f "$ANSWERS_FILE" ] || { touch "$ANSWERS_FILE" && chmod 600 "$ANSWERS_FILE"; }
+  # Drop any existing entry for this key (sed in-place; portable across GNU + BSD).
+  if grep -qE "^${key}=" "$ANSWERS_FILE" 2>/dev/null; then
+    grep -vE "^${key}=" "$ANSWERS_FILE" > "${ANSWERS_FILE}.tmp" && mv "${ANSWERS_FILE}.tmp" "$ANSWERS_FILE"
+    chmod 600 "$ANSWERS_FILE"
+  fi
+  printf '%s=%s\n' "$key" "$value" >> "$ANSWERS_FILE"
 }
 
 # Prompt for a value, accepting Enter to keep the current value.
@@ -85,6 +116,9 @@ ask() {
   else
     eval "$key=\"\$default\""
   fi
+  local resolved
+  eval "resolved=\$$key"
+  save_answer "$key" "$resolved"
 }
 
 # Same as ask() but for secrets — echo is disabled and we don't show
@@ -103,6 +137,9 @@ ask_secret() {
   else
     eval "$key=\"\$current\""
   fi
+  local resolved
+  eval "resolved=\$$key"
+  save_answer "$key" "$resolved"
 }
 
 # Secret-or-autogen: prompt for a password with three behaviors:
@@ -146,6 +183,9 @@ ask_secret_autogen() {
       eval "$key=\"\$answer\""
       ;;
   esac
+  local resolved
+  eval "resolved=\$$key"
+  save_answer "$key" "$resolved"
 }
 
 # Generate a URL-safe random string. Used for passwords + secret keys
@@ -178,7 +218,11 @@ info "docker $(docker --version | awk '{print $3}' | tr -d ',')"
 info "compose $(docker compose version | awk '{print $4}')"
 info "deploy dir: $DEPLOY_DIR"
 
-[ -f "$ENV_FILE" ] && info "found existing .env (will prompt to keep or change values)"
+if [ -f "$ENV_FILE" ]; then
+  info "found existing .env (will prompt to keep or change values)"
+elif [ -s "$ANSWERS_FILE" ]; then
+  info "found prior answers in $ANSWERS_FILE (will prefill from there)"
+fi
 
 # ---------- prompts ----------
 
@@ -197,6 +241,7 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
   ask DOMAIN              "Public hostname (must already resolve to this host's IP)" drift.example.com
   ask LETSENCRYPT_EMAIL   "Email for Let's Encrypt notices (rare; can be left blank)" ""
   PUBLIC_URL="https://${DOMAIN}"
+  save_answer PUBLIC_URL "$PUBLIC_URL"
 else
   # External reverse proxy mode. We still need a PUBLIC_URL for
   # ALLOWED_ORIGINS (browser → drift-agent CORS) and for vmalert /
@@ -216,6 +261,8 @@ else
   # Pull domain out of the public URL for templates that need just the host.
   DOMAIN="${PUBLIC_URL#https://}"; DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN%%/*}"
   LETSENCRYPT_EMAIL=""
+  save_answer DOMAIN "$DOMAIN"
+  save_answer LETSENCRYPT_EMAIL ""
   ask DRIFT_HOST_PORT "Local port to bind drift-frontend on (127.0.0.1:<port>)" 10001
 fi
 
@@ -272,43 +319,34 @@ validate_llm_key() {
   esac
 }
 
-# Prompt for the API key + validate against the live API. On auth
-# failure, re-prompt up to 3 times; on network failure, warn but
-# accept the key (operator may be on a restrictive network during
-# install).
+# Prompt for the API key + sanity-check it against the provider's
+# /models endpoint. Soft validation only — we WARN on failure but
+# never abort, and we never modify .env mid-script (an earlier
+# version did and clobbered valid keys when the API returned a
+# transient 4xx). Operator can re-run install.sh to change a key
+# without risk of losing the previous value.
 ask_and_validate_llm_key() {
   local key_name=$1 provider=$2 prompt=$3
-  local attempts=0
-  while [ $attempts -lt 3 ]; do
-    ask_secret "$key_name" "$prompt"
-    local key
-    eval "key=\$$key_name"
-    if [ -z "$key" ]; then
-      warn "API key is empty — chat will fail until you set it in .env."
-      return
-    fi
-    echo -n "  validating against $provider… "
-    if validate_llm_key "$provider" "$key"; then
-      echo "✓ key works"
-      return
-    fi
-    rc=$?
-    if [ "$rc" = 2 ]; then
-      warn "couldn't reach $provider (network issue?). Accepting key as-is — verify after install."
-      return
-    fi
-    warn "$provider rejected the key. Try again."
-    attempts=$((attempts + 1))
-    # Clear the bad value from the in-memory + persisted slot so the
-    # next ask_secret prompt offers re-entry instead of "keep current".
-    eval "$key_name=''"
-    # Edit .env if it already had a stale value so re-runs don't
-    # silently re-use the rejected key.
-    if [ -f "$ENV_FILE" ] && grep -qE "^${key_name}=" "$ENV_FILE"; then
-      sed -i.bak "s/^${key_name}=.*/${key_name}=/" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
-    fi
-  done
-  err "API key validation failed 3 times — aborting. Fix the key and re-run install.sh."
+  ask_secret "$key_name" "$prompt"
+  local key
+  eval "key=\$$key_name"
+  if [ -z "$key" ]; then
+    warn "API key is empty — chat will fail until you set $key_name in .env."
+    return
+  fi
+  echo -n "  validating against $provider… "
+  if validate_llm_key "$provider" "$key"; then
+    echo "✓ key works"
+    return
+  fi
+  local rc=$?
+  if [ "$rc" = 2 ]; then
+    echo "(couldn't reach provider — accepting key, verify after install)"
+    return
+  fi
+  echo "✗ rejected"
+  warn "  $provider rejected the key. Saving anyway; if chat fails after install,"
+  warn "  edit $key_name in .env or re-run install.sh to enter a new one."
 }
 
 heading "LLM"
@@ -344,6 +382,13 @@ if [ "$BUNDLE_STORAGE" = "s3" ]; then
 else
   B2_ENDPOINT=""; B2_REGION=""; B2_ACCESS_KEY_ID=""
   B2_SECRET_ACCESS_KEY=""; B2_BUCKET=""
+  # Override any sidecar values from a previous s3 run so we don't
+  # silently re-suggest stale credentials on the next storage-mode flip.
+  save_answer B2_ENDPOINT ""
+  save_answer B2_REGION ""
+  save_answer B2_ACCESS_KEY_ID ""
+  save_answer B2_SECRET_ACCESS_KEY ""
+  save_answer B2_BUCKET ""
 fi
 
 heading "Self-scrape (reporter on this host)"
@@ -369,6 +414,7 @@ rotate_or_keep() {
     eval "$key=\"\$fresh\""
     info "generated $key ($label)"
     GENERATED_SECRETS+=("$key=$fresh")
+    save_answer "$key" "$fresh"
     return
   fi
   local answer
@@ -379,9 +425,11 @@ rotate_or_keep() {
     eval "$key=\"\$fresh\""
     info "rotated $key"
     GENERATED_SECRETS+=("$key=$fresh  (rotated)")
+    save_answer "$key" "$fresh"
   else
     eval "$key=\"\$current\""
     info "kept existing $key"
+    save_answer "$key" "$current"
   fi
 }
 _gen_pw() { rand_token 24; }
@@ -403,6 +451,10 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
 else
   WEB_AUTH_HASH_ENV=""
 fi
+# Sidecar copies for prefill on rerun (no-op in external mode — all empty).
+save_answer WEB_AUTH_USER "$WEB_AUTH_USER"
+save_answer WEB_AUTH_PASSWORD_PLAINTEXT "$WEB_AUTH_PASSWORD_PLAINTEXT"
+save_answer WEB_AUTH_HASH "$WEB_AUTH_HASH_ENV"
 
 # ---------- write .env ----------
 
