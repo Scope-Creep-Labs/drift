@@ -6,7 +6,7 @@ Everything required to run a complete Drift stack on one Linux box behind a publ
 
 | Service | Purpose | URL |
 |---|---|---|
-| **drift-frontend** | React SPA | `https://<domain>/` |
+| **drift-frontend** | Drift web UI | `https://<domain>/` |
 | **drift-agent** | FastAPI agent + deploy CP + terminal relay | (internal) |
 | **drift-postgres** | Drift state | (internal) |
 | **vm** | VictoriaMetrics — time-series DB | (internal) |
@@ -86,7 +86,7 @@ docker compose down -v
 
 ## Setting up the first remote device
 
-After install completes, point the public vmauth user (`reporter`) at any remote vmagent by setting `-remoteWrite.url=https://<domain>/vm/api/v1/write` with basic auth `reporter:<REPORTER_PASSWORD from .env>`. For Drift Deploy edge agents, install them with `CP_URL=https://<domain>/api/deploy` (no `/drift` prefix on this single-server build — the SPA serves at the root).
+After install completes, point the public vmauth user (`reporter`) at any remote vmagent by setting `-remoteWrite.url=https://<domain>/vm/api/v1/write` with basic auth `reporter:<REPORTER_PASSWORD from .env>`. For Drift Deploy edge agents, install them with `CP_URL=https://<domain>/api/deploy` — or `https://<domain>/drift/api/deploy` if you chose a subroute layout (PUBLIC_URL ending in `/drift`).
 
 ## Layout
 
@@ -119,7 +119,7 @@ deploy/
 **"TLS issuance failing" / certificate errors**
 DNS not yet propagated, or ports 80/443 not reachable. `docker compose logs caddy` shows the ACME error. Once DNS resolves and the host is reachable, Caddy retries every ~minute.
 
-**SPA loads but `/api/*` 502s**
+**Drift web UI loads but `/api/*` 502s**
 `drift-agent` not healthy. `docker compose logs drift-agent`; common cause is `DRIFT_PG_URL` wrong or Postgres not yet up.
 
 **"credit balance is too low" in chat**

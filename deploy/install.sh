@@ -154,7 +154,7 @@ echo "  Drift's services expose ports on 127.0.0.1 for an external"
 echo "  reverse proxy (Caddy/Traefik/nginx) to front. The bundle includes"
 echo "  a Caddy service that does this automatically with Let's Encrypt"
 echo "  TLS — opt in if you don't already run a reverse proxy on this box."
-ask USE_BUNDLED_CADDY "Use the bundled Caddy for TLS? [y/N]" "$(env_get USE_BUNDLED_CADDY || echo n)"
+ask USE_BUNDLED_CADDY "Use the bundled Caddy for TLS? [y/N]" "n"
 case "${USE_BUNDLED_CADDY:-n}" in
   y|Y|yes|YES|true|1) USE_BUNDLED_CADDY=true ;;
   *)                  USE_BUNDLED_CADDY=false ;;
@@ -167,8 +167,19 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
 else
   # External reverse proxy mode. We still need a PUBLIC_URL for
   # ALLOWED_ORIGINS (browser → drift-agent CORS) and for vmalert /
-  # alertmanager's --web.external-url (link generation).
-  ask PUBLIC_URL "Public URL the SPA will be reached at (e.g. https://drift.example.com)" "https://drift.example.com"
+  # alertmanager's --web.external-url (link generation). No default —
+  # the operator knows their setup; we just need an explicit value.
+  echo "  Examples:"
+  echo "    https://drift.example.com         (Drift at root of its own subdomain)"
+  echo "    https://example.com/drift         (Drift at /drift on an existing domain)"
+  while true; do
+    ask PUBLIC_URL "Public URL the Drift web UI will be reached at" ""
+    case "$PUBLIC_URL" in
+      http://*|https://*) break ;;
+      "") warn "Required — must start with http:// or https://" ;;
+      *)  warn "Must start with http:// or https://" ;;
+    esac
+  done
   # Pull domain out of the public URL for templates that need just the host.
   DOMAIN="${PUBLIC_URL#https://}"; DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN%%/*}"
   LETSENCRYPT_EMAIL=""
@@ -188,9 +199,9 @@ ask_secret_autogen DRIFT_ADMIN_PASSWORD "Drift admin password"
 
 heading "LLM"
 echo "  Pick the model Drift's agent will run. The matching API key is asked next."
-echo "  Common picks: claude-opus-4-7 | gpt-4o | gpt-4o-mini | o3 | gemini-2.5-pro"
+echo "  Common picks: claude-opus-4-7 | gpt-5.4-mini | gpt-4o | o3 | gemini-2.5-pro"
 ask MODEL "Model id" claude-opus-4-7
-ask EFFORT "Reasoning effort (low/medium/high)" high
+ask EFFORT "Reasoning effort (low/medium/high)" medium
 ask MAX_TOKENS "Max output tokens per call" 64000
 # Only prompt for the key that matches the chosen model's provider.
 case "$MODEL" in
@@ -254,6 +265,13 @@ fi
 heading "Hashing web-auth password (bcrypt via caddy:2)"
 WEB_AUTH_HASH=$(bcrypt_caddy "$WEB_AUTH_PASSWORD_PLAINTEXT")
 info "bcrypt hash generated"
+# Compose interpolates `$X` syntax inside .env values. Bcrypt hashes
+# start with `$2a$14$...` which compose would otherwise read as three
+# variable references. Double the dollars so compose treats them
+# literally — caddy still sees the original hash because compose
+# un-escapes `$$` → `$` when it injects the value into the container's
+# env. Same trick docker-compose.yml uses for $$ in command args.
+WEB_AUTH_HASH_ENV=${WEB_AUTH_HASH//$/$$}
 
 # ---------- write .env ----------
 
@@ -272,7 +290,7 @@ GRAFANA_HOST_PORT=${GRAFANA_HOST_PORT:-3000}
 VMAUTH_HOST_PORT=${VMAUTH_HOST_PORT:-8427}
 
 WEB_AUTH_USER=$WEB_AUTH_USER
-WEB_AUTH_HASH=$WEB_AUTH_HASH
+WEB_AUTH_HASH=$WEB_AUTH_HASH_ENV
 
 MODEL=$MODEL
 EFFORT=$EFFORT
@@ -394,7 +412,7 @@ echo
 echo "✓ install complete"
 echo
 if [ "$USE_BUNDLED_CADDY" = "true" ]; then
-  echo "  SPA:           $PUBLIC_URL"
+  echo "  Drift web UI:  $PUBLIC_URL"
   echo "  vmalert:       $PUBLIC_URL/vmalert/   (basic_auth $WEB_AUTH_USER:…)"
   echo "  alertmanager:  $PUBLIC_URL/am/        (basic_auth $WEB_AUTH_USER:…)"
   echo "  grafana:       $PUBLIC_URL/grafana/   (own auth — see grafana docs)"
@@ -405,7 +423,7 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
   echo "  - Watch issuance progress: docker compose logs -f caddy"
 else
   echo "  Services bound to 127.0.0.1 — wire your existing reverse proxy:"
-  echo "    SPA (root):       127.0.0.1:${DRIFT_HOST_PORT:-10001}        →  $PUBLIC_URL/"
+  echo "    Drift web UI:     127.0.0.1:${DRIFT_HOST_PORT:-10001}        →  $PUBLIC_URL/"
   echo "    vmalert:          127.0.0.1:${VMALERT_HOST_PORT:-8880}/vmalert  →  $PUBLIC_URL/vmalert/"
   echo "    alertmanager:     127.0.0.1:${ALERTMANAGER_HOST_PORT:-9093}/am  →  $PUBLIC_URL/am/"
   echo "    grafana:          127.0.0.1:${GRAFANA_HOST_PORT:-3000}     →  $PUBLIC_URL/grafana/"

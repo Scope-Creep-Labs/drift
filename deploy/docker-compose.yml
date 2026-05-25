@@ -60,7 +60,7 @@ services:
   # VictoriaMetrics — time-series database
   # ------------------------------------------------------------------
   vm:
-    image: victoriametrics/victoria-metrics:stable
+    image: victoriametrics/victoria-metrics:latest
     container_name: vm
     restart: unless-stopped
     command:
@@ -74,7 +74,7 @@ services:
   # VictoriaLogs — log database
   # ------------------------------------------------------------------
   victorialogs:
-    image: victoriametrics/victoria-logs:stable
+    image: victoriametrics/victoria-logs:latest
     container_name: victorialogs
     restart: unless-stopped
     command:
@@ -90,7 +90,7 @@ services:
   # external) can front it. Remote agents hit it via that proxy.
   # ------------------------------------------------------------------
   vmauth:
-    image: victoriametrics/vmauth:stable
+    image: victoriametrics/vmauth:latest
     container_name: vmauth
     restart: unless-stopped
     command:
