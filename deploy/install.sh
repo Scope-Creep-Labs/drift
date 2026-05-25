@@ -99,34 +99,47 @@ ask_secret() {
   fi
 }
 
-# Secret-or-autogen: prompt for a password but generate a random one
-# if the operator hits Enter and nothing's stored. Tracks generated
-# values in $GENERATED_SECRETS for the "save these" exit summary.
+# Secret-or-autogen: prompt for a password with three behaviors:
+#   - Enter        → keep current if one exists, else auto-generate.
+#   - "!"          → explicit rotation (force fresh auto-gen).
+#   - any other    → use the typed value verbatim.
+# Tracks generated values in $GENERATED_SECRETS for the "save these"
+# exit summary.
 GENERATED_SECRETS=()
 ask_secret_autogen() {
   local key=$1 prompt=$2 length=${3:-20}
   local current
   current=$(env_get "$key")
-  local hint=""
+  local hint
   if [ -n "$current" ]; then
-    hint=" [Enter to keep current]"
+    hint=" [Enter=keep · ! to rotate · or type new]"
   else
-    hint=" [Enter to auto-generate]"
+    hint=" [Enter to auto-generate · or type new]"
   fi
   local answer
   read -rsp "$prompt$hint: " answer
   echo
-  if [ -n "$answer" ]; then
-    eval "$key=\"\$answer\""
-  elif [ -n "$current" ]; then
-    eval "$key=\"\$current\""
-  else
-    local generated
-    generated=$(rand_token "$length")
-    eval "$key=\"\$generated\""
-    # Stash for the exit summary so the operator can save it.
-    GENERATED_SECRETS+=("$key=$generated")
-  fi
+  case "$answer" in
+    "")
+      if [ -n "$current" ]; then
+        eval "$key=\"\$current\""
+      else
+        local generated
+        generated=$(rand_token "$length")
+        eval "$key=\"\$generated\""
+        GENERATED_SECRETS+=("$key=$generated")
+      fi
+      ;;
+    "!")
+      local generated
+      generated=$(rand_token "$length")
+      eval "$key=\"\$generated\""
+      GENERATED_SECRETS+=("$key=$generated  (rotated)")
+      ;;
+    *)
+      eval "$key=\"\$answer\""
+      ;;
+  esac
 }
 
 # Generate a URL-safe random string. Used for passwords + secret keys
@@ -251,30 +264,43 @@ ask REPORTER_HOSTNAME "Hostname label for self-scraped metrics" "$(hostname -s 2
 ask REPORTER_GROUP    "Group label for self-scraped metrics" cloud
 
 heading "Auto-generated secrets"
-# These get rolled fresh on each rotation but preserved when re-running
-# without an explicit rotate request.
-DRIFT_PG_PASSWORD=$(env_get DRIFT_PG_PASSWORD)
-DRIFT_SECRET_KEY=$(env_get DRIFT_SECRET_KEY)
-REPORTER_PASSWORD=$(env_get REPORTER_PASSWORD)
-if [ -z "$DRIFT_PG_PASSWORD" ]; then
-  DRIFT_PG_PASSWORD=$(rand_token 24)
-  info "generated DRIFT_PG_PASSWORD"
-else
-  info "kept existing DRIFT_PG_PASSWORD"
-fi
-if [ -z "$DRIFT_SECRET_KEY" ]; then
-  DRIFT_SECRET_KEY=$(gen_fernet)
-  info "generated DRIFT_SECRET_KEY (Fernet)"
-else
-  info "kept existing DRIFT_SECRET_KEY"
-fi
-if [ -z "$REPORTER_PASSWORD" ]; then
-  REPORTER_PASSWORD=$(rand_token 24)
-  info "generated REPORTER_PASSWORD (for remote vmagents)"
-  GENERATED_SECRETS+=("REPORTER_PASSWORD=$REPORTER_PASSWORD")
-else
-  info "kept existing REPORTER_PASSWORD"
-fi
+echo "  Drift Postgres password, Fernet key, and the vmauth reporter"
+echo "  password are auto-generated on first install and silently"
+echo "  preserved on rerun. To rotate one, answer '!' at the prompt"
+echo "  (others stay untouched). Press Enter to keep current."
+
+rotate_or_keep() {
+  # Args: KEY  LABEL  GENERATOR_FN
+  # Reads current via env_get; prompts only if a current value
+  # exists. On fresh install (current empty), silently generates.
+  local key=$1 label=$2 gen_fn=$3
+  local current
+  current=$(env_get "$key")
+  if [ -z "$current" ]; then
+    local fresh
+    fresh=$($gen_fn)
+    eval "$key=\"\$fresh\""
+    info "generated $key ($label)"
+    GENERATED_SECRETS+=("$key=$fresh")
+    return
+  fi
+  local answer
+  read -rp "  Rotate $key? Type ! to rotate, Enter to keep current: " answer
+  if [ "$answer" = "!" ]; then
+    local fresh
+    fresh=$($gen_fn)
+    eval "$key=\"\$fresh\""
+    info "rotated $key"
+    GENERATED_SECRETS+=("$key=$fresh  (rotated)")
+  else
+    eval "$key=\"\$current\""
+    info "kept existing $key"
+  fi
+}
+_gen_pw() { rand_token 24; }
+rotate_or_keep DRIFT_PG_PASSWORD   "Postgres"          _gen_pw
+rotate_or_keep DRIFT_SECRET_KEY    "Fernet key"        gen_fernet
+rotate_or_keep REPORTER_PASSWORD   "vmauth reporter"   _gen_pw
 
 heading "Hashing web-auth password (bcrypt via caddy:2)"
 WEB_AUTH_HASH=$(bcrypt_caddy "$WEB_AUTH_PASSWORD_PLAINTEXT")
