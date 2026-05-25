@@ -29,12 +29,19 @@ ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
 # switches, errors before the end-of-script .env write). env_get
 # falls back to this file when .env is missing a key, so prefill
 # always works as long as logs/ survives between runs.
+#
+# NOTE on umask: we used to set `umask 077` globally here, which had
+# a bug — every rendered config in config/ (grafana.ini etc.) inherited
+# 600, and grafana's container (uid 472) can't read those. We now use
+# `umask 077` only as a brief shield around individual secret-bearing
+# writes (.env, .last-answers.env, log files) and rely on explicit
+# chmod for the rest. Default umask (usually 022) is preserved.
 LOG_DIR="$DEPLOY_DIR/logs"
-umask 077
-mkdir -p "$LOG_DIR"
+(umask 077 && mkdir -p "$LOG_DIR")
 chmod 700 "$LOG_DIR" 2>/dev/null || true
 ANSWERS_FILE="$LOG_DIR/.last-answers.env"
-touch "$ANSWERS_FILE" && chmod 600 "$ANSWERS_FILE"
+(umask 077 && touch "$ANSWERS_FILE")
+chmod 600 "$ANSWERS_FILE"
 
 # Tee the entire run to a timestamped log so the operator has a
 # permanent record of what was set + what was generated. Mode 600
@@ -44,7 +51,8 @@ touch "$ANSWERS_FILE" && chmod 600 "$ANSWERS_FILE"
 # `set -euo pipefail` because the outer shell's pipeline status
 # isn't affected by the tee.
 LOG_FILE="$LOG_DIR/install-$(date -u +%Y%m%dT%H%M%SZ).log"
-touch "$LOG_FILE" && chmod 600 "$LOG_FILE"
+(umask 077 && touch "$LOG_FILE")
+chmod 600 "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
 echo "→ logging this run to $LOG_FILE"
 
@@ -606,8 +614,59 @@ fi
 docker compose "${COMPOSE_ARGS[@]}" pull
 docker compose "${COMPOSE_ARGS[@]}" up -d
 echo
+
+# ---------- health check ----------
 heading "Status"
-docker compose ps --format "table {{.Name}}\t{{.Status}}"
+# drift-agent + drift-postgres take a moment: alembic runs migrations,
+# the API key is validated, the admin user is bootstrapped. Poll until
+# everything is running + healthy, up to a 90s deadline. Exits the
+# wait loop the moment the stack is clean, so a fast install doesn't
+# pay the full 90s.
+echo "  waiting for services to settle (up to 90s)..."
+deadline=$((SECONDS + 90))
+while [ $SECONDS -lt $deadline ]; do
+  bad=$(docker compose "${COMPOSE_ARGS[@]}" ps --format "{{.State}}|{{.Status}}" 2>/dev/null \
+        | awk -F'|' 'NF>0 && ($1 != "running" || $2 ~ /unhealthy|[Rr]estarting|health: starting/)' \
+        | wc -l)
+  [ "${bad:-1}" -eq 0 ] && break
+  sleep 3
+done
+echo
+
+# Final state table for the operator.
+docker compose "${COMPOSE_ARGS[@]}" ps --format "table {{.Name}}\t{{.Status}}"
+echo
+
+# Classify each container. "running + healthy" or "running + Up X minutes"
+# (no healthcheck) → OK. Anything restarting/unhealthy/exited → show
+# the last 10 log lines inline so the operator can diagnose without
+# hunting for `docker logs`.
+unhappy=()
+while IFS='|' read -r name state status; do
+  [ -z "$name" ] && continue
+  if [ "$state" != "running" ] || echo "$status" | grep -qE "unhealthy|[Rr]estarting"; then
+    unhappy+=("$name"$'\t'"$status")
+  fi
+done < <(docker compose "${COMPOSE_ARGS[@]}" ps --format "{{.Name}}|{{.State}}|{{.Status}}" 2>/dev/null)
+
+if [ ${#unhappy[@]} -eq 0 ]; then
+  echo "✓ all services healthy"
+else
+  warn "${#unhappy[@]} container(s) are not healthy:"
+  for entry in "${unhappy[@]}"; do
+    name=${entry%%$'\t'*}
+    status=${entry#*$'\t'}
+    echo
+    echo "  ── $name  ($status)"
+    docker logs "$name" --tail 10 2>&1 | sed 's/^/      /'
+  done
+  echo
+  echo "  Re-check with:  docker compose ps  +  docker logs <name>"
+  echo "  Drift web UI may still load if drift-agent, drift-postgres, and"
+  echo "  drift-frontend are healthy. If drift-agent is restarting on"
+  echo "  'InvalidPasswordError', there's a stale postgres volume — see"
+  echo "  $DEPLOY_DIR/README.md (troubleshooting)."
+fi
 echo
 echo "✓ install complete"
 echo
