@@ -600,8 +600,21 @@ else
   # loopback bindings in docker-compose.external.yml. No auth blocks
   # by default — operator's existing proxy handles auth however it
   # already does.
+  # __PATH_PREFIX__: anything after the host in PUBLIC_URL, stripped of
+  # a trailing slash. Root deployment ("https://drift.example.com")
+  # yields "", and the rendered Caddyfile uses paths like /api/, /vm/.
+  # Path-prefix deployment ("https://example.com/drift") yields
+  # "/drift", so the rendered paths become /drift/api/, /drift/vm/, etc.
+  # All three reverse-proxy samples (Caddy/nginx/Traefik) consume this
+  # substitution to keep their rules aligned with whichever URL layout
+  # the operator picked at the PUBLIC_URL prompt.
+  _path_after_host="${PUBLIC_URL#*://}"
+  _path_after_host="${_path_after_host#"$DOMAIN"}"
+  _path_after_host="${_path_after_host%/}"
+  PATH_PREFIX="$_path_after_host"
   _sub=(
     __DOMAIN__                "$DOMAIN"
+    __PATH_PREFIX__           "$PATH_PREFIX"
     __DRIFT_HOST_PORT__       "${DRIFT_HOST_PORT:-10001}"
     __VMALERT_HOST_PORT__     "${VMALERT_HOST_PORT:-8880}"
     __ALERTMANAGER_HOST_PORT__ "${ALERTMANAGER_HOST_PORT:-9093}"

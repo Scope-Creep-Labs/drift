@@ -8,6 +8,10 @@
 #
 #     sudo nginx -t && sudo systemctl reload nginx
 #
+# Works for both layouts:
+#   PUBLIC_URL=https://drift.example.com         → __PATH_PREFIX__=""
+#   PUBLIC_URL=https://example.com/drift         → __PATH_PREFIX__="/drift"
+#
 # TLS / cert files come from your existing nginx setup — we don't
 # duplicate that here. If you don't already have certs for __DOMAIN__,
 # the simplest path is `certbot --nginx -d __DOMAIN__` once the DNS
@@ -35,7 +39,7 @@ server {
 
     # Drift Deploy edge-agent surface — NOT gated by basic_auth (each
     # device's bootstrap token is the credential).
-    location /api/deploy/agent/ {
+    location __PATH_PREFIX__/api/deploy/agent/ {
         proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
@@ -46,7 +50,7 @@ server {
     }
 
     # Web-terminal WebSocket (browser → drift-frontend → drift-agent).
-    location ~ ^/api/deploy/(agent/terminal/ws|devices/[^/]+/terminal/ws) {
+    location ~ ^__PATH_PREFIX__/api/deploy/(agent/terminal/ws|devices/[^/]+/terminal/ws) {
         proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
         proxy_http_version 1.1;
         proxy_set_header   Upgrade           $http_upgrade;
@@ -57,7 +61,7 @@ server {
     }
 
     # Drift agent SSE for chat (disable buffering, long timeouts).
-    location /api/investigate {
+    location __PATH_PREFIX__/api/investigate {
         proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
         proxy_http_version 1.1;
         proxy_set_header   Connection        "";
@@ -68,8 +72,27 @@ server {
         chunked_transfer_encoding on;
     }
 
+    # vmauth — front door for remote vmagents pushing metrics + logs.
+    # Reporter bundles target ${DRIFT_CP_PUBLIC_URL}/vm/... and /vl/...
+    # — which resolves to either /vm/ /vl/ at root OR /drift/vm/ etc.
+    # under the path prefix. vmauth handles its own basic-auth
+    # (reporter:password), so we forward the Authorization header
+    # unmodified.
+    location __PATH_PREFIX__/vm/ {
+        rewrite ^__PATH_PREFIX__/vm/(.*)$ /$1 break;
+        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+    location __PATH_PREFIX__/vl/ {
+        rewrite ^__PATH_PREFIX__/vl/(.*)$ /$1 break;
+        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+    }
+
     # vmalert UI + API.
-    location /vmalert/ {
+    location __PATH_PREFIX__/vmalert/ {
         # Uncomment for basic_auth (see header comment):
         # auth_basic           "vmalert";
         # auth_basic_user_file /etc/nginx/.drift_htpasswd;
@@ -80,7 +103,7 @@ server {
     }
 
     # Alertmanager UI + API.
-    location /am/ {
+    location __PATH_PREFIX__/am/ {
         # Uncomment for basic_auth (see header comment):
         # auth_basic           "alertmanager";
         # auth_basic_user_file /etc/nginx/.drift_htpasswd;
@@ -91,7 +114,7 @@ server {
     }
 
     # Grafana — has its own auth.
-    location /grafana/ {
+    location __PATH_PREFIX__/grafana/ {
         proxy_pass         http://127.0.0.1:__GRAFANA_HOST_PORT__;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;
@@ -100,24 +123,10 @@ server {
         proxy_set_header   X-Forwarded-Proto $scheme;
     }
 
-    # vmauth — front door for remote vmagents pushing metrics + logs.
-    # vmauth handles its own basic-auth (reporter:password), so we
-    # forward the Authorization header unmodified.
-    location /vm/ {
-        rewrite ^/vm/(.*)$ /$1 break;
-        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
-    }
-    location /vl/ {
-        rewrite ^/vl/(.*)$ /$1 break;
-        proxy_pass         http://127.0.0.1:__VMAUTH_HOST_PORT__;
-        proxy_http_version 1.1;
-        proxy_set_header   Host              $host;
-    }
-
-    # Everything else → Drift web UI.
-    location / {
+    # Drift web UI catchall. In root mode (__PATH_PREFIX__ empty) this
+    # matches everything; in path-prefix mode it matches anything under
+    # the prefix that wasn't already claimed above.
+    location __PATH_PREFIX__/ {
         proxy_pass         http://127.0.0.1:__DRIFT_HOST_PORT__;
         proxy_http_version 1.1;
         proxy_set_header   Host              $host;

@@ -4,6 +4,10 @@
 # Drop this into your Traefik dynamic config directory — usually
 # /etc/traefik/dynamic/ — and reload Traefik (it watches the dir).
 #
+# Works for both layouts:
+#   PUBLIC_URL=https://drift.example.com         → __PATH_PREFIX__=""
+#   PUBLIC_URL=https://example.com/drift         → __PATH_PREFIX__="/drift"
+#
 # Assumes your Traefik already has:
 #   - an entrypoint named `websecure` listening on :443 with TLS
 #   - certResolver `letsencrypt` (or whatever name you use); change
@@ -26,7 +30,7 @@ http:
       priority: 1
 
     drift-vmalert:
-      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vmalert`)"
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`__PATH_PREFIX__/vmalert`)"
       entryPoints: [websecure]
       service: drift-vmalert
       tls:
@@ -35,7 +39,7 @@ http:
       priority: 10
 
     drift-am:
-      rule: "Host(`__DOMAIN__`) && PathPrefix(`/am`)"
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`__PATH_PREFIX__/am`)"
       entryPoints: [websecure]
       service: drift-alertmanager
       tls:
@@ -44,15 +48,19 @@ http:
       priority: 10
 
     drift-grafana:
-      rule: "Host(`__DOMAIN__`) && PathPrefix(`/grafana`)"
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`__PATH_PREFIX__/grafana`)"
       entryPoints: [websecure]
       service: drift-grafana
       tls:
         certResolver: letsencrypt
       priority: 10
 
+    # Reporter bundles target ${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write and
+    # /vl/insert/jsonline. Under a path-prefix layout, those become
+    # /drift/vm/... and /drift/vl/... — handled here with the matching
+    # stripPrefix middleware so vmauth sees raw paths.
     drift-vm:
-      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vm`)"
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`__PATH_PREFIX__/vm`)"
       entryPoints: [websecure]
       service: drift-vmauth
       tls:
@@ -61,7 +69,7 @@ http:
       priority: 10
 
     drift-vl:
-      rule: "Host(`__DOMAIN__`) && PathPrefix(`/vl`)"
+      rule: "Host(`__DOMAIN__`) && PathPrefix(`__PATH_PREFIX__/vl`)"
       entryPoints: [websecure]
       service: drift-vmauth
       tls:
@@ -94,10 +102,10 @@ http:
   middlewares:
     strip-vm-prefix:
       stripPrefix:
-        prefixes: ["/vm"]
+        prefixes: ["__PATH_PREFIX__/vm"]
     strip-vl-prefix:
       stripPrefix:
-        prefixes: ["/vl"]
+        prefixes: ["__PATH_PREFIX__/vl"]
 
     # Uncomment + populate `users` to gate /vmalert and /am with
     # basic_auth. Generate the hash with `htpasswd -nBC 14 '' '<pw>' |

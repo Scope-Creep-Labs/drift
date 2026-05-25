@@ -5,6 +5,14 @@
 # The bundle's services bind to 127.0.0.1:<port> so any reverse proxy
 # on the same host can reach them via loopback.
 #
+# Works for both layouts:
+#   PUBLIC_URL=https://drift.example.com         → __PATH_PREFIX__=""
+#   PUBLIC_URL=https://example.com/drift         → __PATH_PREFIX__="/drift"
+#
+# install.sh derives __PATH_PREFIX__ from the path component of
+# PUBLIC_URL and substitutes here, so the rendered Caddyfile.sample
+# matches whichever URL layout you picked.
+#
 # No basic_auth on /vmalert/ + /am/ here — your existing reverse proxy
 # is responsible for whatever auth scheme you already use (basic_auth /
 # OAuth / mTLS / IP allowlist / etc.). If you do want basic_auth on
@@ -21,6 +29,7 @@
 #
 # Substitutions applied by install.sh:
 #   __DOMAIN__                 public hostname (extracted from PUBLIC_URL)
+#   __PATH_PREFIX__            path prefix from PUBLIC_URL (empty or "/drift")
 #   __DRIFT_HOST_PORT__        drift-frontend host port (default 10001)
 #   __VMALERT_HOST_PORT__      vmalert host port (default 8880)
 #   __ALERTMANAGER_HOST_PORT__ Alertmanager host port (default 9093)
@@ -30,48 +39,52 @@
 __DOMAIN__ {
 	# Drift Deploy edge-agent surface — NOT gated (each device's
 	# bootstrap token is the credential).
-	handle /api/deploy/agent/* {
+	handle __PATH_PREFIX__/api/deploy/agent/* {
 		reverse_proxy 127.0.0.1:__DRIFT_HOST_PORT__ {
 			flush_interval -1
 		}
 	}
 
+	# vmauth — gateway for vmagents pushing metrics + logs. Reporter
+	# bundles target ${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write and
+	# ${DRIFT_CP_PUBLIC_URL}/vl/insert/jsonline, which after the
+	# __PATH_PREFIX__ resolves becomes either /vm/ /vl/ at root OR
+	# /drift/vm/ /drift/vl/ under the path prefix. handle_path strips
+	# both `__PATH_PREFIX__/vm` and `__PATH_PREFIX__/vl` cleanly so
+	# vmauth sees the raw path it expects.
+	handle_path __PATH_PREFIX__/vm/* {
+		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
+	}
+	handle_path __PATH_PREFIX__/vl/* {
+		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
+	}
+
 	# vmalert UI + API.
-	redir /vmalert /vmalert/ 301
-	handle /vmalert/* {
+	redir __PATH_PREFIX__/vmalert __PATH_PREFIX__/vmalert/ 301
+	handle __PATH_PREFIX__/vmalert/* {
 		# basic_auth here if you want — see the header comment.
 		reverse_proxy 127.0.0.1:__VMALERT_HOST_PORT__
 	}
 
 	# Alertmanager UI + API.
-	redir /am /am/ 301
-	handle /am/* {
+	redir __PATH_PREFIX__/am __PATH_PREFIX__/am/ 301
+	handle __PATH_PREFIX__/am/* {
 		# basic_auth here if you want — see the header comment.
 		reverse_proxy 127.0.0.1:__ALERTMANAGER_HOST_PORT__
 	}
 
 	# Grafana — has its own auth, no extra gate.
-	redir /grafana /grafana/ 301
-	handle /grafana/* {
+	redir __PATH_PREFIX__/grafana __PATH_PREFIX__/grafana/ 301
+	handle __PATH_PREFIX__/grafana/* {
 		reverse_proxy 127.0.0.1:__GRAFANA_HOST_PORT__
 	}
 
-	# vmauth — gateway for remote vmagents pushing metrics + logs.
-	# vmauth handles its own basic-auth (reporter user/password) so
-	# nothing extra needed at this layer.
-	handle /vm/* {
-		uri strip_prefix /vm
-		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
-	}
-	handle /vl/* {
-		uri strip_prefix /vl
-		reverse_proxy 127.0.0.1:__VMAUTH_HOST_PORT__
-	}
-
-	# Everything else → Drift web UI. The frontend's nginx terminates
-	# /api/* internally (proxies to drift-agent:8000) so we forward
-	# the whole tree to one upstream.
-	handle {
+	# Drift web UI catchall. The frontend's nginx terminates /api/*
+	# internally (proxies to drift-agent:8000) so we forward the whole
+	# tree under the prefix to one upstream. In root mode (PATH_PREFIX
+	# empty), `handle /*` is equivalent to `handle` — matches every path
+	# not already claimed above.
+	handle __PATH_PREFIX__/* {
 		reverse_proxy 127.0.0.1:__DRIFT_HOST_PORT__ {
 			flush_interval -1
 		}
