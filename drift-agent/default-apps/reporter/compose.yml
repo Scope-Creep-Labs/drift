@@ -53,6 +53,14 @@ services:
     environment:
       VECTOR_CONFIG: /etc/vector/vector.yaml
       VECTOR_DATA_DIR: /var/lib/vector
+      # Pass through the edge-agent's bridged vars so vector.yaml's
+      # ${VAR} interpolation resolves (the YAML is mounted, not
+      # compose-interpolated, so vector reads from its own env).
+      DRIFT_DEVICE_NAME: ${DRIFT_DEVICE_NAME}
+      DRIFT_GROUP_ID: ${DRIFT_GROUP_ID}
+      DRIFT_CP_PUBLIC_URL: ${DRIFT_CP_PUBLIC_URL}
+      DRIFT_VM_WRITE_USER: ${DRIFT_VM_WRITE_USER}
+      DRIFT_VM_WRITE_PASSWORD: ${DRIFT_VM_WRITE_PASSWORD}
     restart: unless-stopped
 
   node-exporter:

@@ -194,7 +194,19 @@ async def check_in(
             err = body.apply_errors.get(app_name)
 
             if current_rev_id is not None:
-                target.current_revision_id = current_rev_id
+                # Guard against a device reporting a revision that no
+                # longer exists on the CP — happens after a DB reset
+                # while edge devices still have the old rev cached in
+                # state.json. Without the check, the assignment hits a
+                # FK violation on commit and crashes the entire
+                # check-in handler with 500. Treat unknown revisions
+                # the same as "no current_revision" — the desired/apply
+                # logic below will catch up the device on next tick.
+                rev_exists = await db.execute(
+                    select(AppRevision.id).where(AppRevision.id == current_rev_id)
+                )
+                if rev_exists.scalar_one_or_none() is not None:
+                    target.current_revision_id = current_rev_id
 
             if err:
                 # Don't double-count once the target is already paused.
