@@ -20,6 +20,7 @@ import KeyIcon from '@mui/icons-material/Key'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
+import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAltOutlined'
 import TerminalIcon from '@mui/icons-material/Terminal'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
@@ -28,6 +29,7 @@ import { useTerminalUiStore } from '../../state/terminalUiStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
+import { SoftwareUpdatesModal } from '../SoftwareUpdatesModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
 import { type App, type DeploymentTarget } from '../../lib/deployApi'
 
@@ -109,6 +111,7 @@ export function InvestigationList() {
   const [modal, setModal] = useState<AppModalMode | null>(null)
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
+  const [updatesModalOpen, setUpdatesModalOpen] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
   // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
   // each section gets the full content height instead of fighting for
@@ -598,6 +601,13 @@ export function InvestigationList() {
           )}
         </Box>
         <Stack direction="row" spacing={0.2}>
+          {user?.role === 'admin' && (
+            <Tooltip title="Software updates">
+              <IconButton size="small" onClick={() => setUpdatesModalOpen(true)} sx={{ p: 0.4 }}>
+                <SystemUpdateAltIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           {isDeploy(user) && (
             <Tooltip title="Registry credentials">
               <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
@@ -629,6 +639,7 @@ export function InvestigationList() {
 
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
+      <SoftwareUpdatesModal open={updatesModalOpen} onClose={() => setUpdatesModalOpen(false)} />
       {/* TerminalModal is mounted at the App root via useTerminalUiStore
           — any surface (sidebar row, chat action card) can open it. */}
     </Stack>

@@ -532,6 +532,14 @@ save_answer WEB_AUTH_HASH "$WEB_AUTH_HASH_ENV"
 
 # ---------- write .env ----------
 
+# Detect the host docker.sock's group gid so drift-agent's `app` user
+# can be added to a matching supplementary group at runtime (needed for
+# the admin update-apply path that talks to the daemon over the socket).
+# Falls back to 999 — the gid the slim image's `app` user already has,
+# which is harmless if the host doesn't match (the apply endpoint just
+# returns a permission error in that case).
+_DOCKER_GID=$(stat -c '%g' /var/run/docker.sock 2>/dev/null || echo 999)
+
 heading "Writing .env"
 # Scope umask 077 to the .env heredoc only — leaks into render() if
 # set globally and we end up with config/grafana.ini at mode 600,
@@ -548,6 +556,14 @@ PUBLIC_URL=$PUBLIC_URL
 # etc. for path-prefix). vmalert + drift-agent use it to address
 # alertmanager intra-network at the matching route-prefix.
 PATH_PREFIX=$PATH_PREFIX
+# Real host path of this install dir, bind-mounted into drift-agent at
+# /host-deploy. Used by /api/admin/updates/apply so compose's
+# --project-directory points at the daemon-visible path (so bind
+# mounts like ./config/alerts resolve correctly).
+DEPLOY_DIR=$DEPLOY_DIR
+# Host docker.sock gid — supplemental group for drift-agent's app user
+# so it can talk to the daemon socket for the update-apply endpoint.
+DOCKER_GID=$_DOCKER_GID
 DRIFT_HOST_PORT=${DRIFT_HOST_PORT:-10001}
 VMALERT_HOST_PORT=${VMALERT_HOST_PORT:-8880}
 ALERTMANAGER_HOST_PORT=${ALERTMANAGER_HOST_PORT:-9093}

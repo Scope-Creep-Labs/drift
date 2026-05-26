@@ -27,6 +27,7 @@ BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh", "terminal-bridge.p
 
 
 _agent_target_sha_cache: str | None = None
+_terminal_bridge_target_sha_cache: str | None = None
 
 
 def _agent_target_sha() -> str:
@@ -36,13 +37,29 @@ def _agent_target_sha() -> str:
     agent.sh ships)."""
     global _agent_target_sha_cache
     if _agent_target_sha_cache is None:
-        path = EDGE_AGENT_DIR / "drift-deploy-agent.sh"
-        if path.is_file():
-            with open(path, "rb") as f:
-                _agent_target_sha_cache = hashlib.sha256(f.read()).hexdigest()[:12]
-        else:
-            _agent_target_sha_cache = ""
+        _agent_target_sha_cache = _file_sha12("drift-deploy-agent.sh")
     return _agent_target_sha_cache
+
+
+def _terminal_bridge_target_sha() -> str:
+    """12-char SHA-256 prefix of the canonical terminal-bridge.py.
+
+    Same self-update model as agent.sh: edge-agents compare on every
+    check-in and pull the fresh file from /agent/terminal-bridge.py
+    when it differs. Cached at first call; only changes when drift-
+    agent is rebuilt."""
+    global _terminal_bridge_target_sha_cache
+    if _terminal_bridge_target_sha_cache is None:
+        _terminal_bridge_target_sha_cache = _file_sha12("terminal-bridge.py")
+    return _terminal_bridge_target_sha_cache
+
+
+def _file_sha12(name: str) -> str:
+    path = EDGE_AGENT_DIR / name
+    if not path.is_file():
+        return ""
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:12]
 
 from . import bundles, secrets as crypto
 from .auth import authenticate_device, extract_bearer
@@ -76,6 +93,15 @@ async def agent_script() -> FileResponse:
     differs from the in-image baseline. Powers the self-update mechanism;
     no Caddy basic_auth on this path so devices can pull it cleanly."""
     return _serve_edge_file("drift-deploy-agent.sh", media_type="text/x-shellscript")
+
+
+@router.get("/terminal-bridge.py")
+async def terminal_bridge() -> FileResponse:
+    """Latest terminal-bridge.py — paired with /agent.sh self-update so
+    edge devices stay current on the python script without an install.sh
+    rerun. Agent's bootstrap fetches this and replaces the in-image copy
+    when the served SHA differs."""
+    return _serve_edge_file("terminal-bridge.py", media_type="text/x-python")
 
 
 @router.get("/build-context.tar")
@@ -364,6 +390,7 @@ async def check_in(
     return AgentCheckInResponse(
         desired=desired,
         agent_target_sha=_agent_target_sha(),
+        terminal_bridge_target_sha=_terminal_bridge_target_sha(),
         registry_credentials=creds_map,
         pending_sessions=pending_sessions,
         # CP-side facts piped through to compose subshells as DRIFT_*.

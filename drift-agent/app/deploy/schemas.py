@@ -174,6 +174,11 @@ class AgentCheckInResponse(BaseModel):
     # cleanly; Docker's --restart unless-stopped brings the container back
     # and the bootstrapper at the top of the script fetches the latest.
     agent_target_sha: Optional[str] = None
+    # 12-char SHA-256 prefix of the canonical terminal-bridge.py. Edge
+    # agents replace their local /opt/drift/terminal-bridge.py in place
+    # when the served file differs — no restart needed since the bridge
+    # is forked per terminal session.
+    terminal_bridge_target_sha: Optional[str] = None
     # Docker config.json auths map. Shape: {"ghcr.io": {"auth": "<b64>"}}.
     # Set by the CP from registry_credentials, decrypted per check-in. The
     # agent writes this verbatim under /root/.docker/config.json so the

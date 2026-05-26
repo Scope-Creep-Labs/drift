@@ -41,6 +41,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
+# docker CLI + compose plugin — used by the admin/updates surface to
+# `docker compose pull && up -d` drift-agent and drift-frontend from
+# inside this container. Talks to the host's daemon over a mounted
+# /var/run/docker.sock (see docker-compose.yml). 'app' user is added to
+# a group whose gid matches the host's docker.sock group at runtime
+# via entrypoint.sh; we don't bake a fixed gid here because it varies
+# across host distros.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl gnupg \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+ && chmod a+r /etc/apt/keyrings/docker.gpg \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
+ && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Non-root user
 RUN groupadd --system app && useradd --system --gid app --create-home app
 

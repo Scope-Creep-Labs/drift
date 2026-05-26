@@ -127,7 +127,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.9.0"
+AGENT_VERSION="0.10.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -770,6 +770,39 @@ reconcile_once() {
     # the outer process, which lets Docker's --restart unless-stopped do
     # its job and the bootstrap fetch the new script.
     exit 100
+  fi
+
+  # terminal-bridge.py refresh: replace in place when the served SHA
+  # differs. No exec needed — the bridge is forked per terminal session,
+  # so the next session picks up the new content. Failure is non-fatal:
+  # the in-image baseline keeps working.
+  local _bridge_target _bridge_path _bridge_local _bridge_tmp
+  _bridge_target=$(echo "$resp" | jq -r '.terminal_bridge_target_sha // empty' 2>/dev/null)
+  _bridge_path=/opt/drift/terminal-bridge.py
+  if [ -n "$_bridge_target" ] && [ -f "$_bridge_path" ]; then
+    _bridge_local=$(sha256sum "$_bridge_path" 2>/dev/null | cut -c1-12)
+    if [ "$_bridge_local" != "$_bridge_target" ]; then
+      _bridge_tmp=$(mktemp /tmp/terminal-bridge.XXXXXX.py)
+      if curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+              --connect-timeout 5 --max-time 20 \
+              "$CP_URL/agent/terminal-bridge.py" -o "$_bridge_tmp" 2>/dev/null \
+         && [ -s "$_bridge_tmp" ] \
+         && python3 -c "import py_compile; py_compile.compile('$_bridge_tmp', doraise=True)" 2>/dev/null; then
+        local _new_sha
+        _new_sha=$(sha256sum "$_bridge_tmp" | cut -c1-12)
+        if [ "$_new_sha" = "$_bridge_target" ]; then
+          chmod +x "$_bridge_tmp"
+          mv "$_bridge_tmp" "$_bridge_path"
+          log_info "terminal-bridge.py updated: $_bridge_local → $_bridge_target"
+        else
+          rm -f "$_bridge_tmp"
+          log_warn "terminal-bridge.py download sha mismatch ($_new_sha vs target $_bridge_target); kept current"
+        fi
+      else
+        rm -f "$_bridge_tmp"
+        log_warn "terminal-bridge.py fetch or syntax-check failed; kept current"
+      fi
+    fi
   fi
 
   # CP-side facts: refresh the DRIFT_CP_PUBLIC_URL / DRIFT_VM_WRITE_USER /

@@ -214,6 +214,24 @@ services:
       drift-postgres:
         condition: service_healthy
     env_file: .env
+    # Admin update surface (POST /api/admin/updates/apply) shells out to
+    # `docker compose pull && up -d` on the HOST daemon. Mount its
+    # socket + add the app user to the host docker group's gid (detected
+    # by install.sh as DOCKER_GID). Read-write — we need to pull images
+    # and create containers, not just inspect.
+    volumes:
+      - ./config/alerts:/etc/alerts:rw
+      - ./config/alertmanager:/etc/alertmanager:rw
+      - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
+      - drift-bundles:/var/lib/drift/bundles
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The install dir is mounted into the agent so that
+      # `docker compose --project-directory` can find docker-compose.yml
+      # + .env when applying the update. Read-only — we only read compose
+      # files, never modify them from here.
+      - ${DEPLOY_DIR:-/root/setup/drift-deploy}:/host-deploy:ro
+    group_add:
+      - "${DOCKER_GID:-999}"
     environment:
       # Local services — internal docker DNS.
       VM_URL: http://vm:8428
@@ -231,11 +249,6 @@ services:
       VMALERT_RULES_DIR: /etc/alerts
       ALERTMANAGER_CONFIG_FILE: /etc/alertmanager/alertmanager.yml
       ALERTMANAGER_SECRETS_DIR: /etc/alertmanager/secrets
-    volumes:
-      - ./config/alerts:/etc/alerts:rw
-      - ./config/alertmanager:/etc/alertmanager:rw
-      - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
-      - drift-bundles:/var/lib/drift/bundles
     networks: [drift]
 
   # ------------------------------------------------------------------

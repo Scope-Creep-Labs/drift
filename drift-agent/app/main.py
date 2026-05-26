@@ -37,6 +37,8 @@ if settings.drift_pg_url:
         start_background_refresh,
         stop_background_refresh,
     )
+    from .admin.routes import router as admin_router
+    from .admin.updates import start_updates_poller, stop_updates_poller
     from .deploy.routes_admin import router as deploy_admin_router
     from .deploy.routes_agent import router as deploy_agent_router
     from .deploy.seed import seed_default_apps
@@ -45,6 +47,7 @@ if settings.drift_pg_url:
     from .users.routes import router as auth_router
 
     app.include_router(auth_router)
+    app.include_router(admin_router)
     app.include_router(deploy_admin_router)
     app.include_router(deploy_agent_router)
     app.include_router(terminal_router)
@@ -59,10 +62,12 @@ if settings.drift_pg_url:
         if settings.deploy_enabled:
             await seed_default_apps()
         start_background_refresh()
+        start_updates_poller()
 
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:
         await stop_background_refresh()
+        await stop_updates_poller()
 
     @app.middleware("http")
     async def _record_http_metrics(request: Request, call_next) -> Response:
