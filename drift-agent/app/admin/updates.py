@@ -308,13 +308,49 @@ async def stop_updates_poller() -> None:
 
 # ---------- Public surface ----------
 
+def _version_tuple(tag: str) -> tuple:
+    """Parse a release tag like "v0.1.12" or "0.1.12-rc1" into a comparable
+    tuple of ints. Returns () if the tag doesn't yield at least one number,
+    which forces the caller to skip the comparison rather than guess."""
+    s = (tag or "").lstrip("v").lstrip("V")
+    parts: list[int] = []
+    for p in s.split("."):
+        digits = ""
+        for c in p:
+            if c.isdigit():
+                digits += c
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
 def get_snapshot() -> dict:
     """Snapshot of the current poll result, JSON-serializable."""
     # Lazy import so the module doesn't fail to load if config is broken.
     from ..config import settings as _settings
+
+    installed = _settings.install_version or ""
+    latest_release_tag = (_snapshot.releases[0].tag if _snapshot.releases else "") or ""
+    # bundle_update_available: tarball/install.sh/compose changes exist
+    # since the operator's last install.sh run. NOT auto-applied — the
+    # operator has to re-extract a new release and rerun install.sh
+    # because bundle changes can include new env vars, compose changes,
+    # config templates, etc. that the running stack can't safely
+    # in-place adopt without explicit operator action.
+    bundle_update = False
+    iv = _version_tuple(installed)
+    lv = _version_tuple(latest_release_tag)
+    if iv and lv and iv < lv:
+        bundle_update = True
+
     return {
         "checked_at": _snapshot.checked_at,
-        "install_version": _settings.install_version or None,
+        "install_version": installed or None,
+        "latest_release_tag": latest_release_tag or None,
+        "bundle_update_available": bundle_update,
         "images": [asdict(i) for i in _snapshot.images],
         "edge_agent": {
             "version": _snapshot.edge_agent_version,

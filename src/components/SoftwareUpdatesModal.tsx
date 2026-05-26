@@ -52,6 +52,8 @@ type ReleaseNote = {
 type Snapshot = {
   checked_at: string | null
   install_version: string | null
+  latest_release_tag: string | null
+  bundle_update_available: boolean
   images: ImageStatus[]
   edge_agent: {
     version: string | null
@@ -192,11 +194,50 @@ export function SoftwareUpdatesModal({
                   variant="outlined"
                   sx={{ fontFamily: 'monospace', fontWeight: 600 }}
                 />
+                {snapshot.bundle_update_available && snapshot.latest_release_tag && (
+                  <>
+                    <Typography variant="body2" color="text.secondary">→</Typography>
+                    <Chip
+                      size="small"
+                      label={snapshot.latest_release_tag}
+                      color="warning"
+                      sx={{ fontFamily: 'monospace', fontWeight: 600 }}
+                    />
+                  </>
+                )}
               </Stack>
               <Typography variant="caption" color="text.secondary">
                 Last checked: {snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}
               </Typography>
             </Stack>
+
+            {snapshot.bundle_update_available && snapshot.latest_release_tag && (
+              <Alert severity="warning" icon={<NewReleasesIcon />}>
+                <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
+                  Bundle update available: {snapshot.latest_release_tag}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                  The installed tarball is {snapshot.install_version}. Bundle changes (install.sh,
+                  docker-compose.yml, config templates) need a re-extract — the in-app "Update now"
+                  only handles image updates. On the CP host:
+                </Typography>
+                <Box
+                  sx={{
+                    fontFamily: '"JetBrains Mono", monospace',
+                    fontSize: '0.75rem',
+                    bgcolor: 'rgba(0,0,0,0.3)',
+                    p: 1,
+                    borderRadius: 0.5,
+                    whiteSpace: 'pre',
+                    overflowX: 'auto',
+                  }}
+                >
+{`curl -L https://github.com/kidproquo/drift-public/releases/download/${snapshot.latest_release_tag}/drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}.tar.gz | tar -xz
+cd drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}
+./install.sh`}
+                </Box>
+              </Alert>
+            )}
 
             {anyUpdate && releases.length > 0 && (
               <Box
