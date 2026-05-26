@@ -274,30 +274,32 @@ export function SoftwareUpdatesModal({
             )}
 
             {snapshot.bundle_update_available && snapshot.latest_release_tag && (
-              <Alert severity="warning" icon={<NewReleasesIcon />}>
-                <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
-                  Bundle update available: {snapshot.latest_release_tag}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                  The installed tarball is {snapshot.install_version}. Bundle changes (install.sh,
-                  docker-compose.yml, config templates) need a re-extract — the in-app "Update now"
-                  only handles image updates. On the CP host:
-                </Typography>
-                <Box
-                  sx={{
-                    fontFamily: '"JetBrains Mono", monospace',
-                    fontSize: '0.75rem',
-                    bgcolor: 'rgba(0,0,0,0.3)',
-                    p: 1,
-                    borderRadius: 0.5,
-                    whiteSpace: 'pre',
-                    overflowX: 'auto',
-                  }}
+              <Alert
+                severity="info"
+                variant="outlined"
+                sx={{ py: 0.5, '& .MuiAlert-message': { width: '100%' } }}
+              >
+                <Stack
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  justifyContent="space-between"
+                  sx={{ width: '100%' }}
                 >
-{`curl -L https://github.com/kidproquo/drift-public/releases/download/${snapshot.latest_release_tag}/drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}.tar.gz | tar -xz
-cd drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}
-./install.sh`}
-                </Box>
+                  <Typography variant="caption">
+                    A newer release ({snapshot.latest_release_tag}) ships bundle changes
+                    (install.sh / compose / config). Apply manually — see the release page.
+                  </Typography>
+                  <Link
+                    href={`https://github.com/kidproquo/drift-public/releases/tag/${snapshot.latest_release_tag}`}
+                    target="_blank"
+                    rel="noopener"
+                    variant="caption"
+                    sx={{ whiteSpace: 'nowrap' }}
+                  >
+                    View release →
+                  </Link>
+                </Stack>
               </Alert>
             )}
 
