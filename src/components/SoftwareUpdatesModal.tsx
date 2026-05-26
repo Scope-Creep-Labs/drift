@@ -75,6 +75,20 @@ export function SoftwareUpdatesModal({
   const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [applyResult, setApplyResult] = useState<string | null>(null)
+  // drift-frontend's digest when the modal first loaded a snapshot.
+  // If the LIVE digest changes (operator hit Update now and the recreate
+  // finished), the user's currently-loaded SPA bundle is stale and the
+  // sensible next action is `window.location.reload()`, not another
+  // Update click. We swap the primary button accordingly.
+  const [initialFrontendDigest, setInitialFrontendDigest] = useState<string | null>(null)
+  const liveFrontendDigest = useMemo(
+    () => snapshot?.images.find((i) => i.name === 'drift-frontend')?.current_digest ?? null,
+    [snapshot],
+  )
+  const needsRefresh =
+    initialFrontendDigest != null &&
+    liveFrontendDigest != null &&
+    initialFrontendDigest !== liveFrontendDigest
 
   const refresh = useCallback(async (force = false) => {
     setLoading(true)
@@ -88,6 +102,13 @@ export function SoftwareUpdatesModal({
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data: Snapshot = await res.json()
       setSnapshot(data)
+      // Remember the first drift-frontend digest we saw, so a later
+      // change implies the loaded SPA bundle has gone stale.
+      setInitialFrontendDigest((prev) => {
+        if (prev != null) return prev
+        const d = data.images.find((i) => i.name === 'drift-frontend')?.current_digest
+        return d ?? null
+      })
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed to load')
     } finally {
@@ -143,17 +164,25 @@ export function SoftwareUpdatesModal({
       setApplyResult('Connection dropped mid-update — usually normal. Re-polling…')
     } finally {
       setApplying(false)
-      // Poll a few times, every 3s, until we either see new digests or
-      // give up after ~30s.
-      for (let i = 0; i < 10; i++) {
+      // Poll a few times, every 3s, with force=true so each iteration
+      // actually re-checks GHCR + the running containers (the cached
+      // GET would return drift-agent's pre-restart snapshot for the
+      // first few seconds). Stop as soon as a poll succeeds AND the
+      // drift-frontend digest has moved off the one we remember — that
+      // means the recreate is fully through and the SPA we're running
+      // is now stale (the next snapshot reflects the NEW container).
+      for (let i = 0; i < 15; i++) {
         await new Promise((r) => setTimeout(r, 3000))
         try {
-          await refresh(false)
-          break
-        } catch { /* keep trying */ }
+          await refresh(true)
+        } catch { continue }
+        // No need to keep polling once we've seen the frontend digest
+        // change — the user is about to hit Refresh anyway.
+        const live = snapshot?.images.find((s) => s.name === 'drift-frontend')?.current_digest
+        if (initialFrontendDigest && live && initialFrontendDigest !== live) break
       }
     }
-  }, [refresh])
+  }, [refresh, initialFrontendDigest, snapshot])
 
   const anyUpdate = snapshot?.images.some((i) => i.update_available) ?? false
   // Newest release first; the first one expanded by default if an update
@@ -177,7 +206,27 @@ export function SoftwareUpdatesModal({
           </Stack>
         )}
         {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-        {applyResult && (
+        {needsRefresh && (
+          <Alert
+            severity="success"
+            icon={<RefreshIcon />}
+            sx={{ mb: 2 }}
+            action={
+              <Button color="warning" variant="contained" size="small" onClick={() => window.location.reload()}>
+                Refresh page
+              </Button>
+            }
+          >
+            <Typography variant="body2" fontWeight={600}>
+              Web UI updated — reload to use the new version
+            </Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+              The drift-frontend container was recreated. Your current tab is still running the
+              previous JS bundle. Refresh to load the new one.
+            </Typography>
+          </Alert>
+        )}
+        {applyResult && !needsRefresh && (
           <Alert severity="info" sx={{ mb: 2, whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: '0.7rem' }}>
             {applyResult}
           </Alert>
@@ -422,22 +471,34 @@ cd drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}
         <Button
           startIcon={<RefreshIcon />}
           onClick={() => refresh(true)}
-          disabled={loading || applying}
+          disabled={loading || applying || needsRefresh}
           size="small"
         >
           Check now
         </Button>
         <Box sx={{ flex: 1 }} />
-        <Button onClick={onClose} size="small">Close</Button>
-        <Button
-          variant="contained"
-          startIcon={applying ? <CircularProgress size={14} /> : <UpdateIcon />}
-          onClick={apply}
-          disabled={applying || !anyUpdate}
-          size="small"
-        >
-          {applying ? 'Applying…' : 'Update now'}
-        </Button>
+        <Button onClick={onClose} size="small" disabled={needsRefresh}>Close</Button>
+        {needsRefresh ? (
+          <Button
+            variant="contained"
+            color="warning"
+            startIcon={<RefreshIcon />}
+            onClick={() => window.location.reload()}
+            size="small"
+          >
+            Refresh page
+          </Button>
+        ) : (
+          <Button
+            variant="contained"
+            startIcon={applying ? <CircularProgress size={14} /> : <UpdateIcon />}
+            onClick={apply}
+            disabled={applying || !anyUpdate}
+            size="small"
+          >
+            {applying ? 'Applying…' : 'Update now'}
+          </Button>
+        )}
       </DialogActions>
     </Dialog>
   )
