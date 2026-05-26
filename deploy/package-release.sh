@@ -32,6 +32,7 @@ REPO_ROOT=$(git rev-parse --show-toplevel)
 VERSION=""
 ALLOW_DIRTY=false
 PUBLISH=false
+IMAGE_ONLY=false
 NOTES_FILE=""
 TARGET_REPO=""
 TARGET_BRANCH=""
@@ -39,6 +40,7 @@ TARGET_BRANCH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --allow-dirty) ALLOW_DIRTY=true; shift ;;
+    --image-only)  IMAGE_ONLY=true; PUBLISH=true; shift ;;
     --publish)     PUBLISH=true; shift ;;
     --notes)       NOTES_FILE=$2; shift 2 ;;
     --repo)        TARGET_REPO=$2; shift 2 ;;
@@ -115,53 +117,57 @@ collect_files() {
   done
 }
 
-WORK=$(mktemp -d)
-STAGE="$WORK/$PREFIX"
-mkdir -p "$STAGE"
-
-if [ "$ALLOW_DIRTY" = "false" ]; then
-  # Clean tree: pull each file from HEAD via `git show` so we get the
-  # committed contents (not the working tree).
-  collect_files | while IFS= read -r f; do
-    rel="${f#deploy/}"
-    mkdir -p "$STAGE/$(dirname "$rel")"
-    git -C "$REPO_ROOT" show "HEAD:$f" > "$STAGE/$rel"
-  done
+if [ "$IMAGE_ONLY" = "true" ]; then
+  echo "  ⓘ --image-only: skipping tarball build (release will have no bundle asset)"
 else
-  # Dirty tree: copy from the working tree.
-  collect_files | while IFS= read -r f; do
-    rel="${f#deploy/}"
-    mkdir -p "$STAGE/$(dirname "$rel")"
-    cp -p "$REPO_ROOT/$f" "$STAGE/$rel"
-  done
+  WORK=$(mktemp -d)
+  STAGE="$WORK/$PREFIX"
+  mkdir -p "$STAGE"
+
+  if [ "$ALLOW_DIRTY" = "false" ]; then
+    # Clean tree: pull each file from HEAD via `git show` so we get the
+    # committed contents (not the working tree).
+    collect_files | while IFS= read -r f; do
+      rel="${f#deploy/}"
+      mkdir -p "$STAGE/$(dirname "$rel")"
+      git -C "$REPO_ROOT" show "HEAD:$f" > "$STAGE/$rel"
+    done
+  else
+    # Dirty tree: copy from the working tree.
+    collect_files | while IFS= read -r f; do
+      rel="${f#deploy/}"
+      mkdir -p "$STAGE/$(dirname "$rel")"
+      cp -p "$REPO_ROOT/$f" "$STAGE/$rel"
+    done
+  fi
+
+  # Preserve +x on the installer (git stores mode bits but `git show`
+  # strips them on stdout, so re-apply explicitly).
+  chmod +x "$STAGE/install.sh"
+
+  # Stamp the release tag into install.sh so the running stack can
+  # report its bundle version to the admin update modal. Source's
+  # placeholder is `INSTALL_VERSION="dev"`; we sed it to the real tag.
+  sed -i.bak "s|^INSTALL_VERSION=\"dev\"$|INSTALL_VERSION=\"$VERSION\"|" "$STAGE/install.sh" \
+    && rm -f "$STAGE/install.sh.bak"
+
+  tar -czf "$TARBALL" -C "$WORK" "$PREFIX"
+  rm -rf "$WORK"
+
+  # ---------- checksum ----------
+  ( cd "$DIST_DIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$SHA_FILE")" )
+
+  # ---------- summary ----------
+  SIZE=$(du -h "$TARBALL" | awk '{print $1}')
+  SHA=$(awk '{print $1}' "$SHA_FILE")
+  echo
+  echo "  ✓ wrote $TARBALL  ($SIZE)"
+  echo "  ✓ wrote $SHA_FILE"
+  echo "      sha256: $SHA"
+  echo
+  echo "  Inspect contents:"
+  echo "      tar -tzf $TARBALL | head"
 fi
-
-# Preserve +x on the installer (git stores mode bits but `git show`
-# strips them on stdout, so re-apply explicitly).
-chmod +x "$STAGE/install.sh"
-
-# Stamp the release tag into install.sh so the running stack can
-# report its bundle version to the admin update modal. Source's
-# placeholder is `INSTALL_VERSION="dev"`; we sed it to the real tag.
-sed -i.bak "s|^INSTALL_VERSION=\"dev\"$|INSTALL_VERSION=\"$VERSION\"|" "$STAGE/install.sh" \
-  && rm -f "$STAGE/install.sh.bak"
-
-tar -czf "$TARBALL" -C "$WORK" "$PREFIX"
-rm -rf "$WORK"
-
-# ---------- checksum ----------
-( cd "$DIST_DIR" && sha256sum "$(basename "$TARBALL")" > "$(basename "$SHA_FILE")" )
-
-# ---------- summary ----------
-SIZE=$(du -h "$TARBALL" | awk '{print $1}')
-SHA=$(awk '{print $1}' "$SHA_FILE")
-echo
-echo "  ✓ wrote $TARBALL  ($SIZE)"
-echo "  ✓ wrote $SHA_FILE"
-echo "      sha256: $SHA"
-echo
-echo "  Inspect contents:"
-echo "      tar -tzf $TARBALL | head"
 echo
 
 # ---------- (optional) publish to GitHub ----------
@@ -202,8 +208,18 @@ if [ "$PUBLISH" = "true" ]; then
   if [ -n "$TARGET_REPO" ] && [ -z "$NOTES_FILE" ]; then
     echo "  ⚠ --generate-notes against a fresh --repo can be empty; consider --notes <file>"
   fi
+  # --image-only: don't attach the tarball + sha. The admin updates
+  # poller detects has_bundle_changes from "is there a drift-deploy-
+  # *.tar.gz asset?" so omitting them flags this release as image-only
+  # → no bundle banner in the modal, no re-install nag for the user.
+  assets_arg=()
+  if [ "$IMAGE_ONLY" = "false" ]; then
+    assets_arg=("$TARBALL" "$SHA_FILE")
+  else
+    echo "  ⓘ --image-only: skipping tarball asset upload"
+  fi
   gh release create "$REL_TAG" \
-    "$TARBALL" "$SHA_FILE" \
+    "${assets_arg[@]}" \
     --title "Drift deploy $REL_TAG" \
     "${repo_arg[@]}" \
     "${target_arg[@]}" \

@@ -47,12 +47,14 @@ type ReleaseNote = {
   body: string
   html_url: string
   published_at: string
+  has_bundle_changes: boolean
 }
 
 type Snapshot = {
   checked_at: string | null
   install_version: string | null
   latest_release_tag: string | null
+  has_newer_release: boolean
   bundle_update_available: boolean
   images: ImageStatus[]
   edge_agent: {
@@ -243,13 +245,16 @@ export function SoftwareUpdatesModal({
                   variant="outlined"
                   sx={{ fontFamily: 'monospace', fontWeight: 600 }}
                 />
-                {snapshot.bundle_update_available && snapshot.latest_release_tag && (
+                {snapshot.has_newer_release && snapshot.latest_release_tag && (
                   <>
                     <Typography variant="body2" color="text.secondary">→</Typography>
                     <Chip
                       size="small"
                       label={snapshot.latest_release_tag}
-                      color="warning"
+                      // Warning color only when re-install is required (bundle
+                      // changes); info color for image-only releases since
+                      // those are fully addressable via the Update now button.
+                      color={snapshot.bundle_update_available ? 'warning' : 'info'}
                       sx={{ fontFamily: 'monospace', fontWeight: 600 }}
                     />
                   </>
@@ -260,7 +265,7 @@ export function SoftwareUpdatesModal({
               </Typography>
             </Stack>
 
-            {anyUpdate && !snapshot.bundle_update_available && (
+            {anyUpdate && !snapshot.has_newer_release && (
               <Alert severity="info">
                 <Typography variant="body2" fontWeight={600} sx={{ mb: 0.3 }}>
                   Image updates available (no published release yet)
@@ -304,14 +309,13 @@ export function SoftwareUpdatesModal({
             )}
 
             {/*
-              "What's new" only makes sense when there's a NEW release
-              the operator hasn't applied yet — i.e. bundle_update_available.
-              An image-only update (drift-agent/drift-frontend pushed to
-              GHCR ahead of a published release) has no release-notes-of-
-              record; showing the most-recent release's notes there would
-              describe the version they ALREADY have, which is misleading.
+              "What's new" shows whenever a release newer than the
+              installed bundle exists — applies to both image-only and
+              bundle releases. (The bundle banner above already tells
+              the operator separately if they need to re-install for
+              non-image changes.)
             */}
-            {snapshot.bundle_update_available && releases.length > 0 && (
+            {snapshot.has_newer_release && releases.length > 0 && (
               <Box
                 sx={{
                   border: 1,
@@ -326,6 +330,13 @@ export function SoftwareUpdatesModal({
                   <Typography variant="subtitle2">
                     What's new in <code style={{ fontFamily: 'monospace' }}>{releases[0].tag}</code>
                   </Typography>
+                  <Chip
+                    size="small"
+                    label={releases[0].has_bundle_changes ? 'bundle' : 'image-only'}
+                    color={releases[0].has_bundle_changes ? 'warning' : 'info'}
+                    variant="outlined"
+                    sx={{ height: 18, fontSize: '0.65rem' }}
+                  />
                   <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
                     {releases[0].published_at ? new Date(releases[0].published_at).toLocaleDateString() : ''}
                   </Typography>
@@ -413,11 +424,11 @@ export function SoftwareUpdatesModal({
             {releases.length > 0 && (
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  {snapshot.bundle_update_available ? 'Previous releases' : 'Recent releases'}
+                  {snapshot.has_newer_release ? 'Previous releases' : 'Recent releases'}
                 </Typography>
                 {/* Skip the newest release when the "What's new" banner
                     above already shows it, to avoid duplication. */}
-                {(snapshot.bundle_update_available ? releases.slice(1) : releases).map((r, i) => (
+                {(snapshot.has_newer_release ? releases.slice(1) : releases).map((r, i) => (
                   <Accordion
                     key={r.tag || i}
                     defaultExpanded={false}
@@ -434,6 +445,13 @@ export function SoftwareUpdatesModal({
                     <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />}>
                       <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%' }}>
                         <Typography variant="body2" fontWeight={600}>{r.tag}</Typography>
+                        <Chip
+                          size="small"
+                          label={r.has_bundle_changes ? 'bundle' : 'image-only'}
+                          color={r.has_bundle_changes ? 'warning' : 'info'}
+                          variant="outlined"
+                          sx={{ height: 18, fontSize: '0.65rem' }}
+                        />
                         <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
                           {r.name && r.name !== r.tag ? r.name : ''}
                         </Typography>

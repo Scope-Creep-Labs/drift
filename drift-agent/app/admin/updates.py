@@ -80,6 +80,11 @@ class ReleaseNote:
     body: str           # markdown
     html_url: str
     published_at: str   # ISO timestamp
+    # True iff this release has a drift-deploy-*.tar.gz asset attached.
+    # The presence of the tarball IS the bundle-change signal — image-
+    # only releases (just notes + tag, no tarball) flip this to False
+    # and don't trigger the "re-install required" banner.
+    has_bundle_changes: bool = True
 
 
 @dataclass
@@ -193,7 +198,13 @@ def _running_image_digest(compose_service: str) -> Optional[str]:
 
 async def _fetch_recent_releases() -> list[ReleaseNote]:
     """Hit the public Releases API. Anonymous is fine for public repos
-    (rate limit 60/hr; we poll 4/hr). Returns newest-first."""
+    (rate limit 60/hr; we poll 4/hr). Returns newest-first.
+
+    has_bundle_changes is inferred from the release's attached assets:
+    if a drift-deploy-*.tar.gz is present, the release carries bundle
+    changes that require a re-install. Image-only releases (just notes
+    + tag) get has_bundle_changes=False and don't trigger the bundle
+    banner — the web Update Now button is sufficient for them."""
     url = f"https://api.github.com/repos/{RELEASES_REPO}/releases"
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(
@@ -208,6 +219,12 @@ async def _fetch_recent_releases() -> list[ReleaseNote]:
         # Skip drafts; pre-releases are still shown (operator can decide).
         if r.get("draft"):
             continue
+        assets = r.get("assets") or []
+        has_tarball = any(
+            (a.get("name") or "").startswith("drift-deploy-")
+            and (a.get("name") or "").endswith(".tar.gz")
+            for a in assets
+        )
         out.append(
             ReleaseNote(
                 tag=r.get("tag_name") or "",
@@ -215,6 +232,7 @@ async def _fetch_recent_releases() -> list[ReleaseNote]:
                 body=r.get("body") or "",
                 html_url=r.get("html_url") or "",
                 published_at=r.get("published_at") or "",
+                has_bundle_changes=has_tarball,
             )
         )
     return out
@@ -334,22 +352,33 @@ def get_snapshot() -> dict:
 
     installed = _settings.install_version or ""
     latest_release_tag = (_snapshot.releases[0].tag if _snapshot.releases else "") or ""
-    # bundle_update_available: tarball/install.sh/compose changes exist
-    # since the operator's last install.sh run. NOT auto-applied — the
-    # operator has to re-extract a new release and rerun install.sh
-    # because bundle changes can include new env vars, compose changes,
-    # config templates, etc. that the running stack can't safely
-    # in-place adopt without explicit operator action.
-    bundle_update = False
     iv = _version_tuple(installed)
     lv = _version_tuple(latest_release_tag)
-    if iv and lv and iv < lv:
-        bundle_update = True
+    # has_newer_release: at least one release exists with a higher
+    # version than the operator's installed tarball. Drives the
+    # "What's new" banner — the latest release's notes describe what
+    # they'd be upgrading to (whether via web image update or full
+    # re-install).
+    has_newer_release = bool(iv and lv and iv < lv)
+    # bundle_update_available: at least one of the PENDING releases
+    # (those newer than installed) carries a tarball asset, meaning a
+    # re-install is required to pick up install.sh / compose / config
+    # changes. Image-only releases (notes + tag, no tarball) leave
+    # this False — the web Update Now button is sufficient and the
+    # operator doesn't need a bundle-banner pestering them.
+    bundle_update = False
+    if has_newer_release:
+        for r in _snapshot.releases:
+            rv = _version_tuple(r.tag)
+            if rv and iv and iv < rv and r.has_bundle_changes:
+                bundle_update = True
+                break
 
     return {
         "checked_at": _snapshot.checked_at,
         "install_version": installed or None,
         "latest_release_tag": latest_release_tag or None,
+        "has_newer_release": has_newer_release,
         "bundle_update_available": bundle_update,
         "images": [asdict(i) for i in _snapshot.images],
         "edge_agent": {
