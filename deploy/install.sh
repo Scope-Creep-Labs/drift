@@ -721,6 +721,97 @@ else
   echo "  $DEPLOY_DIR/README.md (troubleshooting)."
 fi
 echo
+
+# ---------- self-device bootstrap ----------
+# Commission the CP host itself as a managed device so it shows up in
+# the Devices list and apps (the default reporter etc.) can be deployed
+# to it like any other device. Uses REPORTER_HOSTNAME + REPORTER_GROUP
+# from .env so the device's identity matches its self-scraped metrics.
+#
+# Hits the CP via 127.0.0.1 (loopback in external-proxy mode) or via
+# localhost over Caddy (bundled mode) — avoids DNS/TLS round-trips
+# through the public URL right after compose-up, which might still be
+# warming up. The edge-agent install_cmd returned by the API does use
+# PUBLIC_URL because the resulting container needs to reach the CP
+# over its real network path.
+
+heading "Bootstrapping CP as a managed device"
+
+# Choose internal URL: loopback for external mode, https://localhost
+# (with -k to skip TLS verify while LE may still be provisioning) for
+# bundled mode.
+if [ "$USE_BUNDLED_CADDY" = "true" ]; then
+  _api_local="https://localhost"
+  _curl_opts=("-k")
+else
+  _api_local="http://127.0.0.1:${DRIFT_HOST_PORT:-10001}"
+  _curl_opts=()
+fi
+
+# Wait briefly for /api/auth/me to respond (200 or 401 — both prove the
+# stack is serving). Skips with a warn after ~20s.
+_self_ok=false
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  _code=$(curl -sS "${_curl_opts[@]}" -o /dev/null -w "%{http_code}" --max-time 3 \
+    "$_api_local/api/auth/me" 2>/dev/null || echo "000")
+  case "$_code" in
+    200|401) _self_ok=true; break ;;
+  esac
+  sleep 2
+done
+
+if [ "$_self_ok" = "false" ]; then
+  warn "CP API not reachable on $_api_local — skipping self-bootstrap"
+  warn "  Commission later via chat: 'add device $REPORTER_HOSTNAME to group $REPORTER_GROUP'"
+else
+  _cookies=$(mktemp)
+  _login_body=$(mktemp)
+  _device_body=$(mktemp)
+
+  _login_code=$(curl -sS "${_curl_opts[@]}" -o "$_login_body" -w "%{http_code}" \
+    -c "$_cookies" -H "Content-Type: application/json" \
+    -d "{\"username\":\"$DRIFT_ADMIN_USERNAME\",\"password\":\"$DRIFT_ADMIN_PASSWORD\"}" \
+    "$_api_local/api/auth/login")
+
+  if [ "$_login_code" != "200" ]; then
+    warn "admin login failed (HTTP $_login_code): $(head -c 200 "$_login_body" 2>/dev/null)"
+    warn "  Skipping self-bootstrap. Commission later via chat."
+  else
+    _device_code=$(curl -sS "${_curl_opts[@]}" -o "$_device_body" -w "%{http_code}" \
+      -b "$_cookies" -H "Content-Type: application/json" \
+      -d "{\"name\":\"$REPORTER_HOSTNAME\",\"group_id\":\"$REPORTER_GROUP\"}" \
+      "$_api_local/api/deploy/devices")
+
+    case "$_device_code" in
+      201)
+        info "device commissioned: $REPORTER_HOSTNAME (group=$REPORTER_GROUP)"
+        _install_cmd=$(jq -r '.install_cmd' < "$_device_body" 2>/dev/null)
+        if [ -n "$_install_cmd" ] && [ "$_install_cmd" != "null" ]; then
+          info "running edge-agent install for self-device..."
+          # eval so the env-prefixed pipeline expands as intended. The
+          # install.sh fetched here is served by the CP we just brought
+          # up — same host, same image.
+          if eval "$_install_cmd"; then
+            info "edge-agent running on the CP — it should appear online within ~30s"
+          else
+            warn "edge-agent install failed; CP is registered but no agent running. Re-run with:"
+            warn "  $_install_cmd"
+          fi
+        fi
+        ;;
+      409)
+        info "device $REPORTER_HOSTNAME already exists; leaving as-is"
+        ;;
+      *)
+        warn "device-create returned HTTP $_device_code: $(head -c 200 "$_device_body" 2>/dev/null)"
+        warn "  Skipping self-bootstrap. Commission later via chat."
+        ;;
+    esac
+  fi
+  rm -f "$_cookies" "$_login_body" "$_device_body"
+fi
+
+echo
 echo "✓ install complete"
 echo
 if [ "$USE_BUNDLED_CADDY" = "true" ]; then

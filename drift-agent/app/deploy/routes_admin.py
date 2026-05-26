@@ -126,15 +126,21 @@ async def delete_device(
 
 
 def _render_install_cmd(name: str, token: str, group_id: str) -> str:
-    # /drift/api/deploy/agent/* is intentionally NOT Caddy-basic-auth-gated
-    # (the bootstrap token is the device's credential), so no -u flag is
+    # /api/deploy/agent/* is intentionally NOT proxy-auth-gated (the
+    # bootstrap token is the device's credential), so no -u flag is
     # needed here. The token itself is the secret. group_id is locked in
     # at commission time so the runner of this script doesn't get to
     # change which group the device joins.
+    #
+    # PUBLIC_URL comes from settings (mirrors the .env value the operator
+    # set at install). Strip a trailing slash so the concatenated paths
+    # don't end up with double slashes; placeholder fallback keeps the
+    # rendered output readable when PUBLIC_URL is unset (dev runs).
+    base = (settings.public_url or "").rstrip("/") or "https://YOUR-DRIFT-HOST"
     return (
-        f"curl -sSL https://drift.example.com/drift/api/deploy/agent/install.sh | "
+        f"curl -sSL {base}/api/deploy/agent/install.sh | "
         f"DEVICE_NAME={name} BOOTSTRAP_TOKEN={token} "
-        f"CP_URL=https://drift.example.com/drift/api/deploy "
+        f"CP_URL={base}/api/deploy "
         f"GROUP_ID={group_id} sudo -E bash"
     )
 
