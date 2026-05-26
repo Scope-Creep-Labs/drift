@@ -324,6 +324,19 @@ else
   ask DRIFT_HOST_PORT "Local port to bind drift-frontend on (127.0.0.1:<port>)" 10001
 fi
 
+# PATH_PREFIX: the path component of PUBLIC_URL (e.g. "/drift" when
+# PUBLIC_URL=https://example.com/drift; empty for root deployments).
+# Persisted to .env so docker-compose.yml can interpolate it into
+# intra-network URLs that need the same prefix as the public route —
+# specifically vmalert's --notifier.url and ALERTMANAGER_URL, since
+# alertmanager's web.route-prefix is derived from --web.external-url
+# = PUBLIC_URL/am.
+_path_after_host="${PUBLIC_URL#*://}"
+_path_after_host="${_path_after_host#"$DOMAIN"}"
+_path_after_host="${_path_after_host%/}"
+PATH_PREFIX="$_path_after_host"
+save_answer PATH_PREFIX "$PATH_PREFIX"
+
 # Basic-auth gate on the raw vmalert + Alertmanager web UIs. Only
 # asked when the bundled Caddy is in use — in external-proxy mode the
 # operator's existing reverse proxy handles auth however it wants
@@ -531,6 +544,10 @@ USE_BUNDLED_CADDY=$USE_BUNDLED_CADDY
 DOMAIN=$DOMAIN
 LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
 PUBLIC_URL=$PUBLIC_URL
+# Path component of PUBLIC_URL (empty for root deployments, "/drift"
+# etc. for path-prefix). vmalert + drift-agent use it to address
+# alertmanager intra-network at the matching route-prefix.
+PATH_PREFIX=$PATH_PREFIX
 DRIFT_HOST_PORT=${DRIFT_HOST_PORT:-10001}
 VMALERT_HOST_PORT=${VMALERT_HOST_PORT:-8880}
 ALERTMANAGER_HOST_PORT=${ALERTMANAGER_HOST_PORT:-9093}
@@ -622,18 +639,10 @@ else
   # loopback bindings in docker-compose.external.yml. No auth blocks
   # by default — operator's existing proxy handles auth however it
   # already does.
-  # __PATH_PREFIX__: anything after the host in PUBLIC_URL, stripped of
-  # a trailing slash. Root deployment ("https://drift.example.com")
-  # yields "", and the rendered Caddyfile uses paths like /api/, /vm/.
-  # Path-prefix deployment ("https://example.com/drift") yields
-  # "/drift", so the rendered paths become /drift/api/, /drift/vm/, etc.
-  # All three reverse-proxy samples (Caddy/nginx/Traefik) consume this
-  # substitution to keep their rules aligned with whichever URL layout
-  # the operator picked at the PUBLIC_URL prompt.
-  _path_after_host="${PUBLIC_URL#*://}"
-  _path_after_host="${_path_after_host#"$DOMAIN"}"
-  _path_after_host="${_path_after_host%/}"
-  PATH_PREFIX="$_path_after_host"
+  # PATH_PREFIX is already derived above (right after PUBLIC_URL is
+  # finalized) and persisted to .env. The reverse-proxy templates
+  # consume the same substitution so their rules align with whichever
+  # URL layout the operator picked at the PUBLIC_URL prompt.
   _sub=(
     __DOMAIN__                "$DOMAIN"
     __PATH_PREFIX__           "$PATH_PREFIX"

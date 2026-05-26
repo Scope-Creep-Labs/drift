@@ -127,7 +127,7 @@ TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.8.0"
+AGENT_VERSION="0.9.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -351,6 +351,12 @@ write_textfile() {
     # restart spiral.
     jq -r '(.current_revisions // {}) | to_entries[] | "drift_deploy_agent_current_revision{app=\"\(.key)\",revision=\"\(.value)\"} 1"' "$STATE_FILE" 2>/dev/null || true
   } > "$tmp"
+  # node-exporter's textfile collector runs as uid 65534 (nobody) and
+  # can't read a default-umask 644 file owned by root — wait, it can.
+  # The real problem is umask 077 in the container (mktemp inherits it
+  # if we ever tighten the umask), so make the chmod explicit. 644 is
+  # safe: this file is per-host self-metrics, no secrets.
+  chmod 644 "$tmp"
   mv "$tmp" "$TEXTFILE_PATH"
 }
 

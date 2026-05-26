@@ -120,7 +120,13 @@ services:
       - "--datasource.url=http://vm:8428"
       - "--remoteWrite.url=http://vm:8428"
       - "--remoteRead.url=http://vm:8428"
-      - "--notifier.url=http://alertmanager:9093/am"
+      # Alertmanager's route-prefix is derived from its --web.external-url
+      # (set below): "https://example.com/drift/am" → AM listens on
+      # "/drift/am/...". vmalert reaches it intra-network, so the
+      # notifier URL needs the same path prefix or AM returns 404.
+      # PATH_PREFIX is "" for root deployments and "/drift" (or whatever)
+      # for path-prefix layouts — derived by install.sh from PUBLIC_URL.
+      - "--notifier.url=http://alertmanager:9093${PATH_PREFIX:-}/am"
       - "--rule=/etc/alerts/*.yml"
       - "--evaluationInterval=30s"
       - "--external.url=${PUBLIC_URL:-http://localhost}/vmalert"
@@ -213,7 +219,9 @@ services:
       VM_URL: http://vm:8428
       VL_URL: http://victorialogs:9428
       VMALERT_URL: http://vmalert:8880/vmalert
-      ALERTMANAGER_URL: http://alertmanager:9093/am
+      # Same as vmalert's --notifier.url — alertmanager's actual route
+      # prefix includes PATH_PREFIX when PUBLIC_URL has a path component.
+      ALERTMANAGER_URL: http://alertmanager:9093${PATH_PREFIX:-}/am
       ALLOWED_ORIGINS: ${PUBLIC_URL:-http://localhost}
       DRIFT_PG_URL: postgresql+asyncpg://${DRIFT_PG_USER:-drift}:${DRIFT_PG_PASSWORD}@drift-postgres:5432/${DRIFT_PG_DB:-drift}
       # Local-storage bundle backend by default; flip to s3 + fill the
@@ -319,6 +327,12 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro,rslave
       - /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector:ro
+      # node-exporter's udev collector reads /run/udev/data to enrich
+      # disk metrics with model/serial info. Without this mount it
+      # logs a startup warning ("Failed to open directory, disabling
+      # udev device properties") on every restart. Read-only — udev
+      # owns it on the host.
+      - /run/udev:/run/udev:ro
 
   # Per-process metrics from /proc — fills the gap between node-exporter
   # (host totals) and cadvisor (containers only). Covers host-level
