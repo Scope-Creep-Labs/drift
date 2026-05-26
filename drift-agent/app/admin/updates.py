@@ -393,24 +393,63 @@ async def apply_cp_updates() -> dict:
             compose_files += ["-f", external]
 
         services = [e["compose_service"] for e in TRACKED_IMAGES]
-        up = subprocess.run(
-            [
-                "docker", "compose",
-                *compose_files,
-                "--project-directory", deploy_dir,
-                "up", "-d", "--no-deps", *services,
-            ],
-            capture_output=True, text=True, timeout=120, env=env,
-        )
-        # Refresh the snapshot — note this might race the recreate; the
-        # next scheduled poll catches up either way.
-        with suppress(Exception):
-            await _poll_once()
 
+        # `docker compose up -d` for drift-agent would kill the process
+        # running the command (this one) mid-recreation. Suicide.
+        # Spawn a DETACHED helper container that survives drift-agent's
+        # death and finishes the recreate. We reuse drift-agent's own
+        # image because it already has the docker CLI + compose plugin
+        # installed — no second image to maintain.
+        helper_name = "drift-updater-helper"
+        # Remove any stale helper (e.g. from a previous run that
+        # crashed before --rm could clean up).
+        subprocess.run(["docker", "rm", "-f", helper_name],
+                       capture_output=True, timeout=10)
+
+        helper_image = os.environ.get("HOSTNAME", "")  # docker container id
+        # Fall back to a known tag if we can't introspect the running image.
+        try:
+            helper_image = subprocess.check_output(
+                ["docker", "inspect", "--format", "{{.Config.Image}}", "drift-agent"],
+                timeout=5, env=env,
+            ).decode().strip()
+        except subprocess.SubprocessError:
+            helper_image = "ghcr.io/kidproquo/drift-agent:latest"
+
+        # Brief sleep so this HTTP response can return cleanly before
+        # the helper starts churning the parent container.
+        helper_script = (
+            f"sleep 3 && "
+            f"docker compose {' '.join(compose_files)} "
+            f"--project-directory {deploy_dir} "
+            f"up -d --no-deps {' '.join(services)}"
+        )
+
+        helper_run = subprocess.run(
+            [
+                "docker", "run", "-d",
+                "--rm",
+                "--name", helper_name,
+                "--user", "0:0",  # avoid the docker.sock group dance
+                "-v", "/var/run/docker.sock:/var/run/docker.sock",
+                "-v", f"{deploy_dir}:{deploy_dir}:ro",
+                "--entrypoint", "sh",
+                helper_image,
+                "-c", helper_script,
+            ],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        # Don't await the helper's compose-up here — the helper is
+        # detached and runs ~5-15s after our response goes out. The
+        # SPA polls back for the result.
         return {
             "applied": services,
             "pull_output": "\n".join(pull_log)[-2000:],
-            "up_returncode": up.returncode,
-            "up_output": (up.stdout + up.stderr)[-2000:],
-            "snapshot": get_snapshot(),
+            "helper_returncode": helper_run.returncode,
+            "helper_output": (helper_run.stdout + helper_run.stderr)[-500:],
+            "message": (
+                "recreate dispatched to detached helper container; "
+                "drift-agent will restart in a few seconds, then the modal "
+                "will repoll for the new digests"
+            ),
         }

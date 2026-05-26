@@ -113,23 +113,27 @@ export function SoftwareUpdatesModal({
         method: 'POST',
         credentials: 'include',
       })
-      // Body is JSON when the apply completed without restart (failed
-      // OR no-op); plain text when something else returned. We only
-      // care about the operational summary, not the full payload.
+      // Response is JSON. Success path: helper container dispatched,
+      // drift-agent will recreate itself in ~3s and the SPA loses
+      // connection briefly. Failure path: error field populated OR
+      // helper_returncode non-zero.
       let parsed: any = null
       try { parsed = await res.json() } catch { /* not JSON, skip */ }
       if (parsed?.error) {
         setError(`update failed: ${parsed.error}`)
-        if (parsed.up_output || parsed.pull_output) {
-          setApplyResult([parsed.up_output, parsed.pull_output].filter(Boolean).join('\n').trim())
+        if (parsed.helper_output || parsed.pull_output) {
+          setApplyResult([parsed.helper_output, parsed.pull_output].filter(Boolean).join('\n').trim())
         }
-      } else if (parsed?.up_returncode && parsed.up_returncode !== 0) {
-        setError('docker compose up returned a non-zero exit code')
-        setApplyResult((parsed.up_output || '').trim())
+      } else if (parsed?.helper_returncode != null && parsed.helper_returncode !== 0) {
+        setError('updater helper failed to start')
+        setApplyResult((parsed.helper_output || '').trim())
       } else if (parsed?.applied?.length) {
-        setApplyResult(`Applied: ${parsed.applied.join(', ')}`)
+        setApplyResult(
+          `Recreating ${parsed.applied.join(', ')} in a detached helper. ` +
+          `Connection will drop briefly while drift-agent restarts.`,
+        )
       } else {
-        setApplyResult('Update complete.')
+        setApplyResult('Update dispatched.')
       }
     } catch (e) {
       // Connection drop expected when drift-agent recreates itself —
