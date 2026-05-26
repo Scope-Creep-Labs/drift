@@ -260,6 +260,19 @@ export function SoftwareUpdatesModal({
               </Typography>
             </Stack>
 
+            {anyUpdate && !snapshot.bundle_update_available && (
+              <Alert severity="info">
+                <Typography variant="body2" fontWeight={600} sx={{ mb: 0.3 }}>
+                  Image updates available (no published release yet)
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  drift-agent and/or drift-frontend on GHCR are newer than what's
+                  running here, but there's no tarball release describing the change.
+                  Clicking Update now will pull and recreate them.
+                </Typography>
+              </Alert>
+            )}
+
             {snapshot.bundle_update_available && snapshot.latest_release_tag && (
               <Alert severity="warning" icon={<NewReleasesIcon />}>
                 <Typography variant="body2" fontWeight={600} sx={{ mb: 0.5 }}>
@@ -288,7 +301,15 @@ cd drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}
               </Alert>
             )}
 
-            {anyUpdate && releases.length > 0 && (
+            {/*
+              "What's new" only makes sense when there's a NEW release
+              the operator hasn't applied yet — i.e. bundle_update_available.
+              An image-only update (drift-agent/drift-frontend pushed to
+              GHCR ahead of a published release) has no release-notes-of-
+              record; showing the most-recent release's notes there would
+              describe the version they ALREADY have, which is misleading.
+            */}
+            {snapshot.bundle_update_available && releases.length > 0 && (
               <Box
                 sx={{
                   border: 1,
@@ -390,11 +411,11 @@ cd drift-deploy-${snapshot.latest_release_tag.replace(/^v/, '')}
             {releases.length > 0 && (
               <Box>
                 <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  {anyUpdate ? 'Previous releases' : 'Recent releases'}
+                  {snapshot.bundle_update_available ? 'Previous releases' : 'Recent releases'}
                 </Typography>
-                {/* Skip the newest release when we already showed it in
-                    the "What's new" banner above, to avoid duplication. */}
-                {(anyUpdate ? releases.slice(1) : releases).map((r, i) => (
+                {/* Skip the newest release when the "What's new" banner
+                    above already shows it, to avoid duplication. */}
+                {(snapshot.bundle_update_available ? releases.slice(1) : releases).map((r, i) => (
                   <Accordion
                     key={r.tag || i}
                     defaultExpanded={false}
