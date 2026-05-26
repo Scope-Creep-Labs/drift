@@ -878,6 +878,21 @@ fi
 echo
 echo "  ntfy: subscribe to https://ntfy.sh/$NTFY_TOPIC on your phone"
 echo
+echo "  Apps + devices"
+echo "    • This CP host is already self-scraped — reporter (vmagent +"
+echo "      cadvisor + vector + node-exporter + process-exporter) is built"
+echo "      into the bundle. Do NOT deploy the 'reporter' app on this"
+echo "      server; the bundled reporter-* containers do the same job."
+echo "    • The 'reporter' app is preloaded and ready to deploy to your"
+echo "      other devices (Pis, edge boxes, fleet nodes) so their metrics"
+echo "      and container logs flow back here. Commission a device via"
+echo "      chat ('add device <name> to group <group>') and then deploy"
+echo "      reporter to it."
+echo "    • Drift Deploy also runs additional docker-compose-based apps"
+echo "      on managed devices. Ship a compose bundle (own service, your"
+echo "      own image), assign it to one device or a whole group, and the"
+echo "      edge-agent applies + monitors it. Apps tab in the web UI."
+echo
 
 # Print every auto-generated secret in one block — the operator needs
 # to save these somewhere (password manager). They also live in .env
