@@ -113,10 +113,27 @@ export function SoftwareUpdatesModal({
         method: 'POST',
         credentials: 'include',
       })
-      const text = await res.text()
-      setApplyResult(text)
+      // Body is JSON when the apply completed without restart (failed
+      // OR no-op); plain text when something else returned. We only
+      // care about the operational summary, not the full payload.
+      let parsed: any = null
+      try { parsed = await res.json() } catch { /* not JSON, skip */ }
+      if (parsed?.error) {
+        setError(`update failed: ${parsed.error}`)
+        if (parsed.up_output || parsed.pull_output) {
+          setApplyResult([parsed.up_output, parsed.pull_output].filter(Boolean).join('\n').trim())
+        }
+      } else if (parsed?.up_returncode && parsed.up_returncode !== 0) {
+        setError('docker compose up returned a non-zero exit code')
+        setApplyResult((parsed.up_output || '').trim())
+      } else if (parsed?.applied?.length) {
+        setApplyResult(`Applied: ${parsed.applied.join(', ')}`)
+      } else {
+        setApplyResult('Update complete.')
+      }
     } catch (e) {
-      // Connection drop expected — treat as success-likely.
+      // Connection drop expected when drift-agent recreates itself —
+      // treat as success-likely.
       setApplyResult('Connection dropped mid-update — usually normal. Re-polling…')
     } finally {
       setApplying(false)

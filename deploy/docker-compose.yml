@@ -214,6 +214,13 @@ services:
       drift-postgres:
         condition: service_healthy
     env_file: .env
+    # Run as root: docker.sock is mounted (next stanza) which already
+    # grants root-equivalent power on the host, so the unprivileged
+    # 'app' UID inside the image is theater. Practical reason — the
+    # install dir is under /root (mode 700) which 'app' (uid 999)
+    # can't traverse; the admin/updates apply path needs to read
+    # docker-compose.yml + .env from there via the bind mount below.
+    user: "0:0"
     # Admin update surface (POST /api/admin/updates/apply) shells out to
     # `docker compose pull && up -d` on the HOST daemon. Mount its
     # socket + add the app user to the host docker group's gid (detected
@@ -225,11 +232,14 @@ services:
       - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
       - drift-bundles:/var/lib/drift/bundles
       - /var/run/docker.sock:/var/run/docker.sock
-      # The install dir is mounted into the agent so that
-      # `docker compose --project-directory` can find docker-compose.yml
-      # + .env when applying the update. Read-only — we only read compose
-      # files, never modify them from here.
-      - ${DEPLOY_DIR:-/root/setup/drift-deploy}:/host-deploy:ro
+      # Install dir mirrored at the SAME path inside the container as on
+      # the host. Required because `docker compose` from inside this
+      # container reads .env + compose files from its own filesystem,
+      # then sends mount specs (./config/alerts → absolute paths) to
+      # the daemon which resolves them on the host. Both filesystems
+      # need the path to exist with the same value, hence the mirror.
+      # Read-only — we only read compose files, never modify from here.
+      - ${DEPLOY_DIR:-/root/setup/drift-deploy}:${DEPLOY_DIR:-/root/setup/drift-deploy}:ro
     group_add:
       - "${DOCKER_GID:-999}"
     environment:

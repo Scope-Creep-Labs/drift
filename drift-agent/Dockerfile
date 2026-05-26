@@ -80,6 +80,13 @@ COPY drift-agent/default-apps /opt/drift-defaults/apps
 # empty named volume mounted here inherits writable perms on first up
 # (docker copies the image directory's ownership into a fresh volume).
 RUN mkdir -p /var/lib/drift/bundles && chown -R app:app /var/lib/drift
+# The base python image ships /root at mode 700 — fine for runtime
+# (we run as 'app', not root) but blocks the admin/updates apply path,
+# which bind-mounts the install dir (often /root/setup/drift-deploy-*)
+# inside the container at the same path it has on the host. 'app'
+# needs to traverse /root to reach the mount. o+x is just traversal,
+# not read — /root/* still requires the original perms to access.
+RUN chmod o+x /root
 RUN chmod +x entrypoint.sh
 
 USER app

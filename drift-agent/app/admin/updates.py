@@ -367,30 +367,37 @@ async def apply_cp_updates() -> dict:
                     "pull_output": "\n".join(pull_log),
                 }
 
-        # Recreate via compose. The install dir is bind-mounted at
-        # /host-deploy so compose can read docker-compose.yml + .env;
-        # we pass DEPLOY_DIR (the REAL host path, written to .env at
-        # install time) as --project-directory so bind mounts like
-        # ./config/alerts resolve on the daemon's filesystem.
-        host_deploy_real = os.environ.get("DEPLOY_DIR")
-        if not host_deploy_real:
+        # Recreate via compose. The install dir is bind-mounted at the
+        # SAME path inside this container as on the host (see compose
+        # `volumes:` block) so we can use one consistent path for
+        # `compose -f` AND `--project-directory`. The daemon also sees
+        # bind-mount sources (./config/alerts → DEPLOY_DIR/config/...)
+        # on that identical path on the host — no translation needed.
+        deploy_dir = os.environ.get("DEPLOY_DIR")
+        if not deploy_dir:
             return {
                 "error": "DEPLOY_DIR env var not set on drift-agent — "
                          "rerun install.sh to update docker-compose.yml.",
                 "pull_output": "\n".join(pull_log),
             }
-        # Layer the external override file when present (external-proxy
-        # mode); ignored if missing.
-        compose_files = ["-f", "/host-deploy/docker-compose.yml"]
-        if os.path.exists("/host-deploy/docker-compose.external.yml"):
-            compose_files += ["-f", "/host-deploy/docker-compose.external.yml"]
+        if not os.path.isdir(deploy_dir):
+            return {
+                "error": f"DEPLOY_DIR={deploy_dir} not mounted into drift-agent. "
+                         "Recreate the container (docker compose up -d drift-agent) "
+                         "after upgrading docker-compose.yml to v0.1.15+.",
+                "pull_output": "\n".join(pull_log),
+            }
+        compose_files = ["-f", f"{deploy_dir}/docker-compose.yml"]
+        external = f"{deploy_dir}/docker-compose.external.yml"
+        if os.path.exists(external):
+            compose_files += ["-f", external]
 
         services = [e["compose_service"] for e in TRACKED_IMAGES]
         up = subprocess.run(
             [
                 "docker", "compose",
                 *compose_files,
-                "--project-directory", host_deploy_real,
+                "--project-directory", deploy_dir,
                 "up", "-d", "--no-deps", *services,
             ],
             capture_output=True, text=True, timeout=120, env=env,

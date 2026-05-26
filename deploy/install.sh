@@ -622,12 +622,21 @@ VM_BASIC_AUTH=
 VM_BEARER_TOKEN=
 EOF
 )
-chmod 600 "$ENV_FILE"
+# chown to root:docker + chmod 640 so drift-agent (running as 'app'
+# with the docker group as a supplementary group via compose
+# `group_add`) can READ the .env when the admin update-apply path
+# runs `docker compose` from inside the container. Practical
+# implication for host-side security: anyone in the docker group on
+# this host can already do anything via /var/run/docker.sock; giving
+# them .env read access is not a new boundary.
+chown "root:${_DOCKER_GID}" "$ENV_FILE" 2>/dev/null || true
+chmod 640 "$ENV_FILE"
 # Mirror to the persistent state dir so the next install-version
 # extract (different DEPLOY_DIR) finds the same values.
 (umask 077 && cp -p "$ENV_FILE" "$ENV_FILE_STATE")
-chmod 600 "$ENV_FILE_STATE"
-info ".env written ($(wc -l < "$ENV_FILE") lines, mode 600 · mirrored to $STATE_DIR)"
+chown "root:${_DOCKER_GID}" "$ENV_FILE_STATE" 2>/dev/null || true
+chmod 640 "$ENV_FILE_STATE"
+info ".env written ($(wc -l < "$ENV_FILE") lines, mode 640 root:docker · mirrored to $STATE_DIR)"
 
 # ---------- render config templates ----------
 
