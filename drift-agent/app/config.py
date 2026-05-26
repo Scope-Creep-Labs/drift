@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     public_url: str = ""
     reporter_password: str = ""
 
+    # Tarball release this stack was installed from. Stamped into .env
+    # by install.sh (which itself is stamped by package-release.sh at
+    # tarball-build time). Empty / "dev" for unpackaged installs.
+    install_version: str = ""
+
     # When true, session cookies are sent without Secure so plain-http
     # localhost dev works. Production should leave this false (default)
     # so cookies require HTTPS.

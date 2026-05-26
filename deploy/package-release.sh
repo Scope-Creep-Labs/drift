@@ -139,6 +139,13 @@ fi
 # Preserve +x on the installer (git stores mode bits but `git show`
 # strips them on stdout, so re-apply explicitly).
 chmod +x "$STAGE/install.sh"
+
+# Stamp the release tag into install.sh so the running stack can
+# report its bundle version to the admin update modal. Source's
+# placeholder is `INSTALL_VERSION="dev"`; we sed it to the real tag.
+sed -i.bak "s|^INSTALL_VERSION=\"dev\"$|INSTALL_VERSION=\"$VERSION\"|" "$STAGE/install.sh" \
+  && rm -f "$STAGE/install.sh.bak"
+
 tar -czf "$TARBALL" -C "$WORK" "$PREFIX"
 rm -rf "$WORK"
 

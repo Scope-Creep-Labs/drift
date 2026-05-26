@@ -310,8 +310,11 @@ async def stop_updates_poller() -> None:
 
 def get_snapshot() -> dict:
     """Snapshot of the current poll result, JSON-serializable."""
+    # Lazy import so the module doesn't fail to load if config is broken.
+    from ..config import settings as _settings
     return {
         "checked_at": _snapshot.checked_at,
+        "install_version": _settings.install_version or None,
         "images": [asdict(i) for i in _snapshot.images],
         "edge_agent": {
             "version": _snapshot.edge_agent_version,

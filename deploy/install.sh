@@ -17,6 +17,12 @@
 
 set -euo pipefail
 
+# package-release.sh substitutes this with the actual tag (e.g.
+# v0.1.14) at tarball packaging time. Working-tree runs leave it as
+# "dev" so the modal can distinguish a packaged install from an
+# unpackaged one.
+INSTALL_VERSION="dev"
+
 cd "$(dirname "$0")"
 
 DEPLOY_DIR=$(pwd)
@@ -564,6 +570,9 @@ DEPLOY_DIR=$DEPLOY_DIR
 # Host docker.sock gid — supplemental group for drift-agent's app user
 # so it can talk to the daemon socket for the update-apply endpoint.
 DOCKER_GID=$_DOCKER_GID
+# Tarball release this stack was installed from. Stamped by
+# package-release.sh; "dev" for working-tree installs.
+INSTALL_VERSION=$INSTALL_VERSION
 DRIFT_HOST_PORT=${DRIFT_HOST_PORT:-10001}
 VMALERT_HOST_PORT=${VMALERT_HOST_PORT:-8880}
 ALERTMANAGER_HOST_PORT=${ALERTMANAGER_HOST_PORT:-9093}

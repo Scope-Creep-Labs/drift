@@ -51,6 +51,7 @@ type ReleaseNote = {
 
 type Snapshot = {
   checked_at: string | null
+  install_version: string | null
   images: ImageStatus[]
   edge_agent: {
     version: string | null
@@ -160,9 +161,85 @@ export function SoftwareUpdatesModal({
         )}
         {snapshot && (
           <Stack spacing={2}>
-            <Typography variant="caption" color="text.secondary">
-              Last checked: {snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}
-            </Typography>
+            <Stack direction="row" spacing={2} alignItems="baseline" justifyContent="space-between">
+              <Stack direction="row" spacing={1} alignItems="baseline">
+                <Typography variant="body2" color="text.secondary">Installed:</Typography>
+                <Chip
+                  size="small"
+                  label={snapshot.install_version || '(dev / unpackaged)'}
+                  color={snapshot.install_version && snapshot.install_version !== 'dev' ? 'primary' : 'default'}
+                  variant="outlined"
+                  sx={{ fontFamily: 'monospace', fontWeight: 600 }}
+                />
+              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                Last checked: {snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}
+              </Typography>
+            </Stack>
+
+            {anyUpdate && releases.length > 0 && (
+              <Box
+                sx={{
+                  border: 1,
+                  borderColor: 'warning.main',
+                  borderRadius: 1,
+                  p: 1.5,
+                  bgcolor: 'rgba(255, 152, 0, 0.08)',
+                }}
+              >
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1 }}>
+                  <NewReleasesIcon fontSize="small" color="warning" />
+                  <Typography variant="subtitle2">
+                    What's new in <code style={{ fontFamily: 'monospace' }}>{releases[0].tag}</code>
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                    {releases[0].published_at ? new Date(releases[0].published_at).toLocaleDateString() : ''}
+                  </Typography>
+                </Stack>
+                <Box
+                  sx={{
+                    '& p': { my: 0.6, fontSize: '0.85rem', lineHeight: 1.55 },
+                    '& h2': { fontSize: '0.95rem', mt: 1.4, mb: 0.6 },
+                    '& h3': { fontSize: '0.9rem', mt: 1.2, mb: 0.5 },
+                    '& ul, & ol': { pl: 3, my: 0.6 },
+                    '& li': { mb: 0.3, fontSize: '0.85rem' },
+                    '& code': {
+                      fontFamily: '"JetBrains Mono", monospace',
+                      fontSize: '0.78em',
+                      bgcolor: 'rgba(255,255,255,0.08)',
+                      px: 0.5,
+                      py: 0.15,
+                      borderRadius: 0.5,
+                    },
+                    '& pre': {
+                      bgcolor: 'rgba(0,0,0,0.3)',
+                      p: 1,
+                      borderRadius: 0.6,
+                      overflowX: 'auto',
+                      fontSize: '0.78rem',
+                      '& code': { bgcolor: 'transparent', p: 0 },
+                    },
+                    '& strong': { fontWeight: 600 },
+                  }}
+                >
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {releases[0].body || '*(no release notes)*'}
+                  </ReactMarkdown>
+                </Box>
+                {releases[0].html_url && (
+                  <Link
+                    href={releases[0].html_url}
+                    target="_blank"
+                    rel="noopener"
+                    variant="caption"
+                    sx={{ display: 'block', mt: 1 }}
+                  >
+                    View on GitHub →
+                  </Link>
+                )}
+              </Box>
+            )}
+
             {snapshot.images.map((img) => (
               <Box key={img.name} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.5 }}>
@@ -185,7 +262,7 @@ export function SoftwareUpdatesModal({
                 </Box>
               </Box>
             ))}
-            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5, bgcolor: 'action.hover' }}>
+            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
               <Typography variant="subtitle2" sx={{ mb: 0.5 }}>edge-agent</Typography>
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
                 Bundled with this drift-agent image. Devices auto-update on next check-in.
@@ -201,11 +278,15 @@ export function SoftwareUpdatesModal({
 
             {releases.length > 0 && (
               <Box>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>Release notes</Typography>
-                {releases.map((r, i) => (
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                  {anyUpdate ? 'Previous releases' : 'Recent releases'}
+                </Typography>
+                {/* Skip the newest release when we already showed it in
+                    the "What's new" banner above, to avoid duplication. */}
+                {(anyUpdate ? releases.slice(1) : releases).map((r, i) => (
                   <Accordion
                     key={r.tag || i}
-                    defaultExpanded={i === 0 && anyUpdate}
+                    defaultExpanded={false}
                     disableGutters
                     elevation={0}
                     sx={{
