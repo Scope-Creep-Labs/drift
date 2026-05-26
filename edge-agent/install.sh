@@ -46,12 +46,17 @@ cat <<SUMMARY
 ═══════════════════════════════════════════════════════════════════════
   drift-deploy-agent installer
 
-  This will install the Drift Deploy edge-agent on this host.
+  This script installs the Drift Deploy edge-agent — a small container
+  that polls the Drift control plane (CP) and applies whatever app
+  bundles you assign to this device via the Drift web UI or chat. The
+  CP is the Drift server you stood up earlier (control plane = the
+  observability + fleet-management backend); it tells this device what
+  to run, and this device reports back its state + metrics + logs.
 
   Device identity
       name:           $DEVICE_NAME
       group:          $GROUP_ID
-      CP URL:         $CP_URL
+      control plane:  $CP_URL
       poll interval:  ${POLL_INTERVAL}s
 
   Host changes (require root)
@@ -66,7 +71,7 @@ cat <<SUMMARY
 
   Container (drift-deploy-agent)
       • Built locally from a build context fetched from the CP.
-      • --network host  (talks to CP and any deployed apps).
+      • --network host  (talks to the CP and any deployed apps).
       • --pid host      (needed to nsenter into PAM for the web-terminal
                          feature — root-equivalent privilege).
       • cap-add SYS_ADMIN + SYS_PTRACE  (same reason).

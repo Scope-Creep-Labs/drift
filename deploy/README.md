@@ -2,6 +2,8 @@
 
 Everything required to run a complete Drift stack on one Linux box behind a public domain. One Caddy out front terminates TLS via Let's Encrypt and reverse-proxies every internal service.
 
+The installed stack is the **control plane (CP)** — the Drift server itself: web UI, agent backend, metrics + logs storage, alerting, and the deploy orchestrator that manages app bundles on remote devices. Each managed device runs a small **edge-agent** container that polls the CP, applies whatever app bundles you've assigned, and reports metrics + logs back.
+
 ## What you get
 
 | Service | Purpose | URL |
