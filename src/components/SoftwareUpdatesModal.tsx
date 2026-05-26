@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -10,6 +13,7 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Link,
   Stack,
   Typography,
 } from '@mui/material'
@@ -18,6 +22,9 @@ import RefreshIcon from '@mui/icons-material/Refresh'
 import UpdateIcon from '@mui/icons-material/Update'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import NewReleasesIcon from '@mui/icons-material/NewReleases'
+import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { apiBase } from '../lib/apiBase'
 
 // Shape of GET /api/admin/updates — keep in sync with
@@ -34,6 +41,14 @@ type ImageStatus = {
   error: string | null
 }
 
+type ReleaseNote = {
+  tag: string
+  name: string
+  body: string
+  html_url: string
+  published_at: string
+}
+
 type Snapshot = {
   checked_at: string | null
   images: ImageStatus[]
@@ -42,6 +57,7 @@ type Snapshot = {
     sha: string | null
     note: string
   }
+  releases: ReleaseNote[]
 }
 
 export function SoftwareUpdatesModal({
@@ -116,6 +132,9 @@ export function SoftwareUpdatesModal({
   }, [refresh])
 
   const anyUpdate = snapshot?.images.some((i) => i.update_available) ?? false
+  // Newest release first; the first one expanded by default if an update
+  // is available, collapsed otherwise (room is tight).
+  const releases = useMemo(() => snapshot?.releases ?? [], [snapshot])
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -179,6 +198,80 @@ export function SoftwareUpdatesModal({
                 {snapshot.edge_agent.note}
               </Typography>
             </Box>
+
+            {releases.length > 0 && (
+              <Box>
+                <Typography variant="subtitle2" sx={{ mb: 1 }}>Release notes</Typography>
+                {releases.map((r, i) => (
+                  <Accordion
+                    key={r.tag || i}
+                    defaultExpanded={i === 0 && anyUpdate}
+                    disableGutters
+                    elevation={0}
+                    sx={{
+                      border: 1,
+                      borderColor: 'divider',
+                      borderRadius: 1,
+                      mb: 1,
+                      '&::before': { display: 'none' },
+                    }}
+                  >
+                    <AccordionSummary expandIcon={<ExpandMoreIcon fontSize="small" />}>
+                      <Stack direction="row" spacing={1} alignItems="center" sx={{ width: '100%' }}>
+                        <Typography variant="body2" fontWeight={600}>{r.tag}</Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ flex: 1 }}>
+                          {r.name && r.name !== r.tag ? r.name : ''}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {r.published_at ? new Date(r.published_at).toLocaleDateString() : ''}
+                        </Typography>
+                      </Stack>
+                    </AccordionSummary>
+                    <AccordionDetails>
+                      <Box
+                        sx={{
+                          '& p': { my: 0.6, fontSize: '0.85rem', lineHeight: 1.55 },
+                          '& h2': { fontSize: '0.95rem', mt: 1.4, mb: 0.6 },
+                          '& h3': { fontSize: '0.9rem', mt: 1.2, mb: 0.5 },
+                          '& ul, & ol': { pl: 3, my: 0.6 },
+                          '& li': { mb: 0.3, fontSize: '0.85rem' },
+                          '& code': {
+                            fontFamily: '"JetBrains Mono", monospace',
+                            fontSize: '0.78em',
+                            bgcolor: 'rgba(255,255,255,0.06)',
+                            px: 0.5,
+                            py: 0.15,
+                            borderRadius: 0.5,
+                          },
+                          '& pre': {
+                            bgcolor: 'rgba(0,0,0,0.3)',
+                            p: 1,
+                            borderRadius: 0.6,
+                            overflowX: 'auto',
+                            fontSize: '0.78rem',
+                            '& code': { bgcolor: 'transparent', p: 0 },
+                          },
+                          '& strong': { fontWeight: 600 },
+                        }}
+                      >
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{r.body || '*(no notes)*'}</ReactMarkdown>
+                      </Box>
+                      {r.html_url && (
+                        <Link
+                          href={r.html_url}
+                          target="_blank"
+                          rel="noopener"
+                          variant="caption"
+                          sx={{ display: 'block', mt: 1 }}
+                        >
+                          View on GitHub →
+                        </Link>
+                      )}
+                    </AccordionDetails>
+                  </Accordion>
+                ))}
+              </Box>
+            )}
           </Stack>
         )}
       </DialogContent>

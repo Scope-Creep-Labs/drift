@@ -74,6 +74,15 @@ class ImageStatus:
 
 
 @dataclass
+class ReleaseNote:
+    tag: str
+    name: str
+    body: str           # markdown
+    html_url: str
+    published_at: str   # ISO timestamp
+
+
+@dataclass
 class UpdateSnapshot:
     checked_at: Optional[str] = None
     images: list[ImageStatus] = field(default_factory=list)
@@ -81,6 +90,17 @@ class UpdateSnapshot:
     # admins know whether a per-device install.sh rerun is needed.
     edge_agent_version: Optional[str] = None
     edge_agent_sha: Optional[str] = None
+    # Recent releases from RELEASES_REPO, newest first. Rendered as
+    # markdown in the admin UI alongside the digest diff.
+    releases: list[ReleaseNote] = field(default_factory=list)
+
+
+# GitHub repo where release notes live. Tarball releases of the
+# single-server installer are published here; the body field of each
+# release is markdown that the admin UI renders alongside the digest
+# diff. Public repo → anonymous fetch is fine.
+RELEASES_REPO = "kidproquo/drift-public"
+RELEASES_LIMIT = 5  # how many recent releases to include in the snapshot
 
 
 _snapshot = UpdateSnapshot()
@@ -169,6 +189,37 @@ def _running_image_digest(compose_service: str) -> Optional[str]:
     return None
 
 
+# ---------- Release notes (GitHub releases for drift-public) ----------
+
+async def _fetch_recent_releases() -> list[ReleaseNote]:
+    """Hit the public Releases API. Anonymous is fine for public repos
+    (rate limit 60/hr; we poll 4/hr). Returns newest-first."""
+    url = f"https://api.github.com/repos/{RELEASES_REPO}/releases"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(
+            url,
+            params={"per_page": RELEASES_LIMIT},
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        resp.raise_for_status()
+    raw = resp.json()
+    out: list[ReleaseNote] = []
+    for r in raw:
+        # Skip drafts; pre-releases are still shown (operator can decide).
+        if r.get("draft"):
+            continue
+        out.append(
+            ReleaseNote(
+                tag=r.get("tag_name") or "",
+                name=r.get("name") or r.get("tag_name") or "",
+                body=r.get("body") or "",
+                html_url=r.get("html_url") or "",
+                published_at=r.get("published_at") or "",
+            )
+        )
+    return out
+
+
 # ---------- Edge-agent SHA + version (baked into this image) ----------
 
 def _edge_agent_metadata() -> tuple[Optional[str], Optional[str]]:
@@ -217,10 +268,18 @@ async def _poll_once() -> None:
             log.warning("admin/updates: poll failed for %s: %s", entry["name"], e)
         statuses.append(s)
     edge_v, edge_sha = _edge_agent_metadata()
+    # Release notes are best-effort — a transient GitHub outage shouldn't
+    # blank out the digest comparison the admin actually needs.
+    try:
+        releases = await _fetch_recent_releases()
+    except Exception as e:  # noqa: BLE001
+        log.warning("admin/updates: release notes fetch failed: %s", e)
+        releases = _snapshot.releases  # keep the previous cached set
     _snapshot.checked_at = now
     _snapshot.images = statuses
     _snapshot.edge_agent_version = edge_v
     _snapshot.edge_agent_sha = edge_sha
+    _snapshot.releases = releases
 
 
 async def _poll_loop() -> None:
@@ -260,11 +319,12 @@ def get_snapshot() -> dict:
             # Image rebuild on devices is operator-driven (rerun
             # install.sh); we surface a hint, never auto-apply.
             "note": (
-                "Edge-agent script auto-updates on next check-in. "
-                "Per-device install.sh rerun only needed for changes "
-                "to terminal-bridge.py / Dockerfile / host CA detection."
+                "Edge-agent script + terminal-bridge.py auto-update on "
+                "next check-in. Per-device install.sh rerun only needed "
+                "for deep image changes (Dockerfile, apk packages)."
             ),
         },
+        "releases": [asdict(r) for r in _snapshot.releases],
     }
 
 
