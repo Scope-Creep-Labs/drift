@@ -37,6 +37,76 @@ for c in docker curl tar; do
   command -v "$c" >/dev/null || { echo "missing required tool: $c" >&2; exit 1; }
 done
 
+# ---- summary + confirm ----
+# Show the operator exactly what's about to happen before any side
+# effects. Important: this script ends up running as `sudo -E bash`
+# piped from curl, so stdin is the script body — read from /dev/tty.
+cat <<SUMMARY
+
+═══════════════════════════════════════════════════════════════════════
+  drift-deploy-agent installer
+
+  This will install the Drift Deploy edge-agent on this host.
+
+  Device identity
+      name:           $DEVICE_NAME
+      group:          $GROUP_ID
+      CP URL:         $CP_URL
+      poll interval:  ${POLL_INTERVAL}s
+
+  Host changes (require root)
+      • Create system user 'drift' (sudo group, home /home/drift) for
+        web-terminal access. Password is freshly generated and printed
+        at the end of install. If 'drift' already exists, its password
+        is NOT touched — rerun is for upgrading the agent only.
+      • Write /etc/drift-deploy/env (mode 600 — holds the bootstrap
+        token and CP URL).
+      • Create /var/lib/drift-deploy/apps (bundle state) and
+        /var/lib/node_exporter/textfile_collector (agent self-metrics).
+
+  Container (drift-deploy-agent)
+      • Built locally from a build context fetched from the CP.
+      • --network host  (talks to CP and any deployed apps).
+      • --pid host      (needed to nsenter into PAM for the web-terminal
+                         feature — root-equivalent privilege).
+      • cap-add SYS_ADMIN + SYS_PTRACE  (same reason).
+      • Mounts /var/run/docker.sock so it can 'docker compose up' on
+        this host. Functionally equivalent to root on this box.
+      • Restart policy: unless-stopped.
+
+  Runtime
+      • Polls the CP every ${POLL_INTERVAL}s for assigned apps.
+      • Pulls + applies bundles as the CP's state changes.
+      • Self-updates when the CP advertises a newer agent SHA — the
+        new agent script replaces the current one on next restart.
+
+═══════════════════════════════════════════════════════════════════════
+SUMMARY
+
+if [ -n "${DRIFT_INSTALL_ASSUME_YES:-}" ]; then
+  echo "DRIFT_INSTALL_ASSUME_YES set — proceeding without prompt"
+else
+  ans=""
+  # When the script comes in via `curl | sudo -E bash`, stdin is the
+  # piped script body, not a TTY — read from /dev/tty instead.
+  if [ -t 0 ]; then
+    read -rp "Proceed with install? [y/N] " ans
+  elif [ -e /dev/tty ]; then
+    read -rp "Proceed with install? [y/N] " ans < /dev/tty
+  else
+    echo
+    echo "ERROR: no TTY available for confirmation prompt." >&2
+    echo "       Re-run with DRIFT_INSTALL_ASSUME_YES=1 to skip the prompt," >&2
+    echo "       e.g. inside CI or another non-interactive context." >&2
+    exit 1
+  fi
+  case "$ans" in
+    y|Y|yes|YES) ;;
+    *) echo "aborted."; exit 0 ;;
+  esac
+fi
+echo
+
 # Discover the host's actual Docker data dir. On vanilla Linux this is
 # /var/lib/docker; on Synology DSM it's /volume1/@docker. Bundles that
 # need cAdvisor-style image/layer visibility reference this via

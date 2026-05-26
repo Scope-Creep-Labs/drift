@@ -810,7 +810,12 @@ else
           # eval so the env-prefixed pipeline expands as intended. The
           # install.sh fetched here is served by the CP we just brought
           # up — same host, same image.
-          if eval "$_install_cmd"; then
+          #
+          # DRIFT_INSTALL_ASSUME_YES bypasses the edge-agent installer's
+          # interactive "Proceed?" prompt. We just did a complete summary
+          # of the larger install one screen up; the operator already
+          # consented to commissioning the CP host.
+          if DRIFT_INSTALL_ASSUME_YES=1 eval "$_install_cmd"; then
             info "edge-agent running on the CP — it should appear online within ~30s"
           else
             warn "edge-agent install failed; CP is registered but no agent running. Re-run with:"
