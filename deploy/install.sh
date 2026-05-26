@@ -23,25 +23,39 @@ DEPLOY_DIR=$(pwd)
 ENV_FILE="$DEPLOY_DIR/.env"
 ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
 
-# Sidecar file that mirrors every collected prompt answer as soon
-# as it's typed. Lives in logs/ (mode 700) so it survives any
-# accident that nukes .env (manual rm, `git clean -fdx`, mode
-# switches, errors before the end-of-script .env write). env_get
-# falls back to this file when .env is missing a key, so prefill
-# always works as long as logs/ survives between runs.
-#
+# Persistent state across install-version directories. When you extract
+# drift-deploy-0.1.7.tar.gz next to your existing drift-deploy-0.1.6/
+# dir, the new install.sh finds the prior .env and answers sidecar at a
+# stable host path so prefill works without copying files by hand.
+# Override via DRIFT_STATE_DIR=... in the environment if /var/lib isn't
+# right for your host.
+STATE_DIR="${DRIFT_STATE_DIR:-/var/lib/drift-cp}"
+(umask 077 && mkdir -p "$STATE_DIR" "$STATE_DIR/logs")
+chmod 700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null || true
+ENV_FILE_STATE="$STATE_DIR/.env"
+ANSWERS_FILE="$STATE_DIR/logs/last-answers.env"
+(umask 077 && touch "$ANSWERS_FILE")
+chmod 600 "$ANSWERS_FILE"
+
+# Restore the install dir's .env from state if it's missing — this is
+# the cross-version reuse path. If both exist, leave the install dir's
+# copy alone (the operator may have hand-edited it between runs); env_get
+# reads from it first so manual edits take precedence.
+if [ ! -f "$ENV_FILE" ] && [ -f "$ENV_FILE_STATE" ]; then
+  (umask 077 && cp -p "$ENV_FILE_STATE" "$ENV_FILE")
+  chmod 600 "$ENV_FILE"
+  echo "→ restored .env from $STATE_DIR (previous install version)"
+fi
+
 # NOTE on umask: we used to set `umask 077` globally here, which had
 # a bug — every rendered config in config/ (grafana.ini etc.) inherited
 # 600, and grafana's container (uid 472) can't read those. We now use
 # `umask 077` only as a brief shield around individual secret-bearing
-# writes (.env, .last-answers.env, log files) and rely on explicit
-# chmod for the rest. Default umask (usually 022) is preserved.
+# writes (.env, last-answers.env, log files) and rely on explicit chmod
+# for the rest. Default umask (usually 022) is preserved.
 LOG_DIR="$DEPLOY_DIR/logs"
 (umask 077 && mkdir -p "$LOG_DIR")
 chmod 700 "$LOG_DIR" 2>/dev/null || true
-ANSWERS_FILE="$LOG_DIR/.last-answers.env"
-(umask 077 && touch "$ANSWERS_FILE")
-chmod 600 "$ANSWERS_FILE"
 
 # Tee the entire run to a timestamped log so the operator has a
 # permanent record of what was set + what was generated. Mode 600
@@ -260,6 +274,7 @@ docker compose version >/dev/null 2>&1 || err "docker compose plugin missing"
 info "docker $(docker --version | awk '{print $3}' | tr -d ',')"
 info "compose $(docker compose version | awk '{print $4}')"
 info "deploy dir: $DEPLOY_DIR"
+info "state dir:  $STATE_DIR  (persistent across install-version dirs)"
 
 if [ -f "$ENV_FILE" ]; then
   info "found existing .env (will prompt to keep or change values)"
@@ -563,7 +578,11 @@ VM_BEARER_TOKEN=
 EOF
 )
 chmod 600 "$ENV_FILE"
-info ".env written ($(wc -l < "$ENV_FILE") lines, mode 600)"
+# Mirror to the persistent state dir so the next install-version
+# extract (different DEPLOY_DIR) finds the same values.
+(umask 077 && cp -p "$ENV_FILE" "$ENV_FILE_STATE")
+chmod 600 "$ENV_FILE_STATE"
+info ".env written ($(wc -l < "$ENV_FILE") lines, mode 600 · mirrored to $STATE_DIR)"
 
 # ---------- render config templates ----------
 
