@@ -261,10 +261,14 @@ async def create_revision(
     _user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> AppRevisionOut:
-    if not settings.b2_bucket:
+    # Bundle upload needs either local-fs or B2 — `deploy_enabled`
+    # covers both. Used to be a B2-only check that predated
+    # BUNDLE_STORAGE=local and broke fresh single-server installs.
+    if not settings.deploy_enabled:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
-            "B2 storage not configured; cannot upload bundles",
+            "Deploy subsystem not configured (DRIFT_PG_URL must be set, "
+            "and either BUNDLE_STORAGE=local or a valid B2_BUCKET).",
         )
     app = await _app_by_name(db, name)
     # Next version is monotonic per app.
