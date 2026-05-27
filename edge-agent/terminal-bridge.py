@@ -64,6 +64,17 @@ def _spawn_login() -> tuple[int, int]:
     gated on the host not having /bin/login at all (DSM-style cases)."""
     pid, fd = pty.fork()
     if pid == 0:
+        # Set TERM so tmux, screen, less, vim, and anything that
+        # queries terminfo know what capability set they're talking
+        # to. xterm.js emits xterm-256color-compatible sequences;
+        # without this the child inherits no TERM and tmux refuses
+        # with "open terminal failed: terminal does not support
+        # clear". nsenter inherits this env when it crosses into
+        # the host's PID/MNT namespaces, so the host shell sees it
+        # too. xterm-256color is in ncurses-base on all major
+        # distros; fall back to plain xterm if the host's terminfo
+        # somehow lacks it (very rare; embedded busybox-only).
+        os.environ["TERM"] = "xterm-256color"
         # Run a small inline script inside the host's namespaces. The
         # script picks the first existing login binary and execs it.
         # `exec` chains so /bin/login becomes PID-equivalent to nsenter
