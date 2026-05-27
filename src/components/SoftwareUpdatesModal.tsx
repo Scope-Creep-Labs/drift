@@ -121,7 +121,12 @@ export function SoftwareUpdatesModal({
   }, [])
 
   useEffect(() => {
-    if (open) refresh(false)
+    // Force a fresh GHCR + release poll on open so the operator sees
+    // current state immediately — the cached snapshot can be up to 15
+    // minutes stale (the background poll interval). The cost is a
+    // single round-trip to GHCR + the GitHub Releases API which is
+    // well within budget.
+    if (open) refresh(true)
   }, [open, refresh])
 
   const apply = useCallback(async () => {
@@ -283,9 +288,18 @@ export function SoftwareUpdatesModal({
                   </>
                 )}
               </Stack>
-              <Typography variant="caption" color="text.secondary">
-                Last checked: {snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}
-              </Typography>
+              <Stack direction="row" spacing={0.6} alignItems="center">
+                {/* Spinner visible while a check is in flight (initial
+                    open OR explicit Check-now click), then disappears
+                    once the snapshot updates. Inline so the timestamp
+                    text doesn't shift around. */}
+                {loading && <CircularProgress size={10} thickness={5} />}
+                <Typography variant="caption" color="text.secondary">
+                  {loading
+                    ? 'Checking…'
+                    : `Last checked: ${snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}`}
+                </Typography>
+              </Stack>
             </Stack>
 
             {/* When the bundle (install.sh) version differs from what's
