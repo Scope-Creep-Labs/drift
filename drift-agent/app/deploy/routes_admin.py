@@ -11,10 +11,14 @@ endpoint:
 """
 from __future__ import annotations
 
+import io
+import tarfile
 import uuid
+import zipfile
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -248,6 +252,77 @@ async def get_revision(
     if rev is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"revision '{version}' of '{name}' not found")
     return AppRevisionDetail.model_validate(rev, from_attributes=True)
+
+
+@router.get("/apps/{name}/revisions/{version}/download")
+async def download_revision(
+    name: str,
+    version: str,
+    format: str = "tar.gz",
+    _user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Stream a revision's files as a downloadable archive.
+
+    Format: `tar.gz` (default) or `zip`. Filename pattern
+    `{app}-v{version}-{YYYYMMDDTHHMMSS}.{ext}` — the timestamp is the
+    revision's created_at in compact ISO form (colon-free so it's a
+    valid filename on every OS).
+
+    Version accepts an integer or the literal 'latest'. Same access
+    model as the rest of the read endpoints (any authenticated user;
+    the calling user's group scope isn't enforced here because revs
+    don't carry a group — they're owned by the app)."""
+    if format not in ("tar.gz", "zip"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "format must be 'tar.gz' or 'zip'",
+        )
+    app = await _app_by_name(db, name)
+    q = select(AppRevision).where(AppRevision.app_id == app.id)
+    if version == "latest":
+        q = q.order_by(AppRevision.version.desc()).limit(1)
+    else:
+        try:
+            q = q.where(AppRevision.version == int(version))
+        except ValueError:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"version must be an integer or 'latest', got '{version}'",
+            )
+    rev = (await db.execute(q)).scalar_one_or_none()
+    if rev is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"revision '{version}' of '{name}' not found")
+
+    files: dict[str, str] = rev.files or {}
+    # Pack into the chosen archive format in memory. Bundle is normally
+    # tiny (compose YAMLs + scripts), so streaming-from-memory is fine;
+    # the upper bound enforced elsewhere is ~5MB.
+    buf = io.BytesIO()
+    if format == "tar.gz":
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for path, content in files.items():
+                data = (content or "").encode("utf-8")
+                info = tarfile.TarInfo(path)
+                info.size = len(data)
+                info.mode = 0o644
+                tar.addfile(info, io.BytesIO(data))
+        media_type = "application/gzip"
+    else:  # zip
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path, content in files.items():
+                zf.writestr(path, content or "")
+        media_type = "application/zip"
+
+    # `{app}-v{ver}-{YYYYMMDDTHHMMSS}.{ext}` — compact ISO, no colons
+    # or dashes inside the time field so the filename is portable.
+    ts = rev.created_at.strftime("%Y%m%dT%H%M%S")
+    filename = f"{name}-v{rev.version}-{ts}.{format}"
+    return Response(
+        content=buf.getvalue(),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post(

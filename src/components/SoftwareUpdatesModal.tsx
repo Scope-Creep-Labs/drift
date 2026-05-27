@@ -169,21 +169,47 @@ export function SoftwareUpdatesModal({
       return
     }
 
-    // Success path. Show one friendly message and KEEP `applying`=true
-    // through the entire poll-back window so the button stays in
-    // "Applying…" state. The needsRefresh banner takes over once the
-    // recreate is detected; we don't reset applyResult after that
-    // (the banner is the source of truth).
-    setApplyResult(
-      'Recreating containers in a detached helper. ' +
-      'The CP will briefly disconnect — this page will prompt you to refresh once it’s back.',
-    )
+    // Tailor the in-progress message to what's actually being updated.
+    // - If drift-frontend has a pending update, the SPA bundle will
+    //   change → we'll prompt the user to refresh once needsRefresh
+    //   fires.
+    // - If only drift-agent updates, the SPA stays put; the modal just
+    //   self-recovers once the API comes back. No refresh required.
+    // Keep applying=true through the polling window so the button stays
+    // in "Applying…" the whole time.
+    const frontendPending =
+      snapshot?.images.find((s) => s.name === 'drift-frontend')?.update_available ?? false
+    const agentPending =
+      snapshot?.images.find((s) => s.name === 'drift-agent')?.update_available ?? false
+    if (frontendPending && agentPending) {
+      setApplyResult(
+        'Recreating drift-agent and drift-frontend in a detached helper. ' +
+        "The CP will briefly disconnect — this page will prompt you to refresh once it's back.",
+      )
+    } else if (frontendPending) {
+      setApplyResult(
+        'Recreating drift-frontend in a detached helper. ' +
+        "This page will prompt you to refresh once the new UI is up.",
+      )
+    } else if (agentPending) {
+      setApplyResult(
+        'Recreating drift-agent in a detached helper. ' +
+        "The CP API will briefly disconnect; this modal will recover on its own.",
+      )
+    } else {
+      setApplyResult('Update dispatched.')
+    }
 
     // Step 2 — poll up to 45s with force=true, swallowing connection
     // errors silently (502 from Caddy while drift-agent restarts is
     // expected, not a failure the user needs to see). Stop as soon as
-    // the drift-frontend digest moves off the one we remembered when
-    // the modal opened — that means the recreate is through.
+    // either:
+    //   (a) drift-frontend digest moved — needsRefresh fires, banner
+    //       takes over from here.
+    //   (b) every image is "up to date" — no further movement to wait
+    //       for. This covers agent-only updates where the frontend
+    //       digest never moves.
+    let completedClean = false
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 3000))
       try {
@@ -194,17 +220,30 @@ export function SoftwareUpdatesModal({
         if (!res.ok) continue  // 502/etc during restart — silent
         const data: Snapshot = await res.json()
         setSnapshot(data)
-        // Bail out as soon as the recreate completes.
         const live = data.images.find((s) => s.name === 'drift-frontend')?.current_digest
-        if (initialFrontendDigest && live && initialFrontendDigest !== live) break
+        if (initialFrontendDigest && live && initialFrontendDigest !== live) {
+          // Frontend recreated — needsRefresh banner will take over.
+          break
+        }
+        if (data.images.every((s) => !s.update_available)) {
+          // Agent-only path: everything's current and we're not going
+          // to see a frontend digest change. Show a clean "Done"
+          // message instead of leaving the misleading "page will
+          // prompt to refresh" up.
+          completedClean = true
+          break
+        }
       } catch {
         // network unreachable during restart — keep polling silently
         continue
       }
     }
 
+    if (completedClean) {
+      setApplyResult('Update complete.')
+    }
     setApplying(false)
-  }, [initialFrontendDigest])
+  }, [initialFrontendDigest, snapshot])
 
   const anyUpdate = snapshot?.images.some((i) => i.update_available) ?? false
   // Newest release first; the first one expanded by default if an update

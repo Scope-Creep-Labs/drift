@@ -27,9 +27,12 @@ import {
 import AddIcon from '@mui/icons-material/Add'
 import CloseIcon from '@mui/icons-material/Close'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import DownloadIcon from '@mui/icons-material/Download'
 import EditIcon from '@mui/icons-material/Edit'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
+import { Menu, MenuItem } from '@mui/material'
 import { deployApi } from '../lib/deployApi'
+import { deployApiBase } from '../lib/apiBase'
 
 export type AppModalMode =
   | { kind: 'create' }
@@ -76,6 +79,23 @@ export function AppModal({
   // Current revision metadata in edit mode (loaded with files). null in
   // create mode and during the load. Drives the "Editing v3" subtitle.
   const [currentVersion, setCurrentVersion] = useState<number | null>(null)
+  // Anchor element for the download-format dropdown (tar.gz / zip).
+  const [downloadMenuAnchor, setDownloadMenuAnchor] = useState<HTMLElement | null>(null)
+  const startDownload = (format: 'tar.gz' | 'zip') => {
+    if (mode.kind !== 'edit' || currentVersion == null) return
+    // Trigger a normal browser download — the server's
+    // Content-Disposition: attachment + filename will save with the
+    // {app}-v{ver}-{ts} name automatically. <a download> is the
+    // cleanest cross-browser path.
+    const a = document.createElement('a')
+    a.href =
+      `${deployApiBase()}/apps/${encodeURIComponent(mode.appName)}` +
+      `/revisions/${currentVersion}/download?format=${format}`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setDownloadMenuAnchor(null)
+  }
   const filePickerRef = useRef<HTMLInputElement | null>(null)
 
   // Reset state when the modal opens/closes so create after edit doesn't
@@ -249,9 +269,31 @@ export function AppModal({
               </Typography>
             )}
           </Stack>
-          <IconButton size="small" onClick={onClose} disabled={loading}>
-            <CloseIcon fontSize="small" />
-          </IconButton>
+          <Stack direction="row" alignItems="center" spacing={0.5}>
+            {mode.kind === 'edit' && currentVersion !== null && (
+              <>
+                <IconButton
+                  size="small"
+                  title="Download this revision"
+                  onClick={(e) => setDownloadMenuAnchor(e.currentTarget)}
+                  disabled={loading || loadingFiles}
+                >
+                  <DownloadIcon fontSize="small" />
+                </IconButton>
+                <Menu
+                  anchorEl={downloadMenuAnchor}
+                  open={downloadMenuAnchor !== null}
+                  onClose={() => setDownloadMenuAnchor(null)}
+                >
+                  <MenuItem onClick={() => startDownload('tar.gz')}>tar.gz</MenuItem>
+                  <MenuItem onClick={() => startDownload('zip')}>zip</MenuItem>
+                </Menu>
+              </>
+            )}
+            <IconButton size="small" onClick={onClose} disabled={loading}>
+              <CloseIcon fontSize="small" />
+            </IconButton>
+          </Stack>
         </Stack>
       </DialogTitle>
 
