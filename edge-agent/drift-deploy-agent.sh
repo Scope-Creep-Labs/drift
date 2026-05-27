@@ -122,12 +122,22 @@ STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/agent.lock"
 TEXTFILE_DIR=${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}
 TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
+# Ensure the textfile dir exists with perms node-exporter (uid 65534
+# nobody) can traverse + read. install.sh creates this on first
+# commission but Synology DSM (and some other hosts) inherit a
+# restrictive default umask that leaves the dir at 700 — node-exporter
+# then errors "open /var/lib/node_exporter/textfile_collector:
+# permission denied" on every scrape, losing all node metrics. We're
+# running inside a bind-mount to the host path so chmod here adjusts
+# the host inode. Idempotent + cheap; runs once per agent start.
+mkdir -p "$TEXTFILE_DIR" 2>/dev/null || true
+chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # Bump on every script change. The check-in payload + textfile metric
 # both report this so the control plane can tell at-a-glance which
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.10.0"
+AGENT_VERSION="0.11.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 

@@ -154,6 +154,12 @@ else
 fi
 
 mkdir -p /etc/drift-deploy /var/lib/drift-deploy/apps /var/lib/node_exporter/textfile_collector
+# Explicit chmod for the textfile collector dir — host umask on
+# Synology DSM (and some other distros) leaves mkdir at mode 700,
+# which blocks the node-exporter container (uid 65534) from reading
+# the agent's published .prom file. 755 is safe: nothing secret in
+# this directory, contents are exporter-format counters.
+chmod 755 /var/lib/node_exporter/textfile_collector
 
 # ---- drift user (terminal access) ----
 # Provision a host-side `drift` account for remote terminal sessions.
