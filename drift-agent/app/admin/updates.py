@@ -383,12 +383,15 @@ def get_snapshot() -> dict:
                 bundle_update = True
                 break
 
-    # running_version: the effective version of what's actually executing
-    # right now, derived from the image LABELs on each tracked container.
-    # If all services report the same version → that's it. If they
-    # disagree (e.g. mid-rollout) → the LOWEST, since the rollout isn't
-    # yet complete. None when no images carry the label (built before
-    # the labelling scheme).
+    # running_version: the effective release the operator is on,
+    # derived from the image LABELs. Use MAX across services rather
+    # than MIN — when smart-build skips an unchanged image for a
+    # release, the LABEL on that image intentionally stays at the
+    # release where its source LAST changed (not "I'm behind"). The
+    # highest label across services is therefore the most recent
+    # release the operator has applied any part of, and equals the
+    # latest release tag whenever they're fully current. None when
+    # no images carry the label (images built before this scheme).
     versions = [
         _version_tuple(i.current_version)
         for i in _snapshot.images
@@ -396,9 +399,9 @@ def get_snapshot() -> dict:
     ]
     running_version: Optional[str] = None
     if versions and all(versions):
-        lowest = min(versions)
+        highest = max(versions)
         for i in _snapshot.images:
-            if i.current_version and _version_tuple(i.current_version) == lowest:
+            if i.current_version and _version_tuple(i.current_version) == highest:
                 running_version = i.current_version
                 break
 
