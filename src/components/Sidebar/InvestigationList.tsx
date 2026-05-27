@@ -5,6 +5,7 @@ import {
   IconButton,
   InputAdornment,
   List,
+  ListItem,
   ListItemButton,
   ListItemText,
   Stack,
@@ -366,102 +367,106 @@ export function InvestigationList() {
               {visibleDevices.map((d) => {
                 const online = d.status === 'online'
                 return (
-                  <Tooltip
+                  // ListItem holds both the primary (clickable terminal
+                  // open) and a secondaryAction (tag-edit icon) as
+                  // SIBLINGS — keeps each Tooltip's hover zone disjoint,
+                  // so they don't stack when the user hovers the icon.
+                  <ListItem
                     key={d.id}
-                    title={
-                      online
-                        ? 'Open terminal'
-                        : `${d.status} — terminal disabled until next check-in`
+                    disablePadding
+                    secondaryAction={
+                      canDeploy ? (
+                        <Tooltip title="Edit tags" placement="left">
+                          <IconButton
+                            size="small"
+                            onClick={() => setTagEditDevice(d)}
+                            sx={{ p: 0.3 }}
+                          >
+                            <LabelIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
+                          </IconButton>
+                        </Tooltip>
+                      ) : null
                     }
-                    placement="right"
                   >
-                    {/* span wraps disabled button so the tooltip still fires */}
-                    <span>
-                      <ListItemButton
-                        onClick={online ? () => openTerminal(d.name) : undefined}
-                        disabled={!online}
-                        sx={{
-                          borderRadius: 1,
-                          mx: 0.5,
-                          py: 0.4,
-                          // Disabled MUI buttons drop opacity globally; pin a
-                          // softer fade so the device name + status dot stay
-                          // legible (an offline device should still be
-                          // identifiable in the list).
-                          '&.Mui-disabled': { opacity: 0.55 },
-                        }}
-                      >
-                        <Box
+                    <Tooltip
+                      title={
+                        online
+                          ? 'Open terminal'
+                          : `${d.status} — terminal disabled until next check-in`
+                      }
+                      placement="right"
+                    >
+                      {/* span wraps disabled button so the tooltip still fires */}
+                      <span style={{ width: '100%' }}>
+                        <ListItemButton
+                          onClick={online ? () => openTerminal(d.name) : undefined}
+                          disabled={!online}
                           sx={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: '50%',
-                            mr: 1,
-                            flexShrink: 0,
-                            bgcolor: online
-                              ? 'success.main'
-                              : d.status === 'offline'
-                                ? 'error.main'
-                                : 'warning.main',
+                            borderRadius: 1,
+                            mx: 0.5,
+                            py: 0.4,
+                            // Right-pad to leave room for the secondaryAction
+                            // icon (~32px wide) so it doesn't overlap the
+                            // device name on long rows.
+                            pr: canDeploy ? 5 : 4,
+                            '&.Mui-disabled': { opacity: 0.55 },
                           }}
-                        />
-                        <ListItemText
-                          primary={d.name}
-                          secondary={
-                            <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.4, flexWrap: 'wrap' }}>
-                              {d.group_id && (
-                                <Box component="span" sx={{ fontSize: '0.66rem', color: 'text.secondary' }}>
-                                  {d.group_id}
-                                </Box>
-                              )}
-                              {(d.tags ?? []).map((t) => (
-                                <Box
-                                  key={t}
-                                  component="span"
-                                  sx={{
-                                    fontSize: '0.6rem',
-                                    fontFamily: '"JetBrains Mono", monospace',
-                                    bgcolor: 'action.selected',
-                                    color: 'text.primary',
-                                    px: 0.5,
-                                    py: 0.05,
-                                    borderRadius: 0.5,
-                                    lineHeight: 1.4,
-                                  }}
-                                >
-                                  {t}
-                                </Box>
-                              ))}
-                            </Box>
-                          }
-                          primaryTypographyProps={{
-                            sx: { fontSize: '0.78rem', fontWeight: 500 },
-                          }}
-                          secondaryTypographyProps={{ component: 'div' }}
-                        />
-                        {canDeploy && (
-                          <Tooltip title="Edit tags" placement="left">
-                            <IconButton
-                              size="small"
-                              // Stop the row-click (terminal open) when
-                              // hitting the tag icon; this opens the
-                              // tag-edit modal instead.
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                setTagEditDevice(d)
-                              }}
-                              sx={{ p: 0.3, mr: 0.3 }}
-                            >
-                              <LabelIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
-                            </IconButton>
-                          </Tooltip>
-                        )}
-                        <TerminalIcon
-                          sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
-                        />
-                      </ListItemButton>
-                    </span>
-                  </Tooltip>
+                        >
+                          <Box
+                            sx={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: '50%',
+                              mr: 1,
+                              flexShrink: 0,
+                              bgcolor: online
+                                ? 'success.main'
+                                : d.status === 'offline'
+                                  ? 'error.main'
+                                  : 'warning.main',
+                            }}
+                          />
+                          <ListItemText
+                            primary={d.name}
+                            secondary={
+                              <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.4, flexWrap: 'wrap' }}>
+                                {d.group_id && (
+                                  <Box component="span" sx={{ fontSize: '0.66rem', color: 'text.secondary' }}>
+                                    {d.group_id}
+                                  </Box>
+                                )}
+                                {(d.tags ?? []).map((t) => (
+                                  <Box
+                                    key={t}
+                                    component="span"
+                                    sx={{
+                                      fontSize: '0.6rem',
+                                      fontFamily: '"JetBrains Mono", monospace',
+                                      bgcolor: 'action.selected',
+                                      color: 'text.primary',
+                                      px: 0.5,
+                                      py: 0.05,
+                                      borderRadius: 0.5,
+                                      lineHeight: 1.4,
+                                    }}
+                                  >
+                                    {t}
+                                  </Box>
+                                ))}
+                              </Box>
+                            }
+                            primaryTypographyProps={{
+                              sx: { fontSize: '0.78rem', fontWeight: 500 },
+                            }}
+                            secondaryTypographyProps={{ component: 'div' }}
+                          />
+                          <TerminalIcon
+                            sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
+                          />
+                        </ListItemButton>
+                      </span>
+                    </Tooltip>
+                  </ListItem>
                 )
               })}
             </List>

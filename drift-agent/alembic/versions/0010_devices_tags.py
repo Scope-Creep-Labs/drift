@@ -37,20 +37,14 @@ def upgrade() -> None:
             server_default=sa.text("'[]'::jsonb"),
         ),
     )
-    # Backfill: seed each device's tags from its group_id so legacy
-    # group-targeted commands still work via tag-based filters.
-    op.execute(
-        """
-        UPDATE devices
-           SET tags = jsonb_build_array(group_id)
-         WHERE group_id IS NOT NULL
-           AND group_id <> ''
-           AND tags = '[]'::jsonb
-        """
-    )
-    # GIN index for fast "tag in array" queries: tags @> '["edge"]'
-    # uses this index. Most operator filters touch 1-3 tags so the
-    # index pays off quickly.
+    # NO backfill from group_id — tags and group_id are intentionally
+    # decoupled. group_id is the access-control unit (admins scoped to
+    # groups); tags are filter metadata operators apply explicitly.
+    # If we backfilled, deleting the auto-tag would create a confusing
+    # mismatch: device still in group "home" but tag "home" missing,
+    # so tag-filter for "home" skips a device that's literally in
+    # group home. Cleaner to start tags empty and let operators tag
+    # what they want.
     op.create_index(
         "ix_devices_tags",
         "devices",

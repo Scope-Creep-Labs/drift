@@ -138,6 +138,12 @@ export function TagEditModal({
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
           Tags are case-insensitive and stripped. Press Enter or comma to add.
         </Typography>
+        {device.group_id && (
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+            Group <code style={{ fontFamily: 'monospace' }}>{device.group_id}</code> is separate
+            from tags — it controls access (admins scoped to groups) and isn't affected by edits here.
+          </Typography>
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} size="small" disabled={saving}>Cancel</Button>
