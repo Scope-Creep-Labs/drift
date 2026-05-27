@@ -37,6 +37,15 @@ RUN pip install --upgrade pip wheel \
 # ---- Runtime ----
 FROM python:3.12-slim AS runtime
 
+# Stamped at build time by package-release.sh (`--build-arg
+# VERSION=vX.Y.Z`); read at runtime via docker inspect on the
+# running container by the admin/updates poller so the modal can
+# show the operator the EXACT image version executing right now —
+# distinct from the bundle (install.sh / docker-compose.yml) version.
+ARG VERSION=dev
+LABEL org.opencontainers.image.version=$VERSION
+ENV DRIFT_IMAGE_VERSION=$VERSION
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app

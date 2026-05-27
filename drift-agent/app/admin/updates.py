@@ -68,6 +68,10 @@ class ImageStatus:
     description: str
     current_digest: Optional[str] = None    # digest of the running container's image
     available_digest: Optional[str] = None  # digest the registry reports for :tag
+    # `org.opencontainers.image.version` LABEL on the running container's
+    # image, stamped by package-release.sh's --build-arg VERSION=… at
+    # build time. Empty for images built before the labelling change.
+    current_version: Optional[str] = None
     update_available: bool = False
     last_check: Optional[str] = None        # ISO timestamp of the most recent poll
     error: Optional[str] = None             # populated on poll failure
@@ -156,42 +160,50 @@ async def _fetch_ghcr_digest(image: str, tag: str) -> str:
 
 # ---------- Local docker inspect ----------
 
-def _running_image_digest(compose_service: str) -> Optional[str]:
-    """Pull the RepoDigest of the running container for a compose
-    service. We look up by container_name=drift-<service>; we use
-    docker inspect via the socket because Python's docker SDK isn't
-    installed in the runtime image."""
+def _running_image_info(compose_service: str) -> tuple[Optional[str], Optional[str]]:
+    """Pull the RepoDigest + version-label off the running container.
+
+    Returns (digest, version) where:
+      - digest is a `sha256:...` string (the RepoDigest of the running
+        container's image, used for comparing against GHCR's
+        manifest digest), None if undetectable.
+      - version is the `org.opencontainers.image.version` LABEL on the
+        running image, None if absent (image built before the label
+        scheme).
+    """
     container = f"drift-{compose_service.removeprefix('drift-')}"
     try:
-        out = subprocess.check_output(
-            ["docker", "inspect", "--format", "{{json .Image}} {{json .Config.Image}}", container],
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+        image_id = subprocess.check_output(
+            ["docker", "inspect", "--format", "{{.Image}}", container],
+            stderr=subprocess.DEVNULL, timeout=5,
         ).decode().strip()
     except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    # First token = the image's content-addressed ID (sha256:...).
-    # We want the RepoDigest of the tag that container was started from.
-    # Use a second inspect on the image id to get RepoDigests.
-    parts = out.split(" ", 1)
-    if not parts:
-        return None
-    image_id = parts[0].strip('"')
+        return None, None
+    digest: Optional[str] = None
+    version: Optional[str] = None
     try:
-        digests_json = subprocess.check_output(
-            ["docker", "inspect", "--format", "{{json .RepoDigests}}", image_id],
-            stderr=subprocess.DEVNULL,
-            timeout=5,
+        out = subprocess.check_output(
+            [
+                "docker", "inspect", "--format",
+                # one shot: RepoDigests JSON + the version label
+                '{{json .RepoDigests}}|{{index .Config.Labels "org.opencontainers.image.version"}}',
+                image_id,
+            ],
+            stderr=subprocess.DEVNULL, timeout=5,
         ).decode().strip()
-        digests = json.loads(digests_json)
-    except (subprocess.SubprocessError, FileNotFoundError, json.JSONDecodeError):
-        return None
-    # Pick the one that matches our tracked image ref. Each entry looks
-    # like ghcr.io/owner/name@sha256:....
-    for d in digests:
-        if "@" in d:
-            return d.split("@", 1)[1]
-    return None
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None, None
+    if "|" in out:
+        digests_json, version = out.split("|", 1)
+        version = version.strip() or None
+        try:
+            for d in json.loads(digests_json):
+                if "@" in d:
+                    digest = d.split("@", 1)[1]
+                    break
+        except json.JSONDecodeError:
+            pass
+    return digest, version
 
 
 # ---------- Release notes (GitHub releases for drift-public) ----------
@@ -274,7 +286,7 @@ async def _poll_once() -> None:
             last_check=now,
         )
         try:
-            s.current_digest = _running_image_digest(entry["compose_service"])
+            s.current_digest, s.current_version = _running_image_info(entry["compose_service"])
             s.available_digest = await _fetch_ghcr_digest(entry["image"], entry["tag"])
             s.update_available = bool(
                 s.current_digest
@@ -354,31 +366,59 @@ def get_snapshot() -> dict:
     latest_release_tag = (_snapshot.releases[0].tag if _snapshot.releases else "") or ""
     iv = _version_tuple(installed)
     lv = _version_tuple(latest_release_tag)
-    # has_newer_release: at least one release exists with a higher
-    # version than the operator's installed tarball. Drives the
-    # "What's new" banner — the latest release's notes describe what
-    # they'd be upgrading to (whether via web image update or full
-    # re-install).
-    has_newer_release = bool(iv and lv and iv < lv)
-    # bundle_update_available: at least one of the PENDING releases
-    # (those newer than installed) carries a tarball asset, meaning a
-    # re-install is required to pick up install.sh / compose / config
-    # changes. Image-only releases (notes + tag, no tarball) leave
-    # this False — the web Update Now button is sufficient and the
-    # operator doesn't need a bundle-banner pestering them.
+
+    # image_update_pending: the running images are at a lower version
+    # than the latest release. This is what the "Update now" button
+    # addresses. Computed inline below after running_version is set.
+
+    # bundle_update_available: at least one PENDING release (newer than
+    # the installed tarball) carries a tarball asset → a re-install is
+    # required to pick up install.sh / compose / config changes. Image-
+    # only releases don't trigger this.
     bundle_update = False
-    if has_newer_release:
+    if iv and lv:
         for r in _snapshot.releases:
             rv = _version_tuple(r.tag)
-            if rv and iv and iv < rv and r.has_bundle_changes:
+            if rv and iv < rv and r.has_bundle_changes:
                 bundle_update = True
                 break
+
+    # running_version: the effective version of what's actually executing
+    # right now, derived from the image LABELs on each tracked container.
+    # If all services report the same version → that's it. If they
+    # disagree (e.g. mid-rollout) → the LOWEST, since the rollout isn't
+    # yet complete. None when no images carry the label (built before
+    # the labelling scheme).
+    versions = [
+        _version_tuple(i.current_version)
+        for i in _snapshot.images
+        if i.current_version
+    ]
+    running_version: Optional[str] = None
+    if versions and all(versions):
+        lowest = min(versions)
+        for i in _snapshot.images:
+            if i.current_version and _version_tuple(i.current_version) == lowest:
+                running_version = i.current_version
+                break
+
+    # image_update_pending: running images are at a lower version than
+    # the latest release. Computed here (after running_version is set).
+    rv = _version_tuple(running_version) if running_version else ()
+    image_update_pending = bool(rv and lv and rv < lv)
+
+    # has_newer_release: any kind of newer release the operator hasn't
+    # fully applied yet. Drives the "What's new" banner. False means
+    # the operator's effective state IS the latest release.
+    has_newer_release = image_update_pending or bundle_update
 
     return {
         "checked_at": _snapshot.checked_at,
         "install_version": installed or None,
+        "running_version": running_version,
         "latest_release_tag": latest_release_tag or None,
         "has_newer_release": has_newer_release,
+        "image_update_pending": image_update_pending,
         "bundle_update_available": bundle_update,
         "images": [asdict(i) for i in _snapshot.images],
         "edge_agent": {

@@ -183,6 +183,36 @@ if [ "$PUBLISH" = "true" ]; then
   # Use the version tag verbatim; if user passed a non-tag version like
   # 0.0.0-abc1234, this'll create the tag too.
   REL_TAG="$VERSION"
+
+  # ---------- build + push the images for this release ----------
+  # Every release ships images tagged BOTH `:latest` (so the running
+  # CP's `image: ghcr.io/.../X:latest` keeps picking up the newest)
+  # AND `:vX.Y.Z` (so the modal can read the exact version from the
+  # baked-in LABEL and tell the operator what's executing). One pass
+  # builds with --build-arg VERSION so the LABEL matches the tag.
+  echo "→ building + pushing images tagged :$REL_TAG and :latest"
+  for entry in \
+    "drift-agent:$REPO_ROOT/drift-agent/Dockerfile:$REPO_ROOT" \
+    "drift-frontend::$REPO_ROOT"
+  do
+    name="${entry%%:*}"
+    rest="${entry#*:}"
+    dockerfile="${rest%%:*}"
+    ctx="${rest#*:}"
+    image="ghcr.io/kidproquo/$name"
+    df_arg=()
+    [ -n "$dockerfile" ] && df_arg=(-f "$dockerfile")
+    echo "   $image:$REL_TAG"
+    docker build "${df_arg[@]}" \
+      --build-arg "VERSION=$REL_TAG" \
+      -t "$image:$REL_TAG" \
+      -t "$image:latest" \
+      "$ctx" >/dev/null
+    docker push "$image:$REL_TAG"  >/dev/null
+    docker push "$image:latest"    >/dev/null
+  done
+  echo "  ✓ images pushed"
+
   repo_arg=()
   if [ -n "$TARGET_REPO" ]; then
     echo "→ creating GitHub release $REL_TAG in $TARGET_REPO"

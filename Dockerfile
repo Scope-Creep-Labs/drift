@@ -29,6 +29,11 @@ RUN npm run build
 # ---- Serve via nginx ----
 FROM nginx:alpine AS runtime
 
+# Same version-label scheme as drift-agent — admin/updates reads this
+# via docker inspect so the modal can show what's actually running.
+ARG VERSION=dev
+LABEL org.opencontainers.image.version=$VERSION
+
 # Drop default config; ship our SPA + /api proxy
 RUN rm /etc/nginx/conf.d/default.conf
 COPY nginx.conf /etc/nginx/conf.d/drift.conf

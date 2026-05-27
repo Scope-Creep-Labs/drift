@@ -53,8 +53,10 @@ type ReleaseNote = {
 type Snapshot = {
   checked_at: string | null
   install_version: string | null
+  running_version: string | null
   latest_release_tag: string | null
   has_newer_release: boolean
+  image_update_pending: boolean
   bundle_update_available: boolean
   images: ImageStatus[]
   edge_agent: {
@@ -237,11 +239,19 @@ export function SoftwareUpdatesModal({
           <Stack spacing={2}>
             <Stack direction="row" spacing={2} alignItems="baseline" justifyContent="space-between">
               <Stack direction="row" spacing={1} alignItems="baseline">
-                <Typography variant="body2" color="text.secondary">Installed:</Typography>
+                <Typography variant="body2" color="text.secondary">Running:</Typography>
                 <Chip
                   size="small"
-                  label={snapshot.install_version || '(dev / unpackaged)'}
-                  color={snapshot.install_version && snapshot.install_version !== 'dev' ? 'primary' : 'default'}
+                  // Prefer running_version (read from image LABEL) over
+                  // install_version (the tarball install.sh recorded).
+                  // After an Update now succeeds, running_version
+                  // reflects the new image immediately — install_version
+                  // only changes on re-install.
+                  label={snapshot.running_version || snapshot.install_version || '(unknown)'}
+                  color={
+                    snapshot.running_version && snapshot.running_version !== 'dev'
+                      ? 'primary' : 'default'
+                  }
                   variant="outlined"
                   sx={{ fontFamily: 'monospace', fontWeight: 600 }}
                 />
@@ -251,9 +261,9 @@ export function SoftwareUpdatesModal({
                     <Chip
                       size="small"
                       label={snapshot.latest_release_tag}
-                      // Warning color only when re-install is required (bundle
-                      // changes); info color for image-only releases since
-                      // those are fully addressable via the Update now button.
+                      // Warning when bundle re-install is needed; info
+                      // when only an image update is pending (fully
+                      // addressable via the Update now button).
                       color={snapshot.bundle_update_available ? 'warning' : 'info'}
                       sx={{ fontFamily: 'monospace', fontWeight: 600 }}
                     />
@@ -264,6 +274,18 @@ export function SoftwareUpdatesModal({
                 Last checked: {snapshot.checked_at ? new Date(snapshot.checked_at).toLocaleString() : 'never'}
               </Typography>
             </Stack>
+
+            {/* When the bundle (install.sh) version differs from what's
+                running, surface it on a separate line so the operator
+                can see why a bundle re-install might still be pending
+                even though the images are current. */}
+            {snapshot.install_version &&
+              snapshot.running_version &&
+              snapshot.install_version !== snapshot.running_version && (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: -1 }}>
+                Bundle (install.sh): {snapshot.install_version}
+              </Typography>
+            )}
 
             {anyUpdate && !snapshot.has_newer_release && (
               <Alert severity="info">
@@ -280,31 +302,30 @@ export function SoftwareUpdatesModal({
 
             {snapshot.bundle_update_available && snapshot.latest_release_tag && (
               <Alert
-                severity="info"
-                variant="outlined"
-                sx={{ py: 0.5, '& .MuiAlert-message': { width: '100%' } }}
-              >
-                <Stack
-                  direction="row"
-                  spacing={1}
-                  alignItems="center"
-                  justifyContent="space-between"
-                  sx={{ width: '100%' }}
-                >
-                  <Typography variant="caption">
-                    A newer release ({snapshot.latest_release_tag}) ships bundle changes
-                    (install.sh / compose / config). Apply manually — see the release page.
-                  </Typography>
-                  <Link
+                severity="warning"
+                icon={<NewReleasesIcon />}
+                action={
+                  <Button
+                    color="warning"
+                    variant="contained"
+                    size="small"
                     href={`https://github.com/kidproquo/drift-public/releases/tag/${snapshot.latest_release_tag}`}
                     target="_blank"
                     rel="noopener"
-                    variant="caption"
-                    sx={{ whiteSpace: 'nowrap' }}
                   >
-                    View release →
-                  </Link>
-                </Stack>
+                    View release
+                  </Button>
+                }
+              >
+                <Typography variant="body2" fontWeight={600} sx={{ mb: 0.3 }}>
+                  Manual upgrade required for {snapshot.latest_release_tag}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  This release ships changes to install.sh / compose / config templates that the
+                  in-app updater can't safely apply (new env vars or compose changes can put the
+                  stack into a partial-config state). The Update now button is disabled until you
+                  re-extract the tarball on the CP host and run install.sh — see the release page.
+                </Typography>
               </Alert>
             )}
 
@@ -534,7 +555,13 @@ export function SoftwareUpdatesModal({
             variant="contained"
             startIcon={applying ? <CircularProgress size={14} /> : <UpdateIcon />}
             onClick={apply}
-            disabled={applying || !anyUpdate}
+            // Disabled when a bundle update is pending: bundle changes
+            // (install.sh, compose, configs) can't be partially applied
+            // by `docker compose up` alone — pulling new images against
+            // an old compose can leave the stack misconfigured. Force
+            // the manual re-install path; the bundle banner above tells
+            // the operator exactly what to do.
+            disabled={applying || !anyUpdate || snapshot?.bundle_update_available}
             size="small"
           >
             {applying ? 'Applying…' : 'Update now'}
