@@ -185,33 +185,60 @@ if [ "$PUBLISH" = "true" ]; then
   REL_TAG="$VERSION"
 
   # ---------- build + push the images for this release ----------
-  # Every release ships images tagged BOTH `:latest` (so the running
-  # CP's `image: ghcr.io/.../X:latest` keeps picking up the newest)
-  # AND `:vX.Y.Z` (so the modal can read the exact version from the
-  # baked-in LABEL and tell the operator what's executing). One pass
-  # builds with --build-arg VERSION so the LABEL matches the tag.
-  echo "→ building + pushing images tagged :$REL_TAG and :latest"
-  for entry in \
-    "drift-agent:$REPO_ROOT/drift-agent/Dockerfile:$REPO_ROOT" \
-    "drift-frontend::$REPO_ROOT"
-  do
-    name="${entry%%:*}"
-    rest="${entry#*:}"
-    dockerfile="${rest%%:*}"
-    ctx="${rest#*:}"
-    image="ghcr.io/kidproquo/$name"
-    df_arg=()
+  # Only rebuild + push images whose source changed since the previous
+  # release tag. Otherwise we'd stamp a fresh VERSION label on every
+  # image every release — producing a new digest with no real code
+  # change, which surfaces in the modal as a spurious "update
+  # available" for the unchanged service. The git-diff check below
+  # makes the image graph track actual code, not release cadence.
+  #
+  # Path mapping for each service — any change under these paths
+  # qualifies as a real source change:
+  #   drift-agent:    drift-agent/  +  edge-agent/  (the latter is
+  #                   COPY'd into the image at build time, so it's
+  #                   functionally part of drift-agent's sources)
+  #   drift-frontend: src/  +  index.html  +  Dockerfile  +
+  #                   package.json / package-lock.json  +
+  #                   vite.config.ts / tsconfig.json
+  #
+  # The previous-release tag is whatever `git describe --tags
+  # --abbrev=0` reports. First-ever release (no prior tag) → always
+  # build both.
+  LAST_TAG=$(git -C "$REPO_ROOT" describe --tags --abbrev=0 2>/dev/null || echo "")
+  echo "→ building + pushing images that changed since ${LAST_TAG:-(no prior tag)}"
+
+  paths_drift_agent="drift-agent edge-agent"
+  paths_drift_frontend="src index.html Dockerfile package.json package-lock.json vite.config.ts tsconfig.json"
+
+  build_image() {
+    local name=$1 dockerfile=$2 paths=$3
+    local image="ghcr.io/kidproquo/$name"
+    local changed="yes"
+    if [ -n "$LAST_TAG" ]; then
+      # shellcheck disable=SC2086
+      if [ -z "$(git -C "$REPO_ROOT" diff --name-only "$LAST_TAG" HEAD -- $paths 2>/dev/null | head -1)" ]; then
+        changed="no"
+      fi
+    fi
+    if [ "$changed" = "no" ]; then
+      echo "   $image: unchanged since $LAST_TAG, skipping"
+      return
+    fi
+    local df_arg=()
     [ -n "$dockerfile" ] && df_arg=(-f "$dockerfile")
     echo "   $image:$REL_TAG"
     docker build "${df_arg[@]}" \
       --build-arg "VERSION=$REL_TAG" \
       -t "$image:$REL_TAG" \
       -t "$image:latest" \
-      "$ctx" >/dev/null
+      "$REPO_ROOT" >/dev/null
     docker push "$image:$REL_TAG"  >/dev/null
     docker push "$image:latest"    >/dev/null
-  done
-  echo "  ✓ images pushed"
+  }
+
+  build_image drift-agent    "$REPO_ROOT/drift-agent/Dockerfile" "$paths_drift_agent"
+  build_image drift-frontend ""                                  "$paths_drift_frontend"
+  echo "  ✓ image build/push complete"
 
   repo_arg=()
   if [ -n "$TARGET_REPO" ]; then

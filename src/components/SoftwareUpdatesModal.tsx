@@ -132,61 +132,74 @@ export function SoftwareUpdatesModal({
     setApplying(true)
     setApplyResult(null)
     setError(null)
+
+    // Step 1 — dispatch the apply. drift-agent returns the JSON
+    // synchronously (helper is detached); we can detect immediate
+    // failures before drift-agent's own self-recreate kicks in.
+    let parsed: any = null
     try {
-      // The CP will recreate itself mid-request; this fetch may hang or
-      // return mid-stream. Either way the new container should come up
-      // within ~10s and the next poll will reflect the new digests.
       const res = await fetch(`${apiBase()}/admin/updates/apply`, {
         method: 'POST',
         credentials: 'include',
       })
-      // Response is JSON. Success path: helper container dispatched,
-      // drift-agent will recreate itself in ~3s and the SPA loses
-      // connection briefly. Failure path: error field populated OR
-      // helper_returncode non-zero.
-      let parsed: any = null
-      try { parsed = await res.json() } catch { /* not JSON, skip */ }
-      if (parsed?.error) {
-        setError(`update failed: ${parsed.error}`)
-        if (parsed.helper_output || parsed.pull_output) {
-          setApplyResult([parsed.helper_output, parsed.pull_output].filter(Boolean).join('\n').trim())
-        }
-      } else if (parsed?.helper_returncode != null && parsed.helper_returncode !== 0) {
-        setError('updater helper failed to start')
-        setApplyResult((parsed.helper_output || '').trim())
-      } else if (parsed?.applied?.length) {
-        setApplyResult(
-          `Recreating ${parsed.applied.join(', ')} in a detached helper. ` +
-          `Connection will drop briefly while drift-agent restarts.`,
-        )
-      } else {
-        setApplyResult('Update dispatched.')
+      parsed = await res.json().catch(() => null)
+    } catch {
+      // Network error before any response — could mean drift-agent died
+      // before responding (unlikely but possible). Treat as
+      // success-likely; the polling below confirms or contradicts.
+    }
+
+    if (parsed?.error) {
+      setError(`update failed: ${parsed.error}`)
+      if (parsed.helper_output || parsed.pull_output) {
+        setApplyResult([parsed.helper_output, parsed.pull_output].filter(Boolean).join('\n').trim())
       }
-    } catch (e) {
-      // Connection drop expected when drift-agent recreates itself —
-      // treat as success-likely.
-      setApplyResult('Connection dropped mid-update — usually normal. Re-polling…')
-    } finally {
       setApplying(false)
-      // Poll a few times, every 3s, with force=true so each iteration
-      // actually re-checks GHCR + the running containers (the cached
-      // GET would return drift-agent's pre-restart snapshot for the
-      // first few seconds). Stop as soon as a poll succeeds AND the
-      // drift-frontend digest has moved off the one we remember — that
-      // means the recreate is fully through and the SPA we're running
-      // is now stale (the next snapshot reflects the NEW container).
-      for (let i = 0; i < 15; i++) {
-        await new Promise((r) => setTimeout(r, 3000))
-        try {
-          await refresh(true)
-        } catch { continue }
-        // No need to keep polling once we've seen the frontend digest
-        // change — the user is about to hit Refresh anyway.
-        const live = snapshot?.images.find((s) => s.name === 'drift-frontend')?.current_digest
+      return
+    }
+    if (parsed?.helper_returncode != null && parsed.helper_returncode !== 0) {
+      setError('updater helper failed to start')
+      setApplyResult((parsed.helper_output || '').trim())
+      setApplying(false)
+      return
+    }
+
+    // Success path. Show one friendly message and KEEP `applying`=true
+    // through the entire poll-back window so the button stays in
+    // "Applying…" state. The needsRefresh banner takes over once the
+    // recreate is detected; we don't reset applyResult after that
+    // (the banner is the source of truth).
+    setApplyResult(
+      'Recreating containers in a detached helper. ' +
+      'The CP will briefly disconnect — this page will prompt you to refresh once it’s back.',
+    )
+
+    // Step 2 — poll up to 45s with force=true, swallowing connection
+    // errors silently (502 from Caddy while drift-agent restarts is
+    // expected, not a failure the user needs to see). Stop as soon as
+    // the drift-frontend digest moves off the one we remembered when
+    // the modal opened — that means the recreate is through.
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 3000))
+      try {
+        const res = await fetch(`${apiBase()}/admin/updates/check`, {
+          method: 'POST',
+          credentials: 'include',
+        })
+        if (!res.ok) continue  // 502/etc during restart — silent
+        const data: Snapshot = await res.json()
+        setSnapshot(data)
+        // Bail out as soon as the recreate completes.
+        const live = data.images.find((s) => s.name === 'drift-frontend')?.current_digest
         if (initialFrontendDigest && live && initialFrontendDigest !== live) break
+      } catch {
+        // network unreachable during restart — keep polling silently
+        continue
       }
     }
-  }, [refresh, initialFrontendDigest, snapshot])
+
+    setApplying(false)
+  }, [initialFrontendDigest])
 
   const anyUpdate = snapshot?.images.some((i) => i.update_available) ?? false
   // Newest release first; the first one expanded by default if an update
