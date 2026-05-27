@@ -70,11 +70,20 @@ export type Device = {
   agent_version: string | null
   group_id: string | null
   facts: Record<string, unknown> | null
+  tags: string[]
   created_at: string
 }
 
 export const deployApi = {
   listDevices: () => api<Device[]>('/devices'),
+
+  // Update a device's tag list. Server normalizes (lowercase + strip +
+  // dedupe). Use `set` for replace, `add`/`remove` for deltas.
+  patchDeviceTags: (name: string, body: { set?: string[]; add?: string[]; remove?: string[] }) =>
+    api<Device>(`/devices/${encodeURIComponent(name)}/tags`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
 
   listApps: () => api<App[]>('/apps'),
 

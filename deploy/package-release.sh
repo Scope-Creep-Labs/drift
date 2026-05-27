@@ -71,16 +71,21 @@ VERSION_FILE="${VERSION#v}"
 echo "→ packaging drift-deploy version: $VERSION"
 
 # ---------- dirty-tree check ----------
-DIRTY_FILES=$(git -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)
+DIRTY_FILES=$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || true)
 if [ -n "$DIRTY_FILES" ]; then
   if [ "$ALLOW_DIRTY" = "false" ]; then
-    echo "  ✗ deploy/ has uncommitted changes:" >&2
+    echo "  ✗ working tree has uncommitted changes:" >&2
     echo "$DIRTY_FILES" | sed 's/^/      /' >&2
     echo >&2
-    echo "  Commit them first, or re-run with --allow-dirty to package the working tree." >&2
+    echo "  Commit them first, or re-run with --allow-dirty." >&2
+    echo "  Why this matters: package-release.sh's smart-build diffs HEAD" >&2
+    echo "  against the previous release tag to decide which images need" >&2
+    echo "  rebuilding. Uncommitted changes in drift-agent/ or src/ would" >&2
+    echo "  ship into the tarball but be invisible to the diff → images" >&2
+    echo "  stale, tarball ahead." >&2
     exit 1
   fi
-  echo "  ⚠ deploy/ is dirty — packaging working tree (--allow-dirty)"
+  echo "  ⚠ working tree is dirty — packaging anyway (--allow-dirty)"
 fi
 
 # ---------- output dir ----------

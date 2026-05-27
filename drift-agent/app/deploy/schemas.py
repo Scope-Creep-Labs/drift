@@ -27,7 +27,21 @@ class DeviceOut(BaseModel):
     # interfaces, hostname, arch, os, kernel, docker_version.
     # Null on pre-v0.5.3 devices until they next check in.
     facts: Optional[dict] = None
+    # Normalized string tags (lowercase, stripped, deduped on write).
+    # Operator-facing: "deploy to all edge devices for client-z" →
+    # tag filter ["edge", "client-z"] with match-all semantics.
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
+
+
+class DeviceTagsUpdate(BaseModel):
+    """PATCH body for /api/deploy/devices/{name}/tags. Either `set`
+    (replace) or `add` + `remove` (delta). At least one of the three
+    fields must be present; all are normalized server-side."""
+
+    set: Optional[list[str]] = None
+    add: Optional[list[str]] = None
+    remove: Optional[list[str]] = None
 
 
 class DeviceCreate(BaseModel):

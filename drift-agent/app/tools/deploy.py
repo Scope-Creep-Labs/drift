@@ -47,6 +47,10 @@ def _device_dict(d: Device) -> dict:
         # Identity facts reported by the agent every ~10min. Null on
         # devices that haven't checked in since v0.5.3.
         "facts": d.facts,
+        # Normalized tags (lowercase, stripped, deduped on write).
+        # Use tag_device / list_devices(tag_filter) tools to manage +
+        # filter the fleet.
+        "tags": d.tags or [],
         "created_at": d.created_at.isoformat(),
     }
 
@@ -197,17 +201,69 @@ def _check_group_access(ctx: ToolContext, group_id: str | None) -> dict | None:
 # ---------- Discovery ----------
 
 
-async def list_devices(ctx: ToolContext, _args: dict) -> dict:
+async def list_devices(ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
     user = getattr(ctx, "user", None)
+    # Optional tag filter — match-all semantics. Operator typed
+    # ["edge", "client-z"] → returned devices have BOTH tags.
+    from ..deploy.tagging import normalize_tags, tag_filter_clause
+    raw_tags = (args or {}).get("tags") or []
+    if not isinstance(raw_tags, list):
+        return {"error": "tags must be a list of strings"}
+    required = normalize_tags(raw_tags)
     async with session() as s:
         q = select(Device).order_by(Device.created_at.desc())
         if user is not None and not user.is_admin:
             q = q.where(Device.group_id.in_(user.groups))
+        clause = tag_filter_clause(Device.tags, required)
+        if clause is not None:
+            q = q.where(clause)
         rows = await s.execute(q)
         devices = [_device_dict(d) for d in rows.scalars().all()]
-    return {"n": len(devices), "devices": devices}
+    return {"n": len(devices), "devices": devices, "tag_filter": required}
+
+
+async def tag_device(ctx: ToolContext, args: dict) -> dict:
+    """Add and/or remove tags on a device. Both fields normalize to
+    lowercase+stripped+deduped server-side. Use list_devices with a
+    tag_filter to verify the result."""
+    if (err := _require_deploy_role(ctx)):
+        return err
+    if (err := _ensure_deploy_enabled()):
+        return err
+    from ..deploy.tagging import normalize_tags
+    name = args.get("name")
+    if not name:
+        return {"error": "name is required"}
+    add = normalize_tags(args.get("add") or [])
+    remove = normalize_tags(args.get("remove") or [])
+    if not add and not remove:
+        return {"error": "specify add and/or remove (each a list of strings)"}
+    async with session() as s:
+        device = await _device_by_name(s, name)
+        if device is None:
+            return {"error": f"device '{name}' not found"}
+        if (err := _check_group_access(ctx, device.group_id)):
+            return err
+        current = list(device.tags or [])
+        # Set-style additions, preserving order: keep existing, append
+        # new entries that weren't already present.
+        for t in add:
+            if t not in current:
+                current.append(t)
+        if remove:
+            current = [t for t in current if t not in remove]
+        # Re-normalize once more in case current got out of sync from
+        # legacy data (very old rows might be unnormalized).
+        device.tags = normalize_tags(current)
+        await s.commit()
+        await s.refresh(device)
+    return {
+        "device": _device_dict(device),
+        "added": add,
+        "removed": remove,
+    }
 
 
 async def get_device(ctx: ToolContext, args: dict) -> dict:
@@ -1241,14 +1297,209 @@ async def deploy_revision_to_group(ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def deploy_revision_to_tags(ctx: ToolContext, args: dict) -> dict:
+    """Deploy an app to every device matching ALL of the given tags.
+
+    Tag filter is match-all (set inclusion): tags=["edge","client-z"]
+    targets devices whose tag set is a superset of {edge, client-z}.
+    Mirrors deploy_revision_to_group's bulk-deploy semantics including
+    container-name conflict pre-flight, paused_retries reset, and the
+    skip-offline default.
+
+    Group-based access control still applies: non-admins are restricted
+    to devices in their allowed groups even if the tag filter matches
+    a wider set.
+    """
+    if (err := _require_deploy_role(ctx)):
+        return err
+    if (err := _ensure_deploy_enabled()):
+        return err
+    from ..deploy.tagging import normalize_tags, tag_filter_clause
+    app_name = args.get("app")
+    raw_tags = args.get("tags") or []
+    if not app_name:
+        return {"error": "app is required"}
+    if not isinstance(raw_tags, list) or not raw_tags:
+        return {"error": "tags must be a non-empty list of strings"}
+    required = normalize_tags(raw_tags)
+    if not required:
+        return {"error": "tags contained no valid entries after normalization"}
+    revision_id_str = args.get("revision_id")
+    include_offline = bool(args.get("include_offline", False))
+    max_retries_raw = args.get("max_retries")
+    max_retries: int | None = None
+    if max_retries_raw is not None:
+        try:
+            max_retries = int(max_retries_raw)
+            if max_retries < 1 or max_retries > 100:
+                return {"error": "max_retries must be between 1 and 100"}
+        except (TypeError, ValueError):
+            return {"error": f"max_retries must be an integer, got {max_retries_raw!r}"}
+
+    user = getattr(ctx, "user", None)
+    async with session() as s:
+        app = await _app_by_name(s, app_name)
+        if app is None:
+            return {"error": f"app '{app_name}' not found"}
+
+        q = select(Device).where(tag_filter_clause(Device.tags, required))
+        if user is not None and not user.is_admin:
+            q = q.where(Device.group_id.in_(user.groups))
+        rows = await s.execute(q)
+        devices = rows.scalars().all()
+        if not devices:
+            return {
+                "error": (
+                    f"no devices match tags={required}. "
+                    f"Check tag spelling + scope with `list_devices(tags={required})`."
+                ),
+            }
+
+        # Resolve revision once (latest unless explicit).
+        rev: AppRevision | None
+        if revision_id_str:
+            try:
+                rev_id = uuid.UUID(revision_id_str)
+            except ValueError:
+                return {"error": f"revision_id is not a valid uuid: {revision_id_str}"}
+            rev = (await s.execute(
+                select(AppRevision).where(AppRevision.id == rev_id, AppRevision.app_id == app.id)
+            )).scalar_one_or_none()
+            if rev is None:
+                return {"error": "revision_id does not belong to that app"}
+        else:
+            rev = (await s.execute(
+                select(AppRevision).where(AppRevision.app_id == app.id).order_by(AppRevision.version.desc()).limit(1)
+            )).scalar_one_or_none()
+            if rev is None:
+                return {"error": f"app '{app_name}' has no revisions yet"}
+
+        # Conflict pre-flight — aggregate across every targeted device
+        # so the operator gets one comprehensive response (same as
+        # deploy_revision_to_group).
+        per_device_conflicts: list[dict] = []
+        for device in devices:
+            if device.status != "online" and not include_offline:
+                continue
+            conflicts = await _container_name_conflicts(s, device.id, rev.files or {}, app.id)
+            if conflicts:
+                per_device_conflicts.append({"device": device.name, "conflicts": conflicts})
+        if per_device_conflicts:
+            all_conflicting_apps = sorted({
+                c["conflicting_app"]
+                for pd in per_device_conflicts
+                for c in pd["conflicts"]
+            })
+            return {
+                "warning": "container_name conflicts on one or more targets",
+                "app": app_name,
+                "tags": required,
+                "desired_version": rev.version,
+                "per_device": per_device_conflicts,
+                "conflicting_apps": all_conflicting_apps,
+                "note": (
+                    f"{len(per_device_conflicts)} device(s) matching tags={required} have "
+                    f"container_name conflicts with {', '.join(all_conflicting_apps)}. "
+                    f"Resolve via REPLACE (delete the conflicting deployments first, "
+                    f"then re-deploy) or CANCEL. No force option."
+                ),
+            }
+
+        results = []
+        skipped = []
+        for device in devices:
+            if device.status != "online" and not include_offline:
+                skipped.append({"device": device.name, "reason": f"status={device.status}"})
+                continue
+            existing = (await s.execute(
+                select(DeploymentTarget).where(
+                    DeploymentTarget.device_id == device.id,
+                    DeploymentTarget.app_id == app.id,
+                )
+            )).scalar_one_or_none()
+            if existing is None:
+                existing = DeploymentTarget(
+                    device_id=device.id,
+                    app_id=app.id,
+                    desired_revision_id=rev.id,
+                    status="pending",
+                    **({"max_retries": max_retries} if max_retries is not None else {}),
+                )
+                s.add(existing)
+                action = "created"
+            else:
+                prior_revision = existing.desired_revision_id
+                existing.desired_revision_id = rev.id
+                if max_retries is not None:
+                    existing.max_retries = max_retries
+                revision_changed = prior_revision != rev.id
+                is_paused = existing.status == "paused_retries"
+                if revision_changed or is_paused:
+                    existing.status = "pending"
+                    existing.last_error = None
+                    existing.attempts = 0
+                action = "updated"
+            results.append({"device": device.name, "action": action})
+        await s.commit()
+
+    return {
+        "app": app_name,
+        "tags": required,
+        "desired_version": rev.version,
+        "deployed_to": results,
+        "skipped": skipped,
+        "note": "Each device's edge agent will pick this up on its next check-in (≤30s).",
+    }
+
+
 # ---------- Schemas + handler registry ----------
 
 
 DEPLOY_TOOLS: list[dict] = [
     {
         "name": "list_devices",
-        "description": "List devices known to Drift Deploy with status (pending/online/offline), last_seen, and agent version.",
-        "input_schema": {"type": "object", "properties": {}},
+        "description": (
+            "List devices known to Drift Deploy with status (pending/online/offline), "
+            "last_seen, agent version, and tags. Optional `tags` arg filters to devices "
+            "that carry ALL listed tags (match-all). Tags are case-insensitive and "
+            "stripped on read."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional. Match devices that carry ALL of these tags.",
+                },
+            },
+        },
+    },
+    {
+        "name": "tag_device",
+        "description": (
+            "Add and/or remove free-form tags on a device. Tags are normalized "
+            "(lowercase, stripped, deduped) server-side, so `Edge`, ` edge `, and "
+            "`EDGE` all become `edge`. Use list_devices with tag_filter to verify "
+            "the result. Required role: deploy."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Device name to update."},
+                "add": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags to add (idempotent — existing tags are kept).",
+                },
+                "remove": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Tags to remove (idempotent — missing tags are ignored).",
+                },
+            },
+            "required": ["name"],
+        },
     },
     {
         "name": "get_device",
@@ -1583,11 +1834,49 @@ DEPLOY_TOOLS: list[dict] = [
             "required": ["app", "group_id"],
         },
     },
+    {
+        "name": "deploy_revision_to_tags",
+        "description": (
+            "Deploy an app revision to every device matching ALL of the given tags. "
+            "Use this for 'deploy reporter to all edge devices for client-z' style prompts "
+            "— tags=['edge','client-z'] targets devices whose tags include BOTH. Same "
+            "offline-skip + conflict pre-flight + max_retries semantics as "
+            "deploy_revision_to_group; group-based access control still scopes non-admins "
+            "to their allowed groups regardless of tag breadth."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "app": {"type": "string"},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Match-all tag filter. Each tag is case-insensitive and stripped server-side.",
+                },
+                "revision_id": {
+                    "type": "string",
+                    "description": "Optional uuid; defaults to the latest revision.",
+                },
+                "include_offline": {
+                    "type": "boolean",
+                    "description": "Include devices whose status != 'online'. Default false.",
+                },
+                "max_retries": {
+                    "type": "integer",
+                    "description": "Cap on consecutive apply failures before each target is paused (1–100).",
+                    "minimum": 1,
+                    "maximum": 100,
+                },
+            },
+            "required": ["app", "tags"],
+        },
+    },
 ]
 
 
 DEPLOY_HANDLERS = {
     "list_devices": list_devices,
+    "tag_device": tag_device,
     "get_device": get_device,
     "commission_device": commission_device,
     "delete_device": delete_device,
@@ -1601,6 +1890,7 @@ DEPLOY_HANDLERS = {
     "fork_app": fork_app,
     "deploy_revision": deploy_revision,
     "deploy_revision_to_group": deploy_revision_to_group,
+    "deploy_revision_to_tags": deploy_revision_to_tags,
     "retry_deployment": retry_deployment,
     "restart_app_on_device": restart_app_on_device,
     "restart_app_in_group": restart_app_in_group,

@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -47,6 +48,16 @@ class Device(Base):
     # latest snapshot wins). For operational metrics (disk, mem, uptime)
     # use the time-series in VictoriaMetrics via node-exporter.
     facts: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    # Free-form normalized string tags. All writes go through
+    # `normalize_tags()` in deploy/tagging.py: lowercase, strip, dedupe.
+    # Operator-facing "deploy reporter to all edge devices for client-z"
+    # → tags filter ["edge", "client-z"], match-all semantics.
+    tags: Mapped[list] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now_utc, nullable=False)
 
 

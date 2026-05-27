@@ -24,6 +24,7 @@ from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
 from .models import App, AppRevision, Device, DeploymentTarget, RegistryCredential
+from .tagging import normalize_tags
 from .schemas import (
     AppCreate,
     AppOut,
@@ -35,6 +36,7 @@ from .schemas import (
     DeviceCreate,
     DeviceCreated,
     DeviceOut,
+    DeviceTagsUpdate,
     RegistryCredentialOut,
     RegistryCredentialSet,
 )
@@ -123,6 +125,39 @@ async def delete_device(
     _check_group_access(user, device.group_id)
     await db.delete(device)
     await db.commit()
+
+
+@router.patch("/devices/{name}/tags", response_model=DeviceOut)
+async def patch_device_tags(
+    name: str,
+    body: DeviceTagsUpdate,
+    user: UserContext = Depends(require_role("deploy")),
+    db: AsyncSession = Depends(get_db),
+) -> DeviceOut:
+    """Update a device's tags. `set` replaces the full list; `add` and
+    `remove` apply deltas. All values are normalized server-side
+    (lowercase, stripped, deduped)."""
+    if body.set is None and not body.add and not body.remove:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "provide one of: set, add, remove")
+    row = await db.execute(select(Device).where(Device.name == name))
+    device = row.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"device '{name}' not found")
+    _check_group_access(user, device.group_id)
+    if body.set is not None:
+        device.tags = normalize_tags(body.set)
+    else:
+        current = list(device.tags or [])
+        for t in normalize_tags(body.add or []):
+            if t not in current:
+                current.append(t)
+        for t in normalize_tags(body.remove or []):
+            if t in current:
+                current.remove(t)
+        device.tags = normalize_tags(current)
+    await db.commit()
+    await db.refresh(device)
+    return DeviceOut.model_validate(device, from_attributes=True)
 
 
 def _render_install_cmd(name: str, token: str, group_id: str) -> str:

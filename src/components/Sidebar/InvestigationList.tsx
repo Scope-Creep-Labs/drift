@@ -31,7 +31,9 @@ import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
 import { SoftwareUpdatesModal } from '../SoftwareUpdatesModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
-import { type App, type DeploymentTarget } from '../../lib/deployApi'
+import { type App, type DeploymentTarget, type Device } from '../../lib/deployApi'
+import { TagEditModal } from '../TagEditModal'
+import LabelIcon from '@mui/icons-material/LabelOutlined'
 
 // Roll-up of a single app's deployment state across the whole fleet.
 // "worst wins" so a single failing target colors the row attention-y.
@@ -113,6 +115,7 @@ export function InvestigationList() {
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [updatesModalOpen, setUpdatesModalOpen] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
+  const [tagEditDevice, setTagEditDevice] = useState<Device | null>(null)
   // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
   // each section gets the full content height instead of fighting for
   // 38% of the sidebar. Defaults to Conversations (matches prior UX).
@@ -149,16 +152,16 @@ export function InvestigationList() {
   }, [devices, user])
 
   // Final list with the search filter applied. Substring match on
-  // name + group_id so operators can narrow by either ("pi" or
-  // "edge"). The filter input itself is only shown when the
-  // accessible list is long enough to merit one (>5).
+  // name + group_id + any tag, so operators can narrow with
+  // any of those identifiers ("pi", "edge", "client-z").
   const visibleDevices = useMemo(() => {
     const needle = deviceFilter.trim().toLowerCase()
     if (!needle) return accessibleDevices
     return accessibleDevices.filter(
       (d) =>
         d.name.toLowerCase().includes(needle) ||
-        (d.group_id ?? '').toLowerCase().includes(needle),
+        (d.group_id ?? '').toLowerCase().includes(needle) ||
+        (d.tags ?? []).some((t) => t.toLowerCase().includes(needle)),
     )
   }, [accessibleDevices, deviceFilter])
   // Until the first refresh completes, render the empty/loading state
@@ -404,12 +407,55 @@ export function InvestigationList() {
                         />
                         <ListItemText
                           primary={d.name}
-                          secondary={d.group_id ?? undefined}
+                          secondary={
+                            <Box component="span" sx={{ display: 'flex', alignItems: 'center', gap: 0.4, flexWrap: 'wrap' }}>
+                              {d.group_id && (
+                                <Box component="span" sx={{ fontSize: '0.66rem', color: 'text.secondary' }}>
+                                  {d.group_id}
+                                </Box>
+                              )}
+                              {(d.tags ?? []).map((t) => (
+                                <Box
+                                  key={t}
+                                  component="span"
+                                  sx={{
+                                    fontSize: '0.6rem',
+                                    fontFamily: '"JetBrains Mono", monospace',
+                                    bgcolor: 'action.selected',
+                                    color: 'text.primary',
+                                    px: 0.5,
+                                    py: 0.05,
+                                    borderRadius: 0.5,
+                                    lineHeight: 1.4,
+                                  }}
+                                >
+                                  {t}
+                                </Box>
+                              ))}
+                            </Box>
+                          }
                           primaryTypographyProps={{
                             sx: { fontSize: '0.78rem', fontWeight: 500 },
                           }}
-                          secondaryTypographyProps={{ sx: { fontSize: '0.66rem' } }}
+                          secondaryTypographyProps={{ component: 'div' }}
                         />
+                        {canDeploy && (
+                          <Tooltip title="Edit tags" placement="left">
+                            <IconButton
+                              size="small"
+                              // Stop the row-click (terminal open) when
+                              // hitting the tag icon; this opens the
+                              // tag-edit modal instead.
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setTagEditDevice(d)
+                              }}
+                              sx={{ p: 0.3, mr: 0.3 }}
+                            >
+                              <LabelIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
+                            </IconButton>
+                          </Tooltip>
+                        )}
                         <TerminalIcon
                           sx={{ fontSize: 14, color: 'text.disabled', ml: 1 }}
                         />
@@ -640,6 +686,17 @@ export function InvestigationList() {
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
       <SoftwareUpdatesModal open={updatesModalOpen} onClose={() => setUpdatesModalOpen(false)} />
+      <TagEditModal
+        open={tagEditDevice !== null}
+        device={tagEditDevice}
+        onClose={() => setTagEditDevice(null)}
+        onSaved={() => {
+          // refreshFleet pulls the canonical device list from the API
+          // and updates the sidebar store, which causes our row to
+          // re-render with the new tags. The modal closes itself.
+          refreshFleet?.()
+        }}
+      />
       {/* TerminalModal is mounted at the App root via useTerminalUiStore
           — any surface (sidebar row, chat action card) can open it. */}
     </Stack>
