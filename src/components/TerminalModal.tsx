@@ -36,6 +36,21 @@ export function TerminalModal({
   const wsRef = useRef<WebSocket | null>(null)
   const [phase, setPhase] = useState<Phase>('creating')
   const [errMsg, setErrMsg] = useState<string | null>(null)
+  // Seconds elapsed since the WS opened in 'waiting' state. The edge
+  // agent polls every POLL_INTERVAL (default 30s), so worst-case wait
+  // for a session to land is one poll cycle — showing the counter
+  // makes that bound concrete for the operator.
+  const [waitingSeconds, setWaitingSeconds] = useState(0)
+
+  useEffect(() => {
+    if (phase !== 'waiting') {
+      setWaitingSeconds(0)
+      return
+    }
+    setWaitingSeconds(0)
+    const tick = setInterval(() => setWaitingSeconds((s) => s + 1), 1000)
+    return () => clearInterval(tick)
+  }, [phase])
 
   useEffect(() => {
     if (!open) return
@@ -246,7 +261,11 @@ export function TerminalModal({
                 phase === 'creating'
                   ? 'creating…'
                   : phase === 'waiting'
-                    ? 'waiting for agent…'
+                    // Show elapsed wait with the 30s upper bound so the
+                    // operator knows the max patience required (edge
+                    // agent polls every POLL_INTERVAL = 30s; worst-case
+                    // session-land is one tick).
+                    ? `waiting for agent… ${waitingSeconds}s / 30s`
                     : phase === 'connected'
                       ? 'connected'
                       : phase === 'closed'
