@@ -453,21 +453,33 @@ export function SoftwareUpdatesModal({
                   <div>current:&nbsp;&nbsp;{shortDigest(img.current_digest)}</div>
                   <div>latest:&nbsp;&nbsp;&nbsp;{shortDigest(img.available_digest)}</div>
                 </Box>
+
+                {/* edge-agent script ships INSIDE drift-agent's image
+                    (/opt/edge-agent/), so it's logically a sub-component.
+                    Render its details only inside the drift-agent card. */}
+                {img.name === 'drift-agent' && (
+                  <Box
+                    sx={{
+                      mt: 1,
+                      pt: 1,
+                      borderTop: 1,
+                      borderColor: 'divider',
+                    }}
+                  >
+                    <Typography variant="caption" fontWeight={600} sx={{ display: 'block', mb: 0.3 }}>
+                      edge-agent (bundled)
+                    </Typography>
+                    <Box sx={{ fontFamily: 'monospace', fontSize: '0.7rem', color: 'text.secondary' }}>
+                      <div>version: {snapshot.edge_agent.version ?? '—'}</div>
+                      <div>sha:&nbsp;&nbsp;&nbsp;&nbsp; {snapshot.edge_agent.sha ?? '—'}</div>
+                    </Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                      {snapshot.edge_agent.note}
+                    </Typography>
+                  </Box>
+                )}
               </Box>
             ))}
-            <Box sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}>
-              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>edge-agent</Typography>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                Bundled with this drift-agent image. Devices auto-update on next check-in.
-              </Typography>
-              <Box sx={{ fontFamily: 'monospace', fontSize: '0.7rem', color: 'text.secondary' }}>
-                <div>version: {snapshot.edge_agent.version ?? '—'}</div>
-                <div>sha:&nbsp;&nbsp;&nbsp;&nbsp; {snapshot.edge_agent.sha ?? '—'}</div>
-              </Box>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
-                {snapshot.edge_agent.note}
-              </Typography>
-            </Box>
 
             {releases.length > 0 && (
               <Box>
