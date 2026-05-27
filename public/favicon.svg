@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!--
+    Drift mark — a sparkline along a stable baseline that lifts off
+    at the right end, terminating in a single dot. Visual metaphor:
+    something has drifted from the expected envelope. Brand accent
+    color (#7c9cff, matches theme.ts primary.main) reads on both
+    light and dark browser chrome.
+  -->
+  <path
+    d="M 2.5 16
+       Q 5.5 14.5 8.5 15.7
+       Q 11.5 17 13.5 15.8
+       C 16.5 14 18.5 9 20.8 5.2"
+    stroke="#7c9cff"
+    stroke-width="2.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <circle cx="20.8" cy="5.2" r="1.8" fill="#7c9cff" />
+</svg>
