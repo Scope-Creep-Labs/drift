@@ -75,6 +75,14 @@ services:
       - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc|var/lib/docker)($$|/)"
       - "--collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|cgroup|cgroup2|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs)$$"
       - "--collector.textfile.directory=/var/lib/node_exporter/textfile_collector"
+      # cpufreq collector reads /sys/.../cpufreq/stats/trans_table which
+      # is "file too large" on NVIDIA Jetson and some other ARM SoCs
+      # (the kernel exposes a giant frequency-transition matrix). The
+      # collector blows up the whole scrape on those hosts. Disable it
+      # everywhere; per-CPU frequency is rarely a load-bearing signal
+      # in app monitoring, and basic load/usage still come from the
+      # `cpu` collector which is unaffected.
+      - "--no-collector.cpufreq"
     volumes:
       - /proc:/host/proc:ro
       - /sys:/host/sys:ro
