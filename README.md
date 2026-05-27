@@ -1,29 +1,139 @@
 # Drift
 
-**Prompt-driven observability + fleet deployment.** Ask questions about your telemetry in plain language; an LLM agent picks the right tools, queries your VictoriaMetrics / Prometheus, runs statistical analysis, and assembles a rich response — markdown, charts, tables, metric cards, timelines — that streams progressively into the UI as the investigation unfolds. From the same chat, tag devices, ship docker-compose apps to your fleet, and restart what's drifting — observe, deploy, respond, all from a prompt.
+**Observe, deploy, respond. From a prompt.**
 
-> 📐 For the full architecture deep dive (data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference), see [ARCHITECTURE.md](./ARCHITECTURE.md).
+Drift is a prompt-driven control plane for time-series systems and edge fleets. You ask questions or give instructions in plain language; an LLM agent picks the right tools, queries your VictoriaMetrics / Prometheus, runs statistical analysis, ships compose bundles to your devices, manages alert rules, and assembles a rich response — markdown, charts, tables, metric cards, timelines — that streams progressively into the UI as the work unfolds.
+
+```
+prompt → agent (tool use → metrics / fleet / alerts) → streaming render blocks → UI
+```
+
+> 📐 [ARCHITECTURE.md](./ARCHITECTURE.md) — data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference.
 >
-> 🚨 For the alerting subsystem (vmalert + Alertmanager + the agent's 14 alert tools, with end-to-end workflows), see [ALERTING.md](./ALERTING.md).
+> 🚀 [DEPLOY.md](./DEPLOY.md) — Drift Deploy: fleet management, compose-app delivery, scenarios.
 >
-> 🚀 For Drift Deploy — fleet management & compose-app deployment via the prompt UI — see [DEPLOY.md](./DEPLOY.md) (currently in the `drift-deploy` branch).
+> 🚨 [ALERTING.md](./ALERTING.md) — vmalert + Alertmanager + the agent's 14 alert tools, end-to-end workflows.
 >
-> 📦 For a **single-server bundle** (VM stack + Drift CP + Caddy/TLS on one box) with a guided installer, see [deploy/README.md](./deploy/README.md).
+> 📦 [deploy/README.md](./deploy/README.md) — single-server bundle (VM stack + Drift CP + Caddy/TLS on one box) with a guided installer.
+
+---
+
+## What you can do
+
+Three pillars, all driven from the same chat. The agent uses ~30 tools across them; you don't pick the tools, you describe the goal.
+
+### 🔍 Observe — investigate what's happening
+
+Ask anything about your telemetry. The agent discovers what metrics exist, picks the right query, fetches the data (which never enters the LLM context — see [the dataRef pattern](./ARCHITECTURE.md#the-dataref-pattern)), runs statistics, and assembles a streamed response with charts, tables, summaries, and timelines.
+
+```text
+> Which hosts are reporting metrics, and what jobs are scraping?
+> Show CPU usage on the host over the last 15 minutes.
+> Which containers are using the most memory right now?
+> Look for anomalies in network traffic over the last hour.
+> Compare p95 request latency between dev-cloud and edge devices last week.
+> Plot disk I/O on jetson-002 every 5 seconds.        ← live chart
+> Now change the refresh rate to 1s.                  ← mutates the same chart in place
+> Pull the last 200 error lines from dev-hetzner.     ← log search via VictoriaLogs
+```
+
+Outputs: streaming markdown narration, Plotly charts, sortable tables, metric cards with sparkline trends, event timelines, live-refreshing charts.
+
+### 🚀 Deploy — manage your fleet
+
+Drift Deploy registers each device with a small edge agent that polls the control plane every 30s, applies whatever compose bundles you've assigned, and reports back. You drive the whole thing from the same prompt UI — devices, apps, revisions, tagging, deploy-by-tag, rollback. RBAC + per-group scoping keeps non-admins out of devices that aren't theirs. See [DEPLOY.md](./DEPLOY.md) for the full scenario catalog.
+
+```text
+> List devices and their groups.
+> Show what's deployed to home-pi4-001 right now.
+> Tag pi-riffpod-001 with edge, client-z.
+> Fork the reporter app as reporter-jetson.
+> Save a new revision of reporter-jetson — here's the compose: <paste>
+> Deploy reporter-jetson v3 to all devices tagged edge AND client-z.
+> Roll home-pi4-001 back to reporter v2.
+> Pull last 50 lines of the edge agent on dev-hetzner.
+```
+
+Outputs: propose-then-apply diffs in markdown, deployment status timelines, retry/conflict surfaces, terminal-action blocks, archive downloads (`.tar.gz` / `.zip`) of any revision.
+
+### 🛎️ Respond — close the loop
+
+Investigations end in action. From the same chat, manage vmalert rules and Alertmanager routing, silence noise during planned work, or jump straight into a host shell. The agent uses the same propose-then-apply pattern as deploys so you see exactly what will change before it does. See [ALERTING.md](./ALERTING.md) for the alert subsystem details.
+
+```text
+> List firing alerts.
+> Create an alert when CPU > 90% for 5 minutes on any edge device.
+> Silence anything from jetson-002 for 2 hours — I'm rebooting it.
+> Wire up a webhook so critical alerts ping https://ntfy.sh/drift-alerts.
+> Show the receivers configured in alertmanager.
+> Open a terminal to home-pi4-001.                    ← xterm.js, one click in the UI
+```
+
+Outputs: propose-then-apply rule/receiver diffs, alert state timelines, terminal-action blocks, and the in-browser terminal modal (full pty, mux-friendly with `TERM=xterm-256color`, audited per session).
+
+---
+
+## Motivation
+
+I wanted to observe and deploy docker-compose stacks across a fleet of Linux hosts — homelab, edge, cloud, corp — from one place, conversationally. The constraints came first; the architecture fell out of them.
+
+- **No inbound ports on target devices.** Edge agents poll out to the control plane every 30s; nothing listens on the device side. Works behind NAT, firewalls, residential routers, and corp networks without holepunching, port forwards, or VPNs.
+- **No SSH after the first install.** Once the device is commissioned (one `curl | bash` over SSH), everything happens through the CP: deploys, updates, tag changes, log queries, and even shell access (in-browser via xterm.js, audited per session). The agent script self-updates from the CP via SHA comparison on each check-in — no per-device upgrade chore. Image-baseline changes are the one exception and remain a deliberate, infrequent per-device step.
+- **Queue-based deploys, not push.** Desired state lives on the CP. Targets can be offline when you make a change — when they come back, they converge. No imperative "ssh-and-run" model that breaks when half the fleet is asleep.
+- **Compose is the contract.** Apps are versioned bundles of plain files (`compose.yaml` + `.env` + configs). If `docker compose up` runs it on your laptop, Drift can ship it. Rollback is "deploy revision v2" — no proprietary packaging, no special tooling.
+- **Groups and tags for dynamic filtering.** Groups are the RBAC/multi-tenant boundary (one per device); tags are free-form operational labels (`edge`, `client-z`, `low-power`) that overlap freely. Match-all rollouts (`deploy to tags=["edge","client-z"]`) handle the cross-cutting cases that groups alone can't.
+- **Lean on the proven observability stack.** VictoriaMetrics + VictoriaLogs + vmalert + Alertmanager + Grafana + node-exporter + cAdvisor + Vector — lightweight, replaceable, no homegrown protocols. Drift builds the *interaction layer*, not another TSDB.
+- **PromQL as the query language.** The agent generates and runs PromQL; the operator never has to see it. Anything that speaks the Prometheus query API plugs in (VM, Prometheus, Thanos, Mimir).
+- **Tool calling to extend the agent, not fine-tuning.** New capability = a function in `app/tools/*.py` plus a JSON schema. No retraining, no embeddings store, no RAG. Telemetry data flows through tools and stays out of the LLM context (the [dataRef pattern](./ARCHITECTURE.md#the-dataref-pattern)) — analysis is precise (numpy/scipy actually computes); the model orchestrates. Stops the "LLM hallucinated a p95" failure mode and keeps token cost flat regardless of fleet size.
+- **Propose-then-apply for every mutation.** The LLM never silently changes state. Creating an alert rule, deploying a bundle, editing a route — each goes through a `propose_*` tool that surfaces the diff before `apply_*` runs. This is how you let an LLM touch production.
+- **Watch the investigation, not just the answer.** Tool calls, narration, intermediate charts, results — all painted progressively as the agent works. No 30-second blank wait followed by a wall of text. Trust comes from seeing how the result was reached.
+- **Self-hosted, self-owned.** One Caddy + the Drift CP + a TSDB on a single Linux box. Your devices, your data, your model key. No SaaS phone-home, no per-device subscription, no vendor.
+- **Bring-your-own model.** Claude Opus 4.7 is the default for its quality on agentic loops, but `MODEL=…` + the engine adapter pattern let you point at Sonnet, Haiku, or anything else. The frontend doesn't know which model is running.
+- **RBAC + per-group scoping out of the box.** Three roles (`observe < deploy < admin`), per-user group membership scopes which devices a user can see/touch, separate registry credentials per group. Multi-tenant from day one rather than retrofit.
+- **Host-CA injection for corp networks.** `install.sh` detects the host's combined CA bundle and propagates it to the agent plus every deployed app (mounted at the standard Debian + Alpine paths, plus `SSL_CERT_FILE` / `CURL_CA_BUNDLE` in env). Ship to devices sitting behind a TLS-intercepting corp proxy without per-app workarounds.
+
+The same constraints rule out a lot of common shapes: no PaaS-style "give us your code", no per-device daemon you upgrade by hand, no log-aggregator-as-a-service, no "let the LLM read all your data" RAG, no listening sockets on target devices.
+
+---
+
+## What the LLM sees (and doesn't)
+
+The agent operates on metadata — names, labels, summaries, configs by reference — not on raw secrets or raw bulk data. The boundary is enforced in code, not by prompting the model to behave.
+
+**What the LLM has access to:**
+
+- Names and metadata: metric / label / job names, device names + groups + tags + statuses, app / revision metadata, alert rule names + expressions + labels, receiver names + webhook URLs, session metadata.
+- File contents of compose bundles when explicitly fetched via `get_app_revision` — typically `${VAR}` references; the actual values come from device-side env.
+- Time-series *summaries* (n, mean, p50, p95, min, max, …) computed server-side from each query. Raw arrays stay server-side under a `prom://<uuid>` dataRef and are pushed straight to the UI via SSE (the [dataRef pattern](./ARCHITECTURE.md#the-dataref-pattern)).
+- Log lines returned by `query_logs` — the same content you'd see in `docker logs` on the device.
+
+**What the LLM never has access to:**
+
+- API keys (`ANTHROPIC_API_KEY`, etc.) and any other env-var credentials — env vars don't enter the prompt or the tool-result surface.
+- Drift's database password (`DRIFT_PG_PASSWORD`) and Fernet key (`DRIFT_SECRET_KEY`).
+- Auth secrets for the TSDB / vmalert / Alertmanager (`VM_BASIC_AUTH`, `VMALERT_BASIC_AUTH`, `ALERTMANAGER_BASIC_AUTH`, etc.) — tool handlers attach these directly to outbound `httpx` calls.
+- Registry credentials — encrypted at rest with `DRIFT_SECRET_KEY`, decrypted only per device check-in, shipped over TLS straight to the edge agent. Operators set them via a UI modal that bypasses the LLM entirely.
+- Alertmanager receiver secrets (bearer tokens, webhook auth) — the agent only calls `Path.exists()` on `am-secrets/*` filenames and emits a *path reference* (`bearer_token_file: /etc/alertmanager/secrets/<name>`). Alertmanager opens the file at notify time; the LLM never sees the bytes.
+- Raw time-series arrays — kept under server-side dataRefs, streamed to the UI out-of-band.
+- Web-terminal bytes — pty stdio flows agent ↔ edge over a dedicated WebSocket and never the LLM.
+- User passwords — set + verify happen server-side via `passlib`; the LLM has no read path to the password column.
+
+**Three places where sensitive content briefly touches the chat surface:**
+
+- `create_user` / `reset_user_password` return a server-generated password ONCE in the tool response, which renders into the chat trace. Hand it to the user out-of-band and clear the investigation afterwards. The self-service "change my password" sidebar flow keeps the new password off the chat entirely.
+- `commission_device` returns a one-shot bootstrap token in the curl line it generates. The token is single-use — once a device claims it, it's exhausted — and acts as a device-commissioning credential, not a long-lived secret.
+- If you paste compose contents with literal secrets in `.env` into the prompt, the LLM sees what you typed. Use `${VAR}` references resolved on the device, or the registry-credentials modal for image-pull tokens — both keep secrets off the chat.
 
 ---
 
 ## What you get
 
-- **Frontend** — React + Material UI dark theme, Plotly time-series charts, real-time streaming UI that surfaces the agent's thinking and tool calls. Sidebar lists devices and apps in your groups; xterm.js opens a host shell to a device in one click.
-- **Backend** — FastAPI agent powered by Claude Opus 4.7 with adaptive thinking, prompt caching, and ~30 tools across discovery / query / analysis / render-block emission / fleet management.
-- **Multi-user** — login + cookie sessions, RBAC (observe / deploy / admin), user-group scoping for devices, audit log for terminal sessions. Bootstrap an admin via env vars; manage the rest from the chat ("create user X with deploy role in group Y") or the admin API.
-- **Drift Deploy** — promote a compose bundle as a Drift "app", push it to one device or a whole group, watch the agent reconcile in real time. Per-group registry credentials, automatic agent self-update, retry budgets, conflict detection, host-CA injection for corp PKI. See [DEPLOY.md](./DEPLOY.md).
-- **Live charts** — ask for a "refreshing plot of CPU/memory on jetson-001 every 5s" and a Plotly chart polls a server-side PromQL passthrough on a timer. "Now change refresh rate to 1s" mutates the same chart in place (preserves zoom/hover).
-- **Compose stack** — slim Docker images for both services. Brings its own TSDB? No — point it at any Prometheus-compatible source via `VM_URL`.
-
-```
-prompt → agent (tool use → metrics fetch → analysis) → streaming render blocks → UI
-```
+- **Frontend** — React + Material UI dark theme, Plotly time-series charts, real-time streaming UI that surfaces the agent's thinking and tool calls. Sidebar lists devices and apps in your groups; xterm.js opens a host shell in one click.
+- **Backend** — FastAPI agent powered by Claude Opus 4.7 (default; configurable via `MODEL`) with adaptive thinking, prompt caching, and ~30 tools across discovery / query / analysis / fleet / alerts / render-block emission.
+- **Multi-user RBAC** — login + cookie sessions, three roles (`observe` < `deploy` < `admin`), user-group scoping for devices, audit log for terminal sessions. Bootstrap an admin via env vars; manage the rest from chat or the admin API.
+- **Drift Deploy** — promote a compose bundle as an "app", push to one device or every device matching a tag set, watch the edge agents reconcile in real time. Per-group registry credentials, edge-agent self-update, retry budgets, conflict detection, host-CA injection for corp PKI.
+- **Live charts** — `make_live_chart` polls a server-side PromQL passthrough on a timer and `Plotly.react`-diffs in place; mutating one keeps zoom/hover.
+- **Compose stack** — slim Docker images for both services. Brings its own TSDB? No — point it at any Prometheus-compatible source via `VM_URL`. The bundled single-server install adds VictoriaMetrics, VictoriaLogs, vmalert, Alertmanager, Grafana, and Caddy/TLS.
 
 ---
 
@@ -258,4 +368,12 @@ Normal for complex investigations — `claude-opus-4-7` with `effort=high` is th
 
 ## License
 
-Not yet specified. Treat as proprietary until added.
+Drift is licensed under the [Apache License 2.0](./LICENSE). Copyright 2026 Scope Creep Labs LLC.
+
+## Contributing
+
+Contributions are welcome — bug fixes, features, docs, edge-agent ports to new platforms. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the development setup and PR guidelines.
+
+All contributors must sign the **[Individual Contributor License Agreement](./CLA.md)**. Our CLA Assistant bot posts a one-click signing link on your first pull request; sign once and it covers every future PR. The CLA permits Scope Creep Labs LLC to relicense future versions of the project under different terms — Apache 2.0 on existing releases is permanent.
+
+For security reports, please email **support@scopecreeplabs.com** rather than opening a public issue.

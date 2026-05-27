@@ -1,8 +1,8 @@
 # Drift Deploy — User Guide & Test Scenarios
 
-End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devices using Drift's prompt UI. Pair this with [ALERTING.md](./ALERTING.md) (for monitoring deployed apps) and [spec/deploy.md](./spec/deploy.md) (for the full architectural spec).
+End-user walkthrough for the v0 of Drift Deploy: how to deploy apps to your devices using Drift's prompt UI. New here? Start at [README.md](./README.md) for the project overview, then come back. Pair this with [ALERTING.md](./ALERTING.md) (for monitoring deployed apps), [ARCHITECTURE.md](./ARCHITECTURE.md) (the agent loop, tool catalog, SSE protocol), and [spec/deploy.md](./spec/deploy.md) (for the full architectural spec).
 
-> **Scope of v0.** Multi-device fleet (4 devices on the current setup), grouped by an operator-chosen `group_id` (`cloud`, `edge`, `drift_home`, …). No Monaco-style file editor yet — you paste compose contents into prompts, but the agent can read existing bundles back with `get_app_revision` so patches don't require re-pasting from scratch. Deploy / fork / delete / group-deploy / query_logs all available as tools. Soft-delete preserves the audit trail.
+> **Scope of v0.** Multi-device fleet, grouped by an operator-chosen `group_id` (`cloud`, `edge`, `drift_home`, …) and freely taggable for cross-cutting rollouts (`edge,client-z`). No Monaco-style file editor yet — you paste compose contents into prompts, but the agent can read existing bundles back with `get_app_revision` so patches don't require re-pasting from scratch. Deploy / fork / delete / group-deploy / tag-deploy / query_logs all available as tools. Soft-delete preserves the audit trail.
 
 ---
 
@@ -232,48 +232,16 @@ If a bundle author declares their own volume at one of the standard CA paths, `d
 
 ## Releases
 
-drift-agent and the deploy-agent script ship as one image. Whether a release touches the backend Python, the bash script, both, or neither, the release artifact is the same: a tagged `drift-agent` image on GHCR.
+The drift-agent and drift-frontend images ship under `ghcr.io/kidproquo/drift-agent` and `ghcr.io/kidproquo/drift-frontend`, tagged with semantic versions (`vX.Y.Z`) plus a moving `:latest`. The `drift-deploy-agent.sh` script (run on edge devices) is baked into the drift-agent image and self-updates on every check-in via SHA comparison — so once a release lands on the control plane, the fleet picks up the new script within one poll cycle without any per-device action.
 
-**Image:** `ghcr.io/kidproquo/drift-agent`
-**Tag scheme:** `vYYYY.MM.DD-<short-sha>` (e.g. `v2026.05.16-cbf703a`). `:latest` is moved when releasing from `main`; feature branches only publish their dated tag.
+Releases come in two flavors:
 
-### Cutting a release (from the build host)
+- **Image-only** — just code changes (Python in drift-agent, SPA in drift-frontend). Operators apply with one click in the **Software updates** modal in the UI.
+- **Bundle** — anything that touches `install.sh`, `docker-compose.yml`, or `config/*.tmpl`. Operators run `curl | tar | install.sh` from the release page on the CP host.
 
-Prereq, once: `docker login ghcr.io -u <gh-username>` with a PAT that has `write:packages`.
+Cutting and consuming releases — including the full update model, version-tracking fields, and all the edge-case scenarios (multiple image-onlys between bundles, mid-update SPA staleness, etc.) — is documented in **[deploy/UPDATES.md](./deploy/UPDATES.md)**. Release authors should read it before cutting a release; operators don't need to (the UI tells them what to do).
 
-```bash
-# Make sure HEAD is the commit you want to ship; working tree must be clean.
-scripts/release.sh
-```
-
-What it does:
-1. Builds `drift-agent:vYYYY.MM.DD-<sha>` from `drift-agent/Dockerfile` (which `COPY`s `edge-agent/` into `/opt/edge-agent`).
-2. Pushes the dated tag.
-3. If `HEAD` is on `main`, retags and pushes `:latest`.
-
-### Consuming a release (on each drift-agent host)
-
-```bash
-docker compose pull drift-agent
-docker compose up -d drift-agent
-```
-
-That's it. Inside the new container, `_agent_target_sha()` computes the SHA of the freshly-baked `drift-deploy-agent.sh`. Every managed device's next check-in sees the new target, exits cleanly, and Docker brings it back on the new script (see "Edge-agent self-update" above).
-
-### Rolling back
-
-Pin a specific dated tag in `docker-compose.yml`:
-
-```yaml
-image: ghcr.io/kidproquo/drift-agent:v2026.05.15-<oldsha>
-```
-
-`docker compose up -d drift-agent` switches to that image. Fleet picks up the older script's SHA on the next tick. To re-resume tracking `:latest`, change the tag back.
-
-### What is *not* covered by this release flow
-
-- `drift-frontend` and `drift-postgres` still build/pull from their own image lines.
-- The image baseline of the edge-agent container on each device (set at `install.sh` time) is unchanged; only the agent's running script self-updates. Image-baseline updates still require a one-time re-run of `install.sh` per device.
+The edge-agent container's *image baseline* (Dockerfile, terminal-bridge.py, system packages) does not self-update — image-level changes still require a one-time re-run of `install.sh` per device. The SHA comparison only covers the agent script itself.
 
 ---
 
@@ -498,6 +466,26 @@ Calls `list_deployments(group_id="drift_home")` filtered to `app="reporter"`. Yo
 
 ---
 
+### 4c-bis. Deploy by tag (cross-cutting rollouts)
+
+Groups are mutually exclusive — a device belongs to exactly one. Tags are not: tag a device with `edge,client-z,low-power` and you can roll out by any of those facets independently. Tag-based deploys use **match-all** semantics: `tags=["edge", "client-z"]` ships to devices that carry both tags.
+
+**Tagging a device:**
+
+> Tag pi-riffpod-001 with edge,client-z.
+
+Calls `tag_device(name="pi-riffpod-001", add=["edge", "client-z"])`. Tags are normalized (lowercased + stripped) and deduped. Remove tags with the same tool: `tag_device(name=..., remove=["client-z"])`. The Sidebar's Devices section also has a chip-style tag editor (sidebar row → tag-edit icon) for non-chat workflows.
+
+**Deploying to a tag set:**
+
+> Deploy reporter-jetson v3 to all devices tagged edge AND client-z.
+
+Calls `deploy_revision_to_tags(app="reporter-jetson", tags=["edge", "client-z"])`. Same response shape as `deploy_revision_to_group` — one row per device that received an instruction, plus a count of how many were skipped (offline, not in user's groups, etc.).
+
+**Why tags are decoupled from `group_id`:** `group_id` is the RBAC + multi-tenancy boundary (per-group registry creds, scoping for non-admin users). Tags are operational labels you change freely without re-thinking authorization. Removing a tag never affects what a device can or can't access; removing it from a group does.
+
+---
+
 ### 4d. Query container logs across the fleet (`query_logs`)
 
 The `query_logs` tool runs LogsQL against the central VictoriaLogs instance. Vector on each device forwards container logs (filtered to errors only by default in the reporter bundle) to `https://.../vl/insert/jsonline`. LogsQL is VL's query language — similar to PromQL but for logs.
@@ -608,7 +596,7 @@ Quick version for the simplest case (no private images, no state separation need
 **Things to watch for:**
 - Port conflict: only one of Arcane-podnot or Drift-podnot can bind 32191 at a time. Stop in Arcane FIRST.
 - Container name collision: `container_name: podnot-server` is in the compose. If Arcane already has a podnot-server container, `docker compose up -d` will refuse. Stop the Arcane-side container before deploying.
-- Image pull: Drift Deploy doesn't manage registry credentials yet (v1). For GHCR public images this is fine; private images need `docker login` to have been run on the device out-of-band.
+- Image pull: for private images, set up registry credentials via the sidebar 🔑 modal (see "Registry credentials" above). For GHCR public images, no setup needed.
 
 ---
 

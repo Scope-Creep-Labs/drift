@@ -1,5 +1,7 @@
 # Drift updates — model and workflow
 
+> Installer + day-2 ops live in [deploy/README.md](./README.md); project overview at the top-level [README.md](../README.md). This doc is the contract between release authors and operators.
+
 Drift's CP (`drift-agent` + `drift-frontend`) ships as docker images, while the surrounding bundle (`install.sh`, `docker-compose.yml`, `config/*.tmpl`) is a tarball you re-extract on the host. The two move on different cadences, so update *handling* is split into two paths. This doc describes the model so release authors and operators stay aligned.
 
 ---

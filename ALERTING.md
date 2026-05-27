@@ -2,7 +2,7 @@
 
 Drift can manage time-series alerts conversationally: creating rules, silencing noise, wiring up webhook receivers, and routing matchers to receivers. This doc covers the system end-to-end so you can extend it without re-discovering the moving parts.
 
-For the underlying agent architecture (SSE protocol, tool dispatch, dataRef pattern, system prompt), see [ARCHITECTURE.md](./ARCHITECTURE.md). For setup, see [README.md](./README.md).
+New here? Start at [README.md](./README.md) for the project overview. For the underlying agent architecture (SSE protocol, tool dispatch, dataRef pattern, system prompt), see [ARCHITECTURE.md](./ARCHITECTURE.md); for the sibling fleet-management pillar, see [DEPLOY.md](./DEPLOY.md).
 
 ---
 
