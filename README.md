@@ -1,6 +1,6 @@
 # Drift
 
-**Agentic observability for time-series systems.** Ask questions about your telemetry in plain language; an LLM agent picks the right tools, queries your VictoriaMetrics / Prometheus, runs statistical analysis, and assembles a rich response — markdown, charts, tables, metric cards, timelines — that streams progressively into the UI as the investigation unfolds.
+**Prompt-driven observability + fleet deployment.** Ask questions about your telemetry in plain language; an LLM agent picks the right tools, queries your VictoriaMetrics / Prometheus, runs statistical analysis, and assembles a rich response — markdown, charts, tables, metric cards, timelines — that streams progressively into the UI as the investigation unfolds. From the same chat, tag devices, ship docker-compose apps to your fleet, and restart what's drifting — observe, deploy, respond, all from a prompt.
 
 > 📐 For the full architecture deep dive (data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference), see [ARCHITECTURE.md](./ARCHITECTURE.md).
 >

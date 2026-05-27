@@ -207,7 +207,7 @@ export function InvestigationList() {
           Drift
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          Prompt-native observability
+          Observe, deploy, respond. From a prompt.
         </Typography>
       </Box>
 
