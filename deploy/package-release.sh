@@ -282,4 +282,13 @@ if [ "$PUBLISH" = "true" ]; then
     "${target_arg[@]}" \
     "${notes_arg[@]}"
   echo "  ✓ release published"
+
+  # Tag the source repo at HEAD so the NEXT release's smart-build
+  # diff has a previous tag to compare against. Without this, every
+  # build_image() call defaults to "yes, rebuild" since LAST_TAG is
+  # empty. Idempotent: skip if the tag already exists locally.
+  if ! git -C "$REPO_ROOT" rev-parse "$REL_TAG" >/dev/null 2>&1; then
+    git -C "$REPO_ROOT" tag "$REL_TAG"
+    echo "  ✓ tagged source repo @ HEAD = $REL_TAG (push with: git push origin $REL_TAG)"
+  fi
 fi
