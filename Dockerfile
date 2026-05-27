@@ -11,6 +11,10 @@ RUN npm ci
 
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
+# public/ contents (favicon, etc.) are copied verbatim by Vite into
+# dist/ at build time. Without this COPY the public dir isn't in the
+# build context, Vite finds nothing, and dist/ has no favicon at all.
+COPY public ./public
 
 # In Docker, the frontend talks to the agent through nginx → drift-agent.
 # VITE_BASE defaults to './' so the build is portable — asset URLs are

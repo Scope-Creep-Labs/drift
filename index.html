@@ -5,8 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- Sparkline-with-drift mark (see public/favicon.svg). SVG-only;
          modern browsers prefer it over .ico anyway and we don't ship
-         legacy support. -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+         legacy support. Relative href so the path-prefix
+         deployments resolve to /<prefix>/favicon.svg — the Caddyfile
+         strips the prefix before forwarding to the frontend's nginx,
+         which then serves /usr/share/nginx/html/favicon.svg. -->
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
