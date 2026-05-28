@@ -10,6 +10,18 @@
 #     DEVICE_NAME=<name> BOOTSTRAP_TOKEN=<token> \
 #     CP_URL=$CP_URL GROUP_ID=<group> sudo -E bash
 #
+# Reinstall on an already-commissioned device (no need to re-supply env):
+#   sudo bash -c 'set -a; . /etc/drift-deploy/env; set +a; \
+#       unset CURL_CA_BUNDLE SSL_CERT_FILE; \
+#       curl -fsSL "$CP_URL/agent/install.sh" | bash'
+#
+# The first command writes /etc/drift-deploy/env from its env vars; the
+# second sources that file to recover DEVICE_NAME / BOOTSTRAP_TOKEN /
+# CP_URL / GROUP_ID. CURL_CA_BUNDLE and SSL_CERT_FILE are unset because
+# the values written into the env file point at container-only paths
+# (/host/etc/ssl/...) — install.sh re-detects the host's CA bundle on
+# its own.
+#
 # DEVICE_NAME identifies this device in the control plane.
 # GROUP_ID is the logical grouping (cloud/edge/client/...) — surfaced
 # to compose bundles via ${DRIFT_GROUP_ID} so one bundle can label its

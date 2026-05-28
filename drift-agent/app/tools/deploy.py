@@ -501,7 +501,13 @@ async def commission_device(ctx: ToolContext, args: dict) -> dict:
             "flip-flop). To move to a new physical host, commission a new "
             "device under a different name. Protected service/container names "
             "(drift-agent, drift-postgres, drift-frontend, drift-deploy-agent) "
-            "are refused by the agent as a bricking safeguard."
+            "are refused by the agent as a bricking safeguard. "
+            "REINSTALL SHORTCUT (for already-commissioned devices that just "
+            "need an image-baseline refresh — e.g. picking up new bind-mounts): "
+            "sudo bash -c 'set -a; . /etc/drift-deploy/env; set +a; "
+            "unset CURL_CA_BUNDLE SSL_CERT_FILE; "
+            "curl -fsSL \"$CP_URL/agent/install.sh\" | bash' "
+            "— sources the existing env file so no creds need to be re-supplied."
         ),
     }
 

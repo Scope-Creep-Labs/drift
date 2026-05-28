@@ -544,6 +544,25 @@ Same applies to a host rebuild — the saved curl line reinstalls the agent
 on a wiped machine and the CP picks it back up on the next check-in,
 re-applying any deployed apps from the desired state.
 
+**To re-run install.sh without re-supplying env vars** (for image-baseline
+updates where you don't need to rotate creds):
+
+```bash
+sudo bash -c 'set -a; . /etc/drift-deploy/env; set +a; \
+    unset CURL_CA_BUNDLE SSL_CERT_FILE; \
+    curl -fsSL "$CP_URL/agent/install.sh" | bash'
+```
+
+Sources the existing `/etc/drift-deploy/env` (mode 600, hence the
+`sudo`) to recover `DEVICE_NAME` / `BOOTSTRAP_TOKEN` / `CP_URL` /
+`GROUP_ID`. `CURL_CA_BUNDLE` and `SSL_CERT_FILE` get unset because
+their values point at container-only paths (`/host/etc/ssl/...`);
+install.sh re-detects the host's CA bundle on its own. Useful when
+ship an image-baseline change to the edge agent (e.g. v0.1.33's
+`/etc/machine-id` bind-mount for fingerprint TOFU) — you want every
+device re-installed but don't want to dig out original credentials
+from a password manager.
+
 **If you paste the curl on a *different* machine** (intentional migration
 or accidental cross-host paste), the new host comes up authenticating as
 that device. The CP can't tell the two machines apart — the token is
