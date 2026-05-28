@@ -34,9 +34,25 @@ class Device(Base):
     __tablename__ = "devices"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
-    # bcrypt hash of the bootstrap token; cleared after first successful check-in.
+    # Always stored in normalized form (lowercase + stripped). Uniqueness
+    # is enforced by a partial unique index on LOWER(name) WHERE status !=
+    # 'removed' (see migration 0011) — case-insensitive at the DB level
+    # AND lenient toward removed-status tombstones so a freed name is
+    # reusable. All write paths normalize via naming.normalize_device_name.
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    # bcrypt hash of the per-device bootstrap token. Long-lived bearer
+    # credential the edge agent presents on every /agent/check-in; stays
+    # valid for the life of the device row. Save the curl line to a
+    # password manager — the chat won't render it again.
     bootstrap_token_hash: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # SHA-256 hex of the host's /etc/machine-id (with fallback chain),
+    # captured TOFU on the first check-in after commissioning. Subsequent
+    # check-ins must match; mismatch returns 409 so an accidental
+    # cross-host paste of the commissioning curl fails loudly instead of
+    # silently flipping device state between two machines. Cleared
+    # implicitly only by deleting + re-commissioning the device under a
+    # new name. NULL on pre-v0.11 devices until they next check in.
+    host_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     last_seen: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     agent_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)

@@ -164,6 +164,16 @@ class AgentCheckIn(BaseModel):
     # docker_version. Reported every ~10min (not every tick — these
     # change slowly). Absent → CP leaves device.facts unchanged.
     facts: Optional[dict] = None
+    # SHA-256 hex of the host's /etc/machine-id (with fallback to
+    # /var/lib/dbus/machine-id, /sys/class/dmi/id/product_uuid). Sent on
+    # every check-in by v0.11+ agents. The CP TOFUs the value on first
+    # arrival and rejects mismatches on subsequent check-ins so that an
+    # accidental cross-host paste of the commissioning curl fails with
+    # 409 instead of two machines silently sharing one device identity.
+    # NULL means the agent couldn't read any fingerprint source; the CP
+    # accepts but logs (no enforcement on absent fingerprint, since
+    # forcing it would break embedded distros without /etc/machine-id).
+    host_fingerprint: Optional[str] = Field(default=None, max_length=64)
 
 
 class DesiredApp(BaseModel):

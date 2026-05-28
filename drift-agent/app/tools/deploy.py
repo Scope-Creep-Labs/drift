@@ -29,6 +29,7 @@ from ..config import settings
 from ..deploy import bundles, security
 from ..deploy.db import session
 from ..deploy.models import App, AppRevision, Device, DeploymentTarget
+from ..deploy.naming import normalize_device_name
 from ..deploy.schemas import COMPOSE_FILE_CANDIDATES
 from .metrics import ToolContext
 
@@ -75,7 +76,15 @@ async def _app_by_name(s, name: str) -> App | None:
 
 
 async def _device_by_name(s, name: str) -> Device | None:
-    row = await s.execute(select(Device).where(Device.name == name))
+    # Normalize at the lookup boundary so every caller (commission,
+    # delete, deploy, tag, terminal, etc.) resolves "Pi-001", "pi-001",
+    # and "  pi-001 " to the same row. The DB column stores the
+    # normalized form; the partial unique index in migration 0011
+    # enforces case-insensitive uniqueness among non-removed devices.
+    normalized = normalize_device_name(name)
+    if not normalized:
+        return None
+    row = await s.execute(select(Device).where(Device.name == normalized))
     return row.scalar_one_or_none()
 
 
@@ -437,18 +446,32 @@ async def commission_device(ctx: ToolContext, args: dict) -> dict:
         return err
     if (err := _ensure_deploy_enabled()):
         return err
-    name = args.get("name")
+    raw_name = args.get("name")
     group_id = args.get("group_id")
+    name = normalize_device_name(raw_name)
     if not name:
-        return {"error": "name is required"}
+        return {"error": "name is required (non-empty after strip)"}
     if not group_id or not isinstance(group_id, str):
         return {"error": "group_id is required — pick a group the operator has access to (use list_devices to see existing groups)"}
     # Lock the operator into a group they can manage; admins bypass.
     if (err := _check_group_access(ctx, group_id)):
         return err
     async with session() as s:
-        if await _device_by_name(s, name):
-            return {"error": f"device '{name}' already exists; delete it first or pick a new name"}
+        existing = (await s.execute(
+            select(Device).where(Device.name == name, Device.status != "removed")
+        )).scalar_one_or_none()
+        if existing is not None:
+            return {
+                "error": (
+                    f"device '{name}' already exists (status={existing.status}). "
+                    "Names are case-insensitive and whitespace-trimmed; pick a "
+                    "different name, or delete the existing device first if you "
+                    "want to reuse the name. To migrate to a new physical host, "
+                    "commission under a NEW name — the bootstrap token is bound "
+                    "to its host via a fingerprint TOFU check, so pasting the "
+                    "old curl on a new machine would just fail with 409."
+                )
+            }
         token = security.generate_bootstrap_token()
         device = Device(
             name=name,
@@ -464,14 +487,21 @@ async def commission_device(ctx: ToolContext, args: dict) -> dict:
         "bootstrap_token": token,
         "install_cmd": install_cmd,
         "guidance": (
-            f"Paste the install_cmd on the new device as root. The group ('{group_id}') "
-            "is baked in — the install command's GROUP_ID is set, so the runner doesn't "
-            "have to pick. Only host dep is Docker — the agent runs as a container, so "
-            "no systemd, no jq, no docker compose plugin needed on the host. Works on "
-            "Linux VMs, Raspberry Pi, Synology NAS, anywhere Docker runs. The "
-            "bootstrap_token is shown ONCE — treat it like a password. Protected "
-            "service/container names (drift-agent, drift-postgres, drift-frontend, "
-            "drift-deploy-agent) are refused by the agent as a bricking safeguard."
+            f"Paste the install_cmd on the new device as root. The group "
+            f"('{group_id}') is baked in. Only host dep is Docker — works on "
+            "Linux VMs, Raspberry Pi, Synology NAS, anywhere Docker runs. "
+            "The bootstrap token is this device's long-lived bearer credential "
+            "for every /agent/check-in; it stays valid for the life of the "
+            "device row. The chat won't render it again on later turns — save "
+            "the install_cmd to a password manager so you can reinstall the "
+            "agent on the SAME host later (after a wipe, volume reset, or "
+            "hardware swap). On the first check-in the CP records a fingerprint "
+            "of /etc/machine-id (TOFU). If the curl gets pasted on a different "
+            "host later, that host's check-in fails with 409 (no silent device "
+            "flip-flop). To move to a new physical host, commission a new "
+            "device under a different name. Protected service/container names "
+            "(drift-agent, drift-postgres, drift-frontend, drift-deploy-agent) "
+            "are refused by the agent as a bricking safeguard."
         ),
     }
 

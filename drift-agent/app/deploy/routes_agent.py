@@ -180,6 +180,39 @@ async def check_in(
     except HTTPException:
         check_ins_total.labels(result="unauthorized").inc()
         raise
+
+    # Host-fingerprint TOFU. The agent sends sha256(/etc/machine-id) (or
+    # a fallback host-stable identifier). On first check-in after
+    # commissioning we record whatever arrives; on every subsequent
+    # check-in we cross-check. Mismatch means the bootstrap curl was
+    # pasted on a different host — the original device keeps working,
+    # the impostor gets a 409 with a clear remediation path. If the
+    # agent didn't include a fingerprint (older agent, or a host without
+    # any fingerprint source available), we don't enforce — same as
+    # device.facts handling.
+    if body.host_fingerprint:
+        if device.host_fingerprint is None:
+            device.host_fingerprint = body.host_fingerprint
+        elif device.host_fingerprint != body.host_fingerprint:
+            check_ins_total.labels(result="fingerprint_mismatch").inc()
+            # Don't commit anything from this check-in: liveness, facts,
+            # apply_errors all stay as they were. The impostor host
+            # should not be able to update CP state with its report.
+            await db.rollback()
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail=(
+                    f"host fingerprint mismatch for device '{device.name}'. "
+                    "This bootstrap token is bound to a different host "
+                    "(by /etc/machine-id) than the one checking in now. "
+                    "Most likely the commissioning curl was pasted on the "
+                    "wrong machine, OR the original host was reinstalled. "
+                    "If this is a deliberate migration, delete this device "
+                    "and commission a new one under a different name; if "
+                    "it's accidental, stop drift-deploy-agent on this host."
+                ),
+            )
+
     check_ins_total.labels(result="ok").inc()
 
     # Update liveness + agent_version + group_id (best-effort).

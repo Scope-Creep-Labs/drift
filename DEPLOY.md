@@ -510,7 +510,7 @@ The tool returns a compact result the agent can render as a table. Subsequent pr
 
 > Commission a new device named `pi-livingroom`.
 
-**What the agent returns:** a `make_markdown` block with the bootstrap token and a `curl | sudo bash` one-liner. Treat the token like a password — it won't be shown again.
+**What the agent returns:** a `make_markdown` block with the bootstrap token and a `curl | sudo bash` one-liner. The token is the device's long-lived bearer credential for `/agent/check-in`; it stays valid for the life of the device row in the CP database. Save the curl line to a password manager — the chat won't render it again on later turns, but the value itself remains the right credential for re-installs of the agent on that same device. The token is invalidated when you delete the device from the CP.
 
 **On the Pi (as root):**
 
@@ -540,6 +540,24 @@ docker logs -f drift-deploy-agent
 
 **To upgrade the agent later**: re-run the same `curl … | bash` line.
 The installer detects the existing container and replaces it in place.
+Same applies to a host rebuild — the saved curl line reinstalls the agent
+on a wiped machine and the CP picks it back up on the next check-in,
+re-applying any deployed apps from the desired state.
+
+**If you paste the curl on a *different* machine** (intentional migration
+or accidental cross-host paste), the new host comes up authenticating as
+that device. The CP can't tell the two machines apart — the token is
+device-name-scoped, not hardware-bound. Two outcomes:
+
+- *Old machine shut down first.* Clean migration. The new host becomes
+  the device; the CP re-applies the desired state on next check-in.
+  Useful for hardware swaps.
+- *Old machine still running.* Both report in with the same token; the
+  CP only has one device row. `last_seen` and reported state flip-flop
+  between them on each tick; any deployed app tries to run on both
+  hosts simultaneously. Decommission cleanly (`docker stop
+  drift-deploy-agent` on the old host, or remove and re-commission the
+  device under a new name) before pasting the curl elsewhere.
 
 **Verify on the control plane (from Drift's UI):**
 

@@ -137,9 +137,43 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.11.0"
+AGENT_VERSION="0.12.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
+
+# Host fingerprint sent on every check-in. The CP TOFUs it on the
+# first arrival after commissioning and rejects mismatches afterwards
+# (returns 409). Stops accidental cross-host paste of the
+# commissioning curl from silently flipping device identity between
+# two machines. Computed once at startup; the value is stable for the
+# life of the host's OS install.
+#
+# Sources, in fallback order:
+#   1. /host/etc/machine-id        (systemd; standard on Linux)
+#   2. /host/var/lib/dbus/machine-id (older spec)
+#   3. /host/sys/class/dmi/id/product_uuid (hardware DMI; root-readable)
+#
+# install.sh bind-mounts each of these under /host/* when they exist
+# on the host. If none is available we send empty — the CP doesn't
+# enforce on absent fingerprint, since embedded distros (some
+# BusyBox setups) don't ship any of these.
+HOST_FINGERPRINT=""
+for _fp_src in \
+    /host/etc/machine-id \
+    /host/var/lib/dbus/machine-id \
+    /host/sys/class/dmi/id/product_uuid; do
+  if [ -r "$_fp_src" ]; then
+    _fp_val=$(tr -d '[:space:]' < "$_fp_src" 2>/dev/null || true)
+    if [ -n "$_fp_val" ]; then
+      HOST_FINGERPRINT=$(printf '%s' "$_fp_val" | sha256sum | cut -c1-64)
+      break
+    fi
+  fi
+done
+unset _fp_src _fp_val
+if [ -z "$HOST_FINGERPRINT" ]; then
+  echo "warn: no host fingerprint source available (/etc/machine-id absent or unreadable); CP will accept this device without TOFU enforcement" >&2
+fi
 
 FRESH_STATE='{"current_revisions": {}, "apply_errors": {}, "metrics": {"check_in_ok": 0, "check_in_error": 0, "apply_ok": 0, "apply_error": 0}}'
 
@@ -689,14 +723,21 @@ reconcile_once() {
   _FACTS_TICK_COUNTER=$(( (_FACTS_TICK_COUNTER + 1) % FACTS_EVERY_N_TICKS ))
 
   local body resp
+  # host_fingerprint goes on every check-in (cheap, 64 bytes). The CP
+  # TOFUs on first arrival and rejects mismatches with 409 — see
+  # routes_agent.py:check_in. Empty string when no fingerprint source
+  # was readable at startup; the CP treats that as "not provided" and
+  # doesn't enforce.
   if [ -n "$facts_field" ]; then
     body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
+                --arg fp "$HOST_FINGERPRINT" \
                 --argjson c "$current" --argjson e "$errors" --argjson f "$_FACTS_CACHED" \
-      '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}, facts:$f}')
+      '{device_name:$n, agent_version:$v, group_id:$g, host_fingerprint:$fp, current_revisions:$c, apply_errors:$e, health:{}, facts:$f}')
   else
     body=$(jq -n --arg n "$DEVICE_NAME" --arg v "$AGENT_VERSION" --arg g "$GROUP_ID" \
+                --arg fp "$HOST_FINGERPRINT" \
                 --argjson c "$current" --argjson e "$errors" \
-      '{device_name:$n, agent_version:$v, group_id:$g, current_revisions:$c, apply_errors:$e, health:{}}')
+      '{device_name:$n, agent_version:$v, group_id:$g, host_fingerprint:$fp, current_revisions:$c, apply_errors:$e, health:{}}')
   fi
 
   # Check-in failure modes the operator should be able to distinguish
@@ -729,6 +770,24 @@ reconcile_once() {
     local _detail
     _detail=$(echo "$resp" | jq -r '.detail // "(no detail)"' 2>/dev/null)
     log_error "check-in HTTP $_http_code (auth): $_detail. Token in /etc/drift-deploy/env may be stale (device deleted + re-commissioned)."
+    state_inc check_in_error; write_textfile; return
+  fi
+  if [ "$_http_code" = "409" ]; then
+    # Fingerprint mismatch: the CP recorded a different host's
+    # /etc/machine-id on the first check-in after commissioning, and
+    # this host's fingerprint doesn't match. Almost always means the
+    # commissioning curl was pasted on the wrong host (or this host
+    # was OS-reinstalled, regenerating /etc/machine-id). Log loudly
+    # and DON'T retry — the situation won't fix itself on the next
+    # tick, and silent retries would just spam the CP. The container
+    # is supervised by --restart unless-stopped; the operator looks
+    # at docker logs to see this message and decides what to do.
+    local _detail
+    _detail=$(echo "$resp" | jq -r '.detail // "(no detail)"' 2>/dev/null)
+    log_error "check-in HTTP 409 (fingerprint mismatch): $_detail"
+    log_error "this host's fingerprint does not match the one the CP recorded for device '$DEVICE_NAME'."
+    log_error "if this is the wrong host, run: docker stop drift-deploy-agent"
+    log_error "if this is a deliberate migration, delete the device on the CP and commission under a new name."
     state_inc check_in_error; write_textfile; return
   fi
   if [ "$_http_code" != "200" ]; then

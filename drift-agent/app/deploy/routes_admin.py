@@ -28,6 +28,7 @@ from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
 from .models import App, AppRevision, Device, DeploymentTarget, RegistryCredential
+from .naming import normalize_device_name
 from .tagging import normalize_tags
 from .schemas import (
     AppCreate,
@@ -93,16 +94,29 @@ async def create_device(
     # the operator's scope; without it, a deploy-role user could ship a
     # GROUP_ID=<other> command and end up with a device they can't manage.
     _check_group_access(user, body.group_id)
-    existing = await db.execute(select(Device).where(Device.name == body.name))
-    if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, f"device '{body.name}' already exists")
+    name = normalize_device_name(body.name)
+    if not name:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "name must be non-empty")
+    # Conflict check uses the normalized form against the partial unique
+    # index (LOWER(name) WHERE status != 'removed'). Removed tombstones
+    # don't block reuse.
+    existing = await db.execute(
+        select(Device).where(Device.name == name, Device.status != "removed")
+    )
+    conflict = existing.scalar_one_or_none()
+    if conflict is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"device '{name}' already exists (status={conflict.status}); "
+            "pick a different name or delete the existing device first",
+        )
     token = security.generate_bootstrap_token()
     # Pre-stamp the group_id on the row so the CP-side scoping (list
     # filters, group queries) recognizes it before the first check-in
     # rewrites it from the agent's reported env. The first check-in
     # confirms by writing the same value back.
     device = Device(
-        name=body.name,
+        name=name,
         bootstrap_token_hash=security.hash_token(token),
         group_id=body.group_id,
     )
@@ -112,7 +126,7 @@ async def create_device(
     return DeviceCreated(
         device=DeviceOut.model_validate(device, from_attributes=True),
         bootstrap_token=token,
-        install_cmd=_render_install_cmd(body.name, token, body.group_id),
+        install_cmd=_render_install_cmd(name, token, body.group_id),
     )
 
 
@@ -122,7 +136,8 @@ async def delete_device(
     user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    row = await db.execute(select(Device).where(Device.name == name))
+    normalized = normalize_device_name(name)
+    row = await db.execute(select(Device).where(Device.name == normalized))
     device = row.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"device '{name}' not found")
@@ -143,7 +158,8 @@ async def patch_device_tags(
     (lowercase, stripped, deduped)."""
     if body.set is None and not body.add and not body.remove:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "provide one of: set, add, remove")
-    row = await db.execute(select(Device).where(Device.name == name))
+    normalized = normalize_device_name(name)
+    row = await db.execute(select(Device).where(Device.name == normalized))
     device = row.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"device '{name}' not found")

@@ -384,6 +384,25 @@ if [ -z "$OS_INFO_MOUNTS" ]; then
   echo "note: no recognized OS-info files on this host; agent will report os=unknown"
 fi
 
+# Host fingerprint sources for the agent's TOFU check. The agent reads
+# the first available file under /host/* and sends sha256(content) on
+# every check-in. The CP records it on first arrival after commissioning
+# and rejects mismatches with 409. Stops accidental cross-host paste of
+# the commissioning curl from silently flipping device identity.
+#
+# We bind-mount whichever exist; the agent's fallback chain picks the
+# best source. /etc/machine-id is the standard; DMI product_uuid is the
+# fallback when machine-id is absent (some embedded distros).
+FINGERPRINT_MOUNTS=""
+for src in /etc/machine-id /var/lib/dbus/machine-id /sys/class/dmi/id/product_uuid; do
+  if [ -r "$src" ]; then
+    FINGERPRINT_MOUNTS="$FINGERPRINT_MOUNTS -v $src:/host${src}:ro"
+  fi
+done
+if [ -z "$FINGERPRINT_MOUNTS" ]; then
+  echo "warn: no host fingerprint source on this host; CP will accept this device without TOFU enforcement"
+fi
+
 # shellcheck disable=SC2086
 # --pid host + SYS_ADMIN/SYS_PTRACE: let the agent `nsenter -t 1 -m -p -u`
 # into the host's namespaces to spawn `/bin/login` for web-terminal
@@ -404,6 +423,7 @@ docker run -d \
   -v /var/lib/drift-deploy:/var/lib/drift-deploy \
   -v /var/lib/node_exporter/textfile_collector:/var/lib/node_exporter/textfile_collector \
   $OS_INFO_MOUNTS \
+  $FINGERPRINT_MOUNTS \
   $CA_BUNDLE_MOUNT \
   drift-deploy-agent:latest
 

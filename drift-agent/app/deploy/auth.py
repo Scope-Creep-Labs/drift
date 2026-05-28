@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import session
 from .models import Device
+from .naming import normalize_device_name
 from .security import verify_token
 
 
@@ -28,7 +29,14 @@ async def authenticate_device(
     bearer: str,
     db: AsyncSession,
 ) -> Device:
-    row = await db.execute(select(Device).where(Device.name == device_name))
+    # Normalize the agent-supplied name before lookup so a casing
+    # mismatch between /etc/drift-deploy/env (set by install.sh from
+    # whatever the operator typed) and the canonical DB form doesn't
+    # cause spurious 401s. The DB column is always normalized.
+    normalized = normalize_device_name(device_name)
+    if not normalized:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid device or token")
+    row = await db.execute(select(Device).where(Device.name == normalized))
     device = row.scalar_one_or_none()
     if device is None or device.bootstrap_token_hash is None:
         # Same error shape for "not found" and "no token" — don't leak which.
