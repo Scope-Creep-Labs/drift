@@ -588,7 +588,7 @@ device-name-scoped, not hardware-bound. Two outcomes:
 
 ### 6. Migrate an existing stack from Arcane
 
-The flow that lets you stop using Arcane for one app. Worked example: `podnot` — see [examples/podnot.md](./examples/podnot.md) for the full recipe including the registry-credentials setup (the images are on private GHCR) and the named-volume pattern that keeps state portable across devices.
+The flow that lets you stop using whichever tool currently manages your docker-compose stacks (Portainer, Arcane, raw ssh, etc.) for one app at a time.
 
 Quick version for the simplest case (no private images, no state separation needed):
 
@@ -687,8 +687,7 @@ A tombstoned target is just a row with `desired_revision_id=NULL`. Run `deploy_r
 
 | File | What it covers |
 |---|---|
-| [examples/reporter.md](./examples/reporter.md) | Per-host observability stack (vmagent + cAdvisor + node-exporter + Vector) deployed to a group of devices with `deploy_revision_to_group`. |
-| [examples/podnot.md](./examples/podnot.md) | Private GHCR images (registry credentials flow end-to-end) + portable state via named volumes. Canonical example of a small real-world app. |
+| [examples/reporter.md](./examples/reporter.md) | Per-host observability stack (vmagent + cAdvisor + node-exporter + Vector) deployed to a group of devices with `deploy_revision_to_group`. Also documents the full set of `DRIFT_*` builtin vars the agent injects into compose. |
 
 ## Sample compose files (copy-paste-ready)
 

@@ -3,36 +3,62 @@
 The reporter stack is per-host observability — `vmagent` scrapes a local
 `cadvisor` + a host-network `node-exporter` + a local `vector` (log →
 metric) and remote-writes everything to the central VictoriaMetrics on
-the cloud VM. This recipe ships the same bundle to every device in a
-group; each device fills in its own identity at apply time via the
-agent's `DRIFT_DEVICE_NAME` / `DRIFT_GROUP_ID` injection.
+the CP. This recipe ships the same bundle to every device in a group;
+each device fills in its own identity and the CP's vmauth credentials
+at apply time via the agent's `DRIFT_*` variable injection.
+
+---
+
+## The full set of `DRIFT_*` builtin variables
+
+The agent injects these into every `docker compose` invocation it runs
+for a deployed app. Bundle authors reference them with normal compose
+`${VAR}` syntax and they resolve to the right value per device.
+
+| Variable | Value | Source |
+|---|---|---|
+| `DRIFT_DEVICE_NAME` | This device's name in the control plane | `/etc/drift-deploy/env` (set by `install.sh` from `DEVICE_NAME`) |
+| `DRIFT_GROUP_ID` | Logical grouping (`cloud`, `edge`, `drift_home`, ...) | `/etc/drift-deploy/env` (set by `install.sh` from `GROUP_ID`) |
+| `DRIFT_APP` | The current app's name during its compose invocation | Set per-app by the reconcile loop |
+| `DRIFT_DOCKER_DATA_DIR` | The host's docker root (`/var/lib/docker` on vanilla Linux; `/volume1/@docker` on Synology) | Auto-detected by `install.sh` via `docker info` |
+| `DRIFT_HOST_CA_BUNDLE` | Path to the host's combined CA bundle, bind-mounted at `/host/etc/ssl/...` inside containers. Empty on hosts without a recognized bundle. | Auto-detected by `install.sh` from standard host paths |
+| `DRIFT_CP_PUBLIC_URL` | The CP's public base URL (e.g. `https://drift.example.com`). Use it to build remote-write / vmauth / vmalert URLs. | Returned by the CP on every check-in |
+| `DRIFT_VM_WRITE_USER` | Basic-auth user for the CP's vmauth remote-write endpoint. Always `reporter` today. | Returned by the CP on every check-in |
+| `DRIFT_VM_WRITE_PASSWORD` | Basic-auth password for the vmauth remote-write endpoint. The CP's `REPORTER_PASSWORD` from `.env`. | Returned by the CP on every check-in |
+
+`DRIFT_HOST_CA_BUNDLE` is the only one the agent uses *implicitly* on
+your behalf: it auto-generates a `compose.override.yaml` per app that
+bind-mounts the host CA bundle into every service plus sets
+`SSL_CERT_FILE` / `CURL_CA_BUNDLE`. So your compose doesn't need to
+reference it explicitly to inherit corp-PKI trust; mention it in your
+own env block only if a specific service needs the path string.
 
 ---
 
 ## Prerequisites
 
-1. **Every target device has `drift-deploy-agent` v0.5.0+ running**, with
-   `GROUP_ID` set in `/etc/drift-deploy/env`. Verify with:
+1. **Every target device has `drift-deploy-agent` v0.12.0+ running**,
+   with `GROUP_ID` set in `/etc/drift-deploy/env`. Verify with:
 
    ```promql
    count by (version) (drift_deploy_agent_info)
    ```
 
-   If the count of `version="0.5.0"` doesn't match your device count,
-   re-run `install.sh` (fresh devices) or `docker restart
-   drift-deploy-agent` on the device (existing v0.4.0 install, one-time
-   to clear the self-update bug fixed in 0.5.0). After that, the agent's
-   self-update mechanism (DEPLOY.md → "Edge-agent self-update") keeps the
-   script up to date without further intervention.
+   After that, the agent's self-update mechanism (DEPLOY.md →
+   "Edge-agent self-update") keeps the script up to date without
+   further intervention.
 
 2. **The control plane is reporting `group_id` for each device.** Ask
    Drift: *"list devices and their group_id"*. Empty group means the
-   agent is older than v0.2.0 (no check-in field) — re-install.
+   device was commissioned before v0.2.0 — re-run `install.sh`.
 
-3. **The central VictoriaMetrics + vmauth are reachable from each
-   device** at `https://drift.example.com/vm/api/v1/write` with
-   basic auth `reporter:<REDACTED>`. If you're deploying to a
-   network that can't reach that URL, this bundle won't work as-is.
+3. **The CP's vmauth endpoint is reachable from each device** at
+   `${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write` with basic auth
+   `${DRIFT_VM_WRITE_USER}:${DRIFT_VM_WRITE_PASSWORD}`. The CP sends
+   those three values on every check-in, so the reporter bundle below
+   never has to hardcode them. If a device's network can't reach the
+   CP's public URL, the bundle still applies but vmagent's remote-write
+   will retry forever.
 
 ---
 
@@ -43,7 +69,7 @@ stages, expanded by two different runtimes:
 
 | Where | Syntax | Expanded by | When | Source |
 |---|---|---|---|---|
-| `compose.yaml` env values / paths | `${DRIFT_DEVICE_NAME}`, `${DRIFT_GROUP_ID}`, `${DRIFT_DOCKER_DATA_DIR}` | docker compose | At `compose up` time | The edge agent's shell exports |
+| `compose.yaml` env values / paths | `${DRIFT_DEVICE_NAME}`, `${DRIFT_GROUP_ID}`, `${DRIFT_DOCKER_DATA_DIR}`, `${DRIFT_CP_PUBLIC_URL}`, `${DRIFT_VM_WRITE_USER}`, `${DRIFT_VM_WRITE_PASSWORD}` | docker compose | At `compose up` time | The edge agent's shell exports |
 | `prometheus.yml` | `%{HOSTNAME}`, `%{GROUP_ID}` | vmagent itself | At config-load time | Env vars on the vmagent container (set by stage 1) |
 
 So `compose.yaml` does:
@@ -78,10 +104,13 @@ be `${HOSTNAME}`?"* — the answer is no, leave it.
 ```text
 Create a new app called `reporter`. Apply v1 with these three files
 exactly as written (don't reformat). The compose references
-${DRIFT_DEVICE_NAME} and ${DRIFT_GROUP_ID} — the agent will fill them
-in per device at apply time. The prometheus.yml uses %{HOSTNAME} and
-%{GROUP_ID} — that is vmagent's OWN env-substitution syntax (enabled
-by --promscrape.config.strictParse=false in the command list), NOT a
+${DRIFT_DEVICE_NAME}, ${DRIFT_GROUP_ID}, ${DRIFT_DOCKER_DATA_DIR},
+${DRIFT_CP_PUBLIC_URL}, ${DRIFT_VM_WRITE_USER}, and
+${DRIFT_VM_WRITE_PASSWORD} — the agent fills all of those in per
+device at apply time, so the bundle has no hardcoded CP URL or
+credentials. The prometheus.yml uses %{HOSTNAME} and %{GROUP_ID} —
+that is vmagent's OWN env-substitution syntax (enabled by
+--promscrape.config.strictParse=false in the command list), NOT a
 typo. Leave the percent-brace form exactly as written.
 
 compose.yaml:
@@ -99,9 +128,9 @@ services:
     command:
       - "-promscrape.config=/etc/prometheus/prometheus.yml"
       - "-promscrape.config.strictParse=false"
-      - "-remoteWrite.url=https://drift.example.com/vm/api/v1/write"
-      - "-remoteWrite.basicAuth.username=reporter"
-      - "-remoteWrite.basicAuth.password=<REDACTED>"
+      - "-remoteWrite.url=${DRIFT_CP_PUBLIC_URL}/vm/api/v1/write"
+      - "-remoteWrite.basicAuth.username=${DRIFT_VM_WRITE_USER}"
+      - "-remoteWrite.basicAuth.password=${DRIFT_VM_WRITE_PASSWORD}"
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -273,17 +302,17 @@ list deployments
 
 Both devices should show `reporter v1 status=healthy`.
 
-**From the central VM** (curl on `dev-hetzner`):
+**From the CP** (curl against vmauth, basic-auth with the same
+`DRIFT_VM_WRITE_*` credentials the reporter uses):
 
 ```bash
-# All hosts reporting in
-curl -s 'http://localhost:8428/api/v1/query?query=up{job=~"cadvisor|node|vector"}' \
+# All hosts reporting in (replace $CP_URL with your public URL)
+curl -s -u "$DRIFT_VM_WRITE_USER:$DRIFT_VM_WRITE_PASSWORD" \
+  "$DRIFT_CP_PUBLIC_URL/vm/api/v1/query?query=up{job=~\"cadvisor|node|vector\"}" \
   | jq -r '.data.result[] | "\(.metric.host)\t\(.metric.job)\t\(.value[1])"'
 ```
 
-You should see two new hosts (`home-pi4-001`, `home-synology-001`) with
-three jobs each, all `value=1`. The cloud VM continues to report from
-the hand-managed reporter.
+You should see one row per `(device, job)` pair, all `value=1`.
 
 **Per-group queries:**
 
@@ -324,19 +353,19 @@ Should print:
   `pid: host`. On DSM with Container Manager this works; on older
   Docker-package DSM you may see permission warnings from `node-exporter`
   reading `/proc`. Metrics will mostly still flow.
-- **The vmauth password is in the bundle.** Anyone with bundle access
-  can extract it. Fine for v0; v1 should swap to `_file` indirection
-  like Alertmanager secrets do.
+- **The vmauth password is NOT in the bundle.** It rides as
+  `${DRIFT_VM_WRITE_PASSWORD}` and resolves on the device at
+  `docker compose up` time. The bundle's `compose.yaml` literally
+  contains the placeholder; the password lives only in the agent's
+  per-tick env vars on the device.
 - **Textfile collector**: `/var/lib/node_exporter/textfile_collector` is
   pre-created on each device by `install.sh`. If the agent ever ends
   up on a device where this directory is missing (e.g. cleaned by
   someone), the node-exporter container will fail to start and the
   deployment target will go to `pending` with a clear error.
-- **The cloud VM is *not* in this deploy.** It runs the original
-  hand-managed reporter at `/root/setup/victoria/reporter/`. If you
-  ever want to migrate that off Arcane too, the same bundle works —
-  just deploy to `dev-hetzner` (group_id=`dev-cloud`) after stopping
-  the hand-managed stack to free the cadvisor/vector container names.
+- **The CP host itself is auto-commissioned as a device by `install.sh`.**
+  It runs the same reporter bundle if you deploy it there, against its
+  own self-hosted VictoriaMetrics. No special-casing needed.
 
 ---
 
