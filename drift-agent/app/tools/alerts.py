@@ -19,14 +19,40 @@ MANAGED_FILE = "drift-managed.yml"  # only file the agent is allowed to write
 MANAGED_GROUP = "drift-managed"      # single group inside that file
 
 
-_DURATION = re.compile(r"^(\d+)\s*([smhd])$")
+# Single-component (`30m`) AND combined (`1h30m`, `2d6h`, `45s`) forms.
+# Models reach for whichever shape is natural to the request — `silence
+# X for 90 minutes` becomes `90m` from one model, `1h30m` from another,
+# `5400` from a third. Accept all three.
+_DURATION_COMPONENT = re.compile(r"(\d+)\s*([smhdw])")
+_DURATION_FULL = re.compile(r"^(\d+\s*[smhdw]\s*)+$")
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
 def _duration_seconds(s: str) -> int:
-    m = _DURATION.match(s)
-    if not m:
-        raise ValueError(f"invalid duration: {s} (use 1h, 30m, 7d, etc.)")
-    return int(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    """Parse a duration string into seconds.
+
+    Accepted shapes:
+      - Single unit:  '45s', '30m', '1h', '7d', '2w'
+      - Combined:     '1h30m', '2d12h', '1w3d', '90m30s'
+      - Bare integer: '60'  (interpreted as seconds — what models reach
+        for when they're not sure of the unit suffix)
+      - Stripped of incidental whitespace before parsing.
+    """
+    s = s.strip()
+    # Bare integer = seconds. Common when the model decides "I'll just
+    # send the number" without committing to a unit.
+    if s.isdigit():
+        return int(s)
+    if not _DURATION_FULL.match(s):
+        raise ValueError(
+            f"invalid duration: {s!r}. Accepted forms: '45s', '30m', '1h', "
+            "'7d', '2w', combined like '1h30m' / '2d12h', or a bare integer "
+            "(interpreted as seconds)."
+        )
+    return sum(
+        int(n) * _UNIT_SECONDS[unit]
+        for n, unit in _DURATION_COMPONENT.findall(s)
+    )
 
 
 # ---------- HTTP client ----------
@@ -798,7 +824,11 @@ ALERT_TOOLS: list[dict] = [
                 },
                 "duration": {
                     "type": "string",
-                    "description": "How long to silence. Relative form '1h', '30m', '7d'. Default 1h.",
+                    "description": (
+                        "How long to silence. Single unit ('30m', '1h', '7d', '2w'), "
+                        "combined ('1h30m', '2d12h'), or a bare integer (seconds). "
+                        "Default 1h."
+                    ),
                 },
                 "comment": {"type": "string", "description": "Human-readable reason."},
                 "created_by": {"type": "string", "description": "Attribution. Default 'drift'."},

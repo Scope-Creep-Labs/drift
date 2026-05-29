@@ -58,23 +58,39 @@ class VMClient:
 # ---------- Time parsing ----------
 
 _DURATION = re.compile(r"^(\d+)\s*([smhd])$")
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
-def _parse_relative(s: str, now: float) -> float:
-    """Parse '1h', '30m', '7d' as 'now minus that duration'."""
+def _parse_duration_seconds(s: str) -> float:
+    """Parse '1h' / '30m' / '7d' into a positive number of seconds.
+    Raises ValueError on anything else."""
     m = _DURATION.match(s)
     if not m:
-        raise ValueError(f"unrecognized relative time: {s}")
-    n, unit = int(m.group(1)), m.group(2)
-    seconds = {"s": 1, "m": 60, "h": 3600, "d": 86400}[unit] * n
-    return now - seconds
+        raise ValueError(f"unrecognized duration: {s}")
+    return _UNIT_SECONDS[m.group(2)] * int(m.group(1))
 
 
 def _parse_time(s: str | None, now: float, default_offset: float = 0) -> float:
     if s is None:
         return now - default_offset
+    # Strip whitespace once so the rest of the branches can match cleanly
+    # ("now - 1h" with operator-typed spaces, model-generated "  1h  ").
+    s = s.strip()
+    # `"now"` and `"now-1h"` / `"now+30m"` — Prometheus / Grafana range
+    # syntax that models reach for instinctively. Accepting it costs
+    # nothing and stops a class of wasted tool calls.
+    if s == "now":
+        return now
+    if s.startswith("now") and len(s) > 3 and s[3] in "+-":
+        rest = s[4:].strip()
+        try:
+            seconds = _parse_duration_seconds(rest)
+        except ValueError:
+            seconds = None
+        if seconds is not None:
+            return now + seconds if s[3] == "+" else now - seconds
     if _DURATION.match(s):
-        return _parse_relative(s, now)
+        return now - _parse_duration_seconds(s)
     try:
         return float(s)
     except ValueError:
@@ -82,7 +98,11 @@ def _parse_time(s: str | None, now: float, default_offset: float = 0) -> float:
     try:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
     except ValueError as e:
-        raise ValueError(f"invalid time: {s}") from e
+        raise ValueError(
+            f"invalid time: {s!r}. Accepted: 'now', 'now-1h' / 'now+30m', "
+            "a bare duration like '1h' / '30m' / '7d' (meaning 'now minus that'), "
+            "ISO 8601, or a unix epoch."
+        ) from e
 
 
 # ---------- Tool Context ----------
@@ -319,8 +339,9 @@ METRICS_TOOLS: list[dict] = [
             "Run a PromQL range query against VictoriaMetrics. Stores the resulting "
             "time-series in a per-request cache and returns a reference (ref) plus a "
             "summary of the data. Use refs as inputs to analysis tools and chart emitters — "
-            "do NOT request raw arrays back. Times accept ISO 8601, unix epoch, or relative "
-            "expressions like '1h' / '30m' / '7d' (interpreted as 'now minus that duration')."
+            "do NOT request raw arrays back. Times accept ISO 8601, unix epoch, the literal "
+            "'now', a Grafana-style offset like 'now-1h' / 'now+30m', or a bare duration "
+            "like '1h' / '30m' / '7d' (interpreted as 'now minus that duration')."
         ),
         "input_schema": {
             "type": "object",

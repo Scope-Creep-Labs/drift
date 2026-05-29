@@ -16,17 +16,21 @@ import {
   Typography,
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
+import DarkModeIcon from '@mui/icons-material/DarkModeOutlined'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import KeyIcon from '@mui/icons-material/Key'
+import LightModeIcon from '@mui/icons-material/LightModeOutlined'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
+import SettingsBrightnessIcon from '@mui/icons-material/SettingsBrightnessOutlined'
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAltOutlined'
 import TerminalIcon from '@mui/icons-material/Terminal'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
 import { useTerminalUiStore } from '../../state/terminalUiStore'
+import { useThemeStore } from '../../state/themeStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
@@ -122,6 +126,8 @@ export function InvestigationList() {
   // 38% of the sidebar. Defaults to Conversations (matches prior UX).
   const [tab, setTab] = useState<'conversations' | 'devices' | 'apps'>('conversations')
   const openTerminal = useTerminalUiStore((s) => s.open)
+  const themeMode = useThemeStore((s) => s.mode)
+  const cycleTheme = useThemeStore((s) => s.cycleMode)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -652,6 +658,27 @@ export function InvestigationList() {
           )}
         </Box>
         <Stack direction="row" spacing={0.2}>
+          {/* Theme cycle: system → light → dark → system. Icon and
+              tooltip reflect the current setting; one click advances. */}
+          <Tooltip
+            title={
+              themeMode === 'system'
+                ? 'Theme: system (auto). Click for light.'
+                : themeMode === 'light'
+                  ? 'Theme: light. Click for dark.'
+                  : 'Theme: dark. Click for system.'
+            }
+          >
+            <IconButton size="small" onClick={cycleTheme} sx={{ p: 0.4 }}>
+              {themeMode === 'system' ? (
+                <SettingsBrightnessIcon sx={{ fontSize: 14 }} />
+              ) : themeMode === 'light' ? (
+                <LightModeIcon sx={{ fontSize: 14 }} />
+              ) : (
+                <DarkModeIcon sx={{ fontSize: 14 }} />
+              )}
+            </IconButton>
+          </Tooltip>
           {user?.role === 'admin' && (
             <Tooltip title="Software updates">
               <IconButton size="small" onClick={() => setUpdatesModalOpen(true)} sx={{ p: 0.4 }}>
