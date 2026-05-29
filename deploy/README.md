@@ -33,7 +33,7 @@ The installed stack is the **control plane (CP)** — the Drift server itself: w
 ## Install
 
 ```bash
-git clone https://github.com/kidproquo/drift.git
+git clone https://github.com/Scope-Creep-Labs/drift.git
 cd drift/deploy
 ./install.sh
 ```

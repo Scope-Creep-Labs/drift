@@ -18,6 +18,23 @@ prompt → agent (tool use → metrics / fleet / alerts) → streaming render bl
 
 ---
 
+## Install
+
+The fast path is the single-server bundle. One Linux host with Docker, one public domain, two minutes of prompts:
+
+```bash
+VERSION=v0.1.21
+curl -L "https://github.com/Scope-Creep-Labs/drift/releases/download/${VERSION}/drift-deploy-${VERSION#v}.tar.gz" | tar -xz
+cd "drift-deploy-${VERSION#v}"
+./install.sh
+```
+
+`install.sh` pulls `ghcr.io/kidproquo/drift-agent:latest` and `drift-frontend:latest`, so a fresh install lands directly on the current image versions regardless of which bundle tag you used. See [deploy/README.md](./deploy/README.md) for the full operator walkthrough (DNS, prompts, day-2 ops) and [deploy/UPDATES.md](./deploy/UPDATES.md) for the bundle-vs-image-only release model.
+
+Want to hack on the code instead? See [Quickstart](#quickstart) below.
+
+---
+
 ## What you can do
 
 Three pillars, all driven from the same chat. The agent uses ~30 tools across them; you don't pick the tools, you describe the goal.

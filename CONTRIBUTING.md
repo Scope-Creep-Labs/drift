@@ -70,7 +70,7 @@ Please **don't** open a public issue for security reports. Email **support@scope
 
 ## Communication
 
-- **Bugs / features:** GitHub issues on [kidproquo/drift-public](https://github.com/kidproquo/drift-public/issues).
+- **Bugs / features:** GitHub issues on [Scope-Creep-Labs/drift](https://github.com/Scope-Creep-Labs/drift/issues).
 - **Questions:** GitHub Discussions on the same repo.
 - **Security:** support@scopecreeplabs.com (see above).
 

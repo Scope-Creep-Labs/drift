@@ -108,7 +108,14 @@ class UpdateSnapshot:
 # single-server installer are published here; the body field of each
 # release is markdown that the admin UI renders alongside the digest
 # diff. Public repo → anonymous fetch is fine.
-RELEASES_REPO = "kidproquo/drift-public"
+#
+# Override via DRIFT_RELEASES_REPO env var for forks or staging
+# release channels. Default points at the canonical Scope Creep Labs
+# repo (this was kidproquo/drift-public until 2026-05-29, when the
+# source + release channels were consolidated into the now-public
+# Scope-Creep-Labs/drift repo).
+import os
+RELEASES_REPO = os.environ.get("DRIFT_RELEASES_REPO", "Scope-Creep-Labs/drift")
 RELEASES_LIMIT = 5  # how many recent releases to include in the snapshot
 
 
@@ -206,7 +213,7 @@ def _running_image_info(compose_service: str) -> tuple[Optional[str], Optional[s
     return digest, version
 
 
-# ---------- Release notes (GitHub releases for drift-public) ----------
+# ---------- Release notes (GitHub releases for RELEASES_REPO) ----------
 
 async def _fetch_recent_releases() -> list[ReleaseNote]:
     """Hit the public Releases API. Anonymous is fine for public repos

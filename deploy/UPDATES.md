@@ -8,12 +8,12 @@ Drift's CP (`drift-agent` + `drift-frontend`) ships as docker images, while the 
 
 ## Two kinds of release
 
-Every release tagged in [kidproquo/drift-public](https://github.com/kidproquo/drift-public/releases) is one of two kinds. They look the same in `gh release list`; the differentiator is whether a tarball asset is attached.
+Every release tagged in [Scope-Creep-Labs/drift](https://github.com/Scope-Creep-Labs/drift/releases) is one of two kinds. They look the same in `gh release list`; the differentiator is whether a tarball asset is attached.
 
 ### Image-only release
 
 * **Content**: just Python (`drift-agent`) and/or SPA (`drift-frontend`) code changes.
-* **Trigger**: `package-release.sh --publish vX.Y.Z --image-only --repo kidproquo/drift-public --notes notes.md`
+* **Trigger**: `package-release.sh --publish vX.Y.Z --image-only --notes notes.md`
 * **What the script does**: build both images with `--build-arg VERSION=vX.Y.Z`, tag them as `:vX.Y.Z` AND `:latest`, push both tags, create the GitHub release **without** a tarball asset.
 * **Operator action**: open the Software updates modal → click **Update now**. Images pull, containers recreate, done.
 * **Modal indicator**: small `image-only` chip on the release entry.
@@ -21,7 +21,7 @@ Every release tagged in [kidproquo/drift-public](https://github.com/kidproquo/dr
 ### Bundle release
 
 * **Content**: anything that touches `install.sh`, `docker-compose.yml`, `config/*.tmpl`, or any file in the deploy bundle. Usually paired with code changes too.
-* **Trigger**: `package-release.sh --publish vX.Y.Z --repo kidproquo/drift-public --notes notes.md`
+* **Trigger**: `package-release.sh --publish vX.Y.Z --notes notes.md`
 * **What the script does**: everything above **plus** build the tarball, sha256 it, attach both to the GitHub release.
 * **Operator action**: **manual upgrade required**. Run the curl + tar + `install.sh` block from the release page on the CP host. The web Update Now button is disabled for this case.
 * **Modal indicator**: warning chip on the release entry; warning-color Alert at the top of the modal with a "View release" button.
@@ -38,7 +38,7 @@ The modal tracks three version identifiers:
 |---|---|---|
 | `running_version` | `org.opencontainers.image.version` LABEL baked into the running drift-agent + drift-frontend container images | Every successful `docker compose pull` + recreate (Update now, or install.sh's own compose-up) |
 | `install_version` | `INSTALL_VERSION="vX.Y.Z"` line stamped into the tarball's `install.sh` at packaging time, written into `.env` when the operator runs it | Only when the operator re-extracts a new tarball and runs `install.sh` |
-| `latest_release_tag` | Latest release tag from `kidproquo/drift-public` via the GitHub Releases API | When you cut a new release |
+| `latest_release_tag` | Latest release tag from `Scope-Creep-Labs/drift` via the GitHub Releases API | When you cut a new release |
 
 The chip at the top of the modal shows **`running_version`** — that's what's actually executing right now. If `install_version` differs (image-only updates applied without a re-install), a secondary line shows the bundle version separately.
 
@@ -95,15 +95,16 @@ The chip at the top of the modal shows **`running_version`** — that's what's a
 ./deploy/package-release.sh \
     --publish vX.Y.Z \
     --image-only \
-    --repo kidproquo/drift-public \
     --notes deploy/release-notes/vX.Y.Z.md
 
 # 3b. Bundle release
 ./deploy/package-release.sh \
     --publish vX.Y.Z \
-    --repo kidproquo/drift-public \
     --notes deploy/release-notes/vX.Y.Z.md
 ```
+
+(`--repo` is unnecessary when releasing into the same repo that holds the source; the script defaults to the current repo. Pass `--repo other/repo` only when publishing to a separate releases repo, e.g. a private-source / public-releases split.)
+
 
 In both cases the script:
 
