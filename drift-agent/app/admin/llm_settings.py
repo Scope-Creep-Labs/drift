@@ -32,6 +32,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
@@ -155,6 +156,113 @@ def _write_env_file(path: Path, updates: dict[str, str]) -> None:
         raise
 
 
+# Same probe set install.sh runs at install time, ported to async
+# httpx. Each provider exposes a cheap auth-only `/models` (or
+# equivalent) endpoint that a valid key resolves to HTTP 200. We
+# use it as a "would this key authenticate at all" smoke test — no
+# token gets consumed beyond a HEAD-like list response.
+async def _probe_anthropic(key: str) -> tuple[bool, str]:
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(
+                "https://api.anthropic.com/v1/models",
+                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+            )
+    except httpx.RequestError as e:
+        return False, f"network error reaching Anthropic ({e.__class__.__name__})"
+    if r.status_code == 200:
+        return True, ""
+    if r.status_code in (401, 403):
+        return False, f"Anthropic rejected the key (HTTP {r.status_code})"
+    return False, f"Anthropic returned HTTP {r.status_code}"
+
+
+async def _probe_openai(key: str) -> tuple[bool, str]:
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(
+                "https://api.openai.com/v1/models",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+    except httpx.RequestError as e:
+        return False, f"network error reaching OpenAI ({e.__class__.__name__})"
+    if r.status_code == 200:
+        return True, ""
+    if r.status_code in (401, 403):
+        return False, f"OpenAI rejected the key (HTTP {r.status_code})"
+    return False, f"OpenAI returned HTTP {r.status_code}"
+
+
+async def _probe_gemini(key: str) -> tuple[bool, str]:
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": key},
+            )
+    except httpx.RequestError as e:
+        return False, f"network error reaching Gemini ({e.__class__.__name__})"
+    if r.status_code == 200:
+        return True, ""
+    if r.status_code in (401, 403):
+        return False, f"Gemini rejected the key (HTTP {r.status_code})"
+    return False, f"Gemini returned HTTP {r.status_code}"
+
+
+async def _probe_ollama(base_url: str) -> tuple[bool, str]:
+    """Hit /api/tags on the operator-supplied Ollama base. Validates
+    both reachability AND that it's actually an Ollama daemon (the
+    JSON shape from /api/tags is Ollama-specific)."""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(f"{base_url.rstrip('/')}/api/tags")
+    except httpx.RequestError as e:
+        return False, (
+            f"can't reach {base_url} from drift-agent ({e.__class__.__name__}). "
+            "Make sure the URL is resolvable from inside the container "
+            "(use host.docker.internal for an Ollama on the host)."
+        )
+    if r.status_code != 200:
+        return False, f"Ollama at {base_url} returned HTTP {r.status_code}"
+    try:
+        body = r.json()
+    except ValueError:
+        return False, f"{base_url} responded but the body isn't JSON — wrong service?"
+    if "models" not in body:
+        return False, f"{base_url} responded but doesn't look like an Ollama daemon"
+    return True, ""
+
+
+async def _validate_updates(updates: dict[str, str]) -> list[tuple[str, str]]:
+    """Run validation probes for any provider credential being
+    changed. Returns a list of `(field_name, message)` errors. Empty
+    list = all good. Empty-string values (an explicit "clear this
+    field") skip validation since there's nothing to test.
+    """
+    errors: list[tuple[str, str]] = []
+    probes = []
+    if updates.get("ANTHROPIC_API_KEY"):
+        probes.append(("anthropic_api_key", _probe_anthropic(updates["ANTHROPIC_API_KEY"])))
+    if updates.get("OPENAI_API_KEY"):
+        probes.append(("openai_api_key", _probe_openai(updates["OPENAI_API_KEY"])))
+    if updates.get("GEMINI_API_KEY"):
+        probes.append(("gemini_api_key", _probe_gemini(updates["GEMINI_API_KEY"])))
+    if updates.get("OLLAMA_API_BASE"):
+        probes.append(("ollama_api_base", _probe_ollama(updates["OLLAMA_API_BASE"])))
+    # Run probes concurrently — three providers + Ollama in parallel
+    # finish in roughly the latency of the slowest single probe (~1-3s
+    # on a healthy network).
+    results = await asyncio.gather(*(p for _, p in probes), return_exceptions=True)
+    for (field, _), result in zip(probes, results):
+        if isinstance(result, Exception):
+            errors.append((field, f"validation crashed: {result!r}"))
+            continue
+        ok, msg = result
+        if not ok:
+            errors.append((field, msg))
+    return errors
+
+
 def _detect_provider(model: str) -> str:
     """Map a model id to the API-key environment variable that needs to
     be set for LiteLLM to authenticate it. Returns one of `anthropic`,
@@ -242,6 +350,22 @@ async def update_llm_settings(
 
     if not updates:
         return {"changed": False, "restart_scheduled": False}
+
+    # Validate any credential changes BEFORE writing to .env. Saving a
+    # bad key would still survive a restart but the agent would 401 on
+    # every LLM call until the operator noticed. Catching it here means
+    # one round-trip + a clear modal error instead of "Drift is broken,
+    # let me check logs."
+    errors = await _validate_updates(updates)
+    if errors:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "validation_errors": [
+                    {"field": field, "message": msg} for field, msg in errors
+                ],
+            },
+        )
 
     _write_env_file(CP_ENV_FILE, updates)
 

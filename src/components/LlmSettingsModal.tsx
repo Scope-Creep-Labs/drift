@@ -87,11 +87,15 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
   // place, and submit. The backend diffs against settings server-side
   // and writes only fields the operator actually changed.
   const [model, setModel] = useState('')
+  const [effort, setEffort] = useState('high')
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
   const [geminiKey, setGeminiKey] = useState('')
   const [ollamaBase, setOllamaBase] = useState('')
   const [showKey, setShowKey] = useState(false)
+  // Per-field validation errors from the backend's PUT 400 response.
+  // Keyed by the same field names the backend emits.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
 
   // Fetch settings + pricing whenever the modal opens. Both are
   // single-shot — once loaded, the modal works against the cached
@@ -115,10 +119,12 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
         setSettings(sData)
         setPricing(pData.models)
         setModel(sData.model)
+        setEffort(sData.effort)
         setAnthropicKey(sData.anthropic_api_key)
         setOpenaiKey(sData.openai_api_key)
         setGeminiKey(sData.gemini_api_key)
         setOllamaBase(sData.ollama_api_base)
+        setFieldErrors({})
       } catch (e) {
         if (!cancelled) setError((e as Error).message)
       } finally {
@@ -157,9 +163,11 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
     setSaving(true)
     setError(null)
     setSuccess(null)
+    setFieldErrors({})
     try {
       const body: Record<string, unknown> = {}
       if (model !== settings.model) body.model = model
+      if (effort !== settings.effort) body.effort = effort
       if (ollamaBase !== settings.ollama_api_base) body.ollama_api_base = ollamaBase
       // Only send the key field that matches the active provider, and
       // only when its value differs from what GET returned. This way
@@ -186,6 +194,25 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       })
+      if (res.status === 400) {
+        // Validation failure. Backend returns
+        // {detail: {validation_errors: [{field, message}, ...]}}.
+        // Route each into the per-field state so the offending input
+        // shows the message inline.
+        const data = await res.json().catch(() => null) as
+          | { detail?: { validation_errors?: { field: string; message: string }[] } }
+          | null
+        const ve = data?.detail?.validation_errors ?? []
+        if (ve.length === 0) {
+          throw new Error(`Validation failed (HTTP 400) — empty error list`)
+        }
+        const map: Record<string, string> = {}
+        for (const e of ve) map[e.field] = e.message
+        setFieldErrors(map)
+        setError('Validation failed — see the highlighted fields.')
+        setSaving(false)
+        return
+      }
       if (!res.ok) {
         const txt = await res.text().catch(() => '')
         throw new Error(`HTTP ${res.status}${txt ? `: ${txt}` : ''}`)
@@ -326,6 +353,22 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
               )}
             </Box>
 
+            <TextField
+              select
+              fullWidth
+              size="small"
+              label="Reasoning effort"
+              value={effort}
+              onChange={(e) => setEffort(e.target.value)}
+              helperText="Passed to thinking-capable models (Opus, o1, o3). Larger values = more reasoning tokens = higher cost + latency. Ignored by models that don't support thinking."
+            >
+              <MenuItem value="low">low</MenuItem>
+              <MenuItem value="medium">medium</MenuItem>
+              <MenuItem value="high">high</MenuItem>
+              <MenuItem value="xhigh">xhigh</MenuItem>
+              <MenuItem value="max">max</MenuItem>
+            </TextField>
+
             {/* Just one credential field, matching the selected model's
                 provider. Picking a different model swaps the field; the
                 untouched provider key stays in .env (the diff in apply()
@@ -337,7 +380,8 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
                 onChange={setAnthropicKey}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper="ANTHROPIC_API_KEY in .env. Saved value pre-filled — edit to rotate."
+                helper={fieldErrors.anthropic_api_key || 'ANTHROPIC_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against api.anthropic.com/v1/models on save.'}
+                error={!!fieldErrors.anthropic_api_key}
               />
             )}
             {targetProvider === 'openai' && (
@@ -347,7 +391,8 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
                 onChange={setOpenaiKey}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper="OPENAI_API_KEY in .env. Saved value pre-filled — edit to rotate."
+                helper={fieldErrors.openai_api_key || 'OPENAI_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against api.openai.com/v1/models on save.'}
+                error={!!fieldErrors.openai_api_key}
               />
             )}
             {targetProvider === 'gemini' && (
@@ -357,7 +402,8 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
                 onChange={setGeminiKey}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper="GEMINI_API_KEY in .env. Saved value pre-filled — edit to rotate."
+                helper={fieldErrors.gemini_api_key || 'GEMINI_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against generativelanguage.googleapis.com on save.'}
+                error={!!fieldErrors.gemini_api_key}
               />
             )}
             {targetProvider === 'ollama' && (
@@ -368,7 +414,8 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
                 value={ollamaBase}
                 onChange={(e) => setOllamaBase(e.target.value)}
                 placeholder="http://host.docker.internal:11434"
-                helperText="Reachable from inside the drift-agent container. No API key needed for local models."
+                helperText={fieldErrors.ollama_api_base || 'Reachable from inside the drift-agent container. No API key needed for local models. Validated by probing /api/tags on save.'}
+                error={!!fieldErrors.ollama_api_base}
               />
             )}
             {targetProvider === 'unknown' && (
@@ -399,6 +446,7 @@ function KeyField({
   show,
   toggleShow,
   helper,
+  error,
 }: {
   label: string
   value: string
@@ -406,6 +454,7 @@ function KeyField({
   show: boolean
   toggleShow: () => void
   helper?: string
+  error?: boolean
 }) {
   return (
     <TextField
@@ -417,6 +466,7 @@ function KeyField({
       onChange={(e) => onChange(e.target.value)}
       placeholder="(not set)"
       helperText={helper}
+      error={error}
       InputProps={{
         endAdornment: (
           <InputAdornment position="end">
