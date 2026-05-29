@@ -27,7 +27,7 @@ prompt → agent (tool use → metrics / fleet / alerts) → streaming render bl
 The fast path is the single-server bundle. One Linux host with Docker, one public domain, two minutes of prompts:
 
 ```bash
-VERSION=v0.1.21
+VERSION=v0.1.37
 curl -L "https://github.com/Scope-Creep-Labs/drift/releases/download/${VERSION}/drift-deploy-${VERSION#v}.tar.gz" | tar -xz
 cd "drift-deploy-${VERSION#v}"
 ./install.sh
