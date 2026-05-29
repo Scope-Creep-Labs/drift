@@ -13,6 +13,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     openai_api_key: str = ""
     gemini_api_key: str = ""
+    # Local-model endpoint. When MODEL starts with ollama/ or ollama_chat/,
+    # LiteLLM uses this URL to reach the operator's Ollama daemon. The
+    # installer prompts for it with the host.docker.internal default, so
+    # the drift-agent container reaches a daemon running on the host.
+    ollama_api_base: str = ""
     effort: str = "high"
     max_tokens: int = 64000
 

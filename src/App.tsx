@@ -2,6 +2,7 @@ import { Box, CircularProgress } from '@mui/material'
 import { useAuth } from './auth/AuthContext'
 import { Shell } from './components/Shell'
 import { LoginPage } from './components/LoginPage'
+import { UtilityBar } from './components/UtilityBar'
 
 export default function App() {
   const auth = useAuth()
@@ -23,5 +24,10 @@ export default function App() {
   if (auth.status === 'unauthenticated') {
     return <LoginPage />
   }
-  return <Shell />
+  return (
+    <>
+      <Shell />
+      <UtilityBar />
+    </>
+  )
 }

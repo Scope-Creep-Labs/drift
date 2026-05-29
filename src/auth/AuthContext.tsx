@@ -1,6 +1,7 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react'
 import { useFleetStore } from '../state/fleetStore'
 import { apiBase } from '../lib/apiBase'
+import { prefetchPricing } from '../lib/pricing'
 
 // Mirrors UserOut from the backend (drift-agent/app/users/routes.py).
 export type AuthUser = {
@@ -100,6 +101,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // silent — autocomplete just won't suggest anything until the
       // next refresh trigger.
       useFleetStore.getState().refresh()
+      // Warm the pricing cache so the sidebar's $cost doesn't first
+      // render against the static FALLBACK table and then redraw when
+      // the live LiteLLM-derived prices arrive.
+      void prefetchPricing()
     } catch {
       setState({ status: 'unauthenticated' })
     }

@@ -38,19 +38,23 @@ if settings.drift_pg_url:
         stop_background_refresh,
     )
     from .admin.routes import router as admin_router
+    from .admin.llm_settings import router as llm_settings_router
     from .admin.updates import start_updates_poller, stop_updates_poller
     from .deploy.routes_admin import router as deploy_admin_router
     from .deploy.routes_agent import router as deploy_agent_router
     from .deploy.seed import seed_default_apps
     from .deploy.terminal import router as terminal_router
+    from .models_meta import router as models_router
     from .users.bootstrap import ensure_bootstrap_admin
     from .users.routes import router as auth_router
 
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(llm_settings_router)
     app.include_router(deploy_admin_router)
     app.include_router(deploy_agent_router)
     app.include_router(terminal_router)
+    app.include_router(models_router)
 
     @app.on_event("startup")
     async def _on_startup() -> None:

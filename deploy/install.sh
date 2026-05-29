@@ -427,17 +427,130 @@ ask_and_validate_llm_key() {
 }
 
 heading "LLM"
-echo "  Pick the model Drift's agent will run. The matching API key is asked next."
-echo "  Common picks: claude-opus-4-7 | gpt-5.4-mini | gpt-4o | o3 | gemini-2.5-pro"
-ask MODEL "Model id" claude-opus-4-7
+# Catalog-driven menu — reads deploy/models.json and prints a tiered
+# list with pricing pulled from a LiteLLM snapshot. Operator picks by
+# number, or types a model ID for anything not in the catalog (LiteLLM
+# supports hundreds; the catalog is just the recommended subset).
+pick_model_from_catalog() {
+  local catalog="$DEPLOY_DIR/models.json"
+  if [ ! -r "$catalog" ]; then
+    warn "models.json missing — falling back to free-text prompt."
+    ask MODEL "Model id" claude-opus-4-7
+    return
+  fi
+
+  # Render the menu. The 0-padded index lets a 10-row menu align
+  # cleanly. Tier headers and a final "Other" row at the end.
+  echo "  Pick the model Drift's agent will run."
+  echo "  (Prices per 1M tokens. Cached input is ~10x cheaper on most providers.)"
+  echo
+
+  # Flatten model list with indices so we can map "user typed 7" back
+  # to a model ID after the print loop. Indexing starts at 1.
+  local -a CATALOG_IDS CATALOG_PROVIDERS
+  local idx=0
+  local prev_tier=""
+  while IFS=$'\t' read -r tier_label model_id provider input_p output_p cached_p ctx desc; do
+    if [ "$tier_label" != "$prev_tier" ]; then
+      [ -n "$prev_tier" ] && echo
+      printf "  %s\n" "$tier_label"
+      prev_tier=$tier_label
+    fi
+    idx=$((idx + 1))
+    CATALOG_IDS[idx]=$model_id
+    CATALOG_PROVIDERS[idx]=$provider
+    # Local models: hide the all-zero price row; show "Local" instead.
+    if [ "$provider" = "ollama" ]; then
+      printf "    %2d) %-26s %-9s %s\n" "$idx" "$model_id" "Local" "$desc"
+    else
+      # Format prices: drop trailing zeros so "1.0" → "1", "0.075" stays.
+      local in_str out_str cache_str
+      in_str=$(printf "%g" "$input_p")
+      out_str=$(printf "%g" "$output_p")
+      cache_str=$(printf "%g" "$cached_p")
+      printf "    %2d) %-26s \$%s in / \$%s out / \$%s cached  %s\n" \
+        "$idx" "$model_id" "$in_str" "$out_str" "$cache_str" "$desc"
+    fi
+  done < <(jq -r '
+    .tiers[] | .label as $L |
+    .models[] |
+    [$L, .id, .provider,
+     (.input_per_mtok // 0),
+     (.output_per_mtok // 0),
+     (.cache_read_per_mtok // 0),
+     (.context_window // 0),
+     (.description // "")
+    ] | @tsv
+  ' "$catalog")
+
+  local other_idx=$((idx + 1))
+  echo
+  printf "    %2d) Other (type a model id)\n" "$other_idx"
+  echo
+
+  local current default
+  current=$(env_get MODEL)
+  default="${current:-claude-opus-4-7}"
+
+  local pick
+  read -rp "Pick a number, or a model id [$default]: " pick
+  pick=${pick:-$default}
+
+  # If the user typed a bare integer that maps to a catalog row, use
+  # that. Anything else (including the "Other" sentinel) is treated as
+  # a model id verbatim.
+  if [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -ge 1 ] && [ "$pick" -lt "$other_idx" ]; then
+    MODEL=${CATALOG_IDS[pick]}
+  elif [[ "$pick" =~ ^[0-9]+$ ]] && [ "$pick" -eq "$other_idx" ]; then
+    read -rp "  Model id (must be one LiteLLM recognizes): " MODEL
+    MODEL=${MODEL:-$default}
+  else
+    MODEL=$pick
+  fi
+  # Persist to the answers file so a rerun shows it as the current value.
+  printf 'MODEL=%s\n' "$MODEL" >> "$ANSWERS_FILE"
+
+  echo "  → $MODEL"
+}
+pick_model_from_catalog
+
 ask EFFORT "Reasoning effort (low/medium/high)" medium
 ask MAX_TOKENS "Max output tokens per call" 64000
-# Only prompt for + validate the key that matches the chosen model's provider.
-case "$MODEL" in
-  claude-*|*/claude-*) ask_and_validate_llm_key ANTHROPIC_API_KEY anthropic "Anthropic API key" ;;
-  gpt-*|o1*|o3*|*/gpt-*|*/o1*|*/o3*) ask_and_validate_llm_key OPENAI_API_KEY openai "OpenAI API key" ;;
-  gemini-*|*/gemini-*) ask_and_validate_llm_key GEMINI_API_KEY gemini "Gemini API key" ;;
-  *) warn "Unknown model prefix '$MODEL' — set the right *_API_KEY in .env manually after install." ;;
+
+# Look up the chosen model's provider from models.json (covers the
+# whole catalog without grepping by id-prefix). Falls back to
+# prefix-matching for anything typed in "Other".
+detect_provider() {
+  local model=$1
+  local catalog="$DEPLOY_DIR/models.json"
+  if [ -r "$catalog" ]; then
+    local p
+    p=$(jq -r --arg m "$model" '
+      .tiers[].models[] | select(.id == $m) | .provider
+    ' "$catalog" | head -1)
+    if [ -n "$p" ] && [ "$p" != "null" ]; then
+      echo "$p"
+      return
+    fi
+  fi
+  case "$model" in
+    claude-*|*/claude-*)                       echo "anthropic" ;;
+    gpt-*|o1*|o3*|*/gpt-*|*/o1*|*/o3*)         echo "openai" ;;
+    gemini-*|*/gemini-*)                       echo "gemini" ;;
+    ollama/*|ollama_chat/*)                    echo "ollama" ;;
+    *)                                         echo "unknown" ;;
+  esac
+}
+
+case "$(detect_provider "$MODEL")" in
+  anthropic) ask_and_validate_llm_key ANTHROPIC_API_KEY anthropic "Anthropic API key" ;;
+  openai)    ask_and_validate_llm_key OPENAI_API_KEY    openai    "OpenAI API key" ;;
+  gemini)    ask_and_validate_llm_key GEMINI_API_KEY    gemini    "Gemini API key" ;;
+  ollama)
+    echo "  Local model — no API key required."
+    ask OLLAMA_API_BASE "Ollama base URL" "http://host.docker.internal:11434"
+    ;;
+  *) warn "Unknown provider for '$MODEL' — set the right *_API_KEY in .env manually after install." ;;
 esac
 
 heading "ntfy push (Alertmanager → phone)"
@@ -591,6 +704,7 @@ MAX_TOKENS=$MAX_TOKENS
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 OPENAI_API_KEY=${OPENAI_API_KEY:-}
 GEMINI_API_KEY=${GEMINI_API_KEY:-}
+OLLAMA_API_BASE=${OLLAMA_API_BASE:-}
 
 DRIFT_ADMIN_USERNAME=$DRIFT_ADMIN_USERNAME
 DRIFT_ADMIN_PASSWORD=$DRIFT_ADMIN_PASSWORD
@@ -622,21 +736,23 @@ VM_BASIC_AUTH=
 VM_BEARER_TOKEN=
 EOF
 )
-# chown to root:docker + chmod 640 so drift-agent (running as 'app'
+# chown to root:docker + chmod 660 so drift-agent (running as 'app'
 # with the docker group as a supplementary group via compose
-# `group_add`) can READ the .env when the admin update-apply path
-# runs `docker compose` from inside the container. Practical
-# implication for host-side security: anyone in the docker group on
-# this host can already do anything via /var/run/docker.sock; giving
-# them .env read access is not a new boundary.
+# `group_add`) can READ and WRITE the .env. Read side: the admin
+# update-apply path runs `docker compose` from inside the container.
+# Write side: the admin LLM-settings endpoint mutates MODEL +
+# *_API_KEY lines so changes from the UI persist back into the same
+# .env the installer manages. Anyone in the docker group on this
+# host is already root-equivalent via /var/run/docker.sock, so .env
+# write access from the same group is not a new trust boundary.
 chown "root:${_DOCKER_GID}" "$ENV_FILE" 2>/dev/null || true
-chmod 640 "$ENV_FILE"
+chmod 660 "$ENV_FILE"
 # Mirror to the persistent state dir so the next install-version
 # extract (different DEPLOY_DIR) finds the same values.
 (umask 077 && cp -p "$ENV_FILE" "$ENV_FILE_STATE")
 chown "root:${_DOCKER_GID}" "$ENV_FILE_STATE" 2>/dev/null || true
-chmod 640 "$ENV_FILE_STATE"
-info ".env written ($(wc -l < "$ENV_FILE") lines, mode 640 root:docker · mirrored to $STATE_DIR)"
+chmod 660 "$ENV_FILE_STATE"
+info ".env written ($(wc -l < "$ENV_FILE") lines, mode 660 root:docker · mirrored to $STATE_DIR)"
 
 # ---------- render config templates ----------
 

@@ -1,13 +1,20 @@
-// Pricing per 1M tokens, $/M. Update if a vendor changes their price list.
-// `cacheWrite` is Anthropic-only (their cache_creation_input_tokens kind);
-// OpenAI / Gemini bill nothing extra to write the cache and only discount
-// reads, so we set cacheWrite to 0 for those.
+import { apiBase } from './apiBase'
+
+// Pricing per 1M tokens, $/M. The runtime values come from the
+// backend (`GET /api/models/pricing`), which derives them from
+// LiteLLM's `model_cost` table on first request. The frozen
+// `FALLBACK` map below is used until the fetch resolves (so the
+// sidebar doesn't show $0 on first paint) and as a graceful
+// degradation if the endpoint ever 4xx/5xxs.
 //
-// Sources:
+// Sources for the fallback values (kept in sync with what LiteLLM
+// snapshots at the time of writing this comment):
 //   Anthropic  https://www.anthropic.com/pricing
 //   OpenAI     https://openai.com/api/pricing
 //   Gemini     https://ai.google.dev/pricing
-const PRICING_PER_MTOK: Record<string, { input: number; output: number; cacheWrite: number; cacheRead: number }> = {
+type Price = { input: number; output: number; cacheWrite: number; cacheRead: number }
+
+const FALLBACK: Record<string, Price> = {
   // Anthropic
   'claude-opus-4-7': { input: 15, output: 75, cacheWrite: 18.75, cacheRead: 1.5 },
   'claude-sonnet-4-6': { input: 3, output: 15, cacheWrite: 3.75, cacheRead: 0.3 },
@@ -26,12 +33,79 @@ const PRICING_PER_MTOK: Record<string, { input: number; output: number; cacheWri
 
 const DEFAULT_MODEL = 'claude-opus-4-7'
 
+// In-memory cache of the backend-derived pricing. Populated lazily on
+// first cost computation. Modules that need pricing up-front (the
+// usage display) call `prefetchPricing()` after auth so the sidebar
+// doesn't flicker $0 → real-value on first paint.
+let _live: Record<string, Price> | null = null
+let _liveFetchPromise: Promise<void> | null = null
+
+type PricingResponse = {
+  models: Record<
+    string,
+    {
+      input_per_mtok: number
+      output_per_mtok: number
+      cache_read_per_mtok: number
+      cache_write_per_mtok: number
+    }
+  >
+}
+
+async function _fetchPricing(): Promise<void> {
+  try {
+    const res = await fetch(`${apiBase()}/models/pricing`, { credentials: 'include' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = (await res.json()) as PricingResponse
+    const next: Record<string, Price> = {}
+    for (const [model, p] of Object.entries(data.models)) {
+      next[model] = {
+        input: p.input_per_mtok,
+        output: p.output_per_mtok,
+        cacheRead: p.cache_read_per_mtok,
+        cacheWrite: p.cache_write_per_mtok,
+      }
+    }
+    _live = next
+  } catch {
+    // Backend unreachable / unauthenticated / older version that doesn't
+    // expose the endpoint — fall back silently. The static FALLBACK
+    // table covers everything in the curated installer catalog.
+    _live = { ...FALLBACK }
+  }
+}
+
+/** Kick off the pricing fetch. Idempotent: subsequent calls return
+ *  the same in-flight promise. Call after login so cost numbers in
+ *  the sidebar are correct on first paint. */
+export function prefetchPricing(): Promise<void> {
+  if (_live !== null) return Promise.resolve()
+  if (_liveFetchPromise === null) _liveFetchPromise = _fetchPricing()
+  return _liveFetchPromise
+}
+
 // Strip an optional litellm provider prefix ("anthropic/" / "openai/" /
 // "gemini/") so a config value like MODEL=anthropic/claude-opus-4-7
 // still matches our table keys.
 function _stripProvider(model: string): string {
   const slash = model.indexOf('/')
   return slash >= 0 ? model.slice(slash + 1) : model
+}
+
+function _priceFor(model: string): Price {
+  const table = _live ?? FALLBACK
+  // Try the model as-typed first (covers litellm provider prefixes
+  // like `gemini/gemini-2.5-pro` which live in the backend's
+  // model_cost dict verbatim).
+  if (table[model]) return table[model]
+  const stripped = _stripProvider(model)
+  if (table[stripped]) return table[stripped]
+  // Fall back to the default model's pricing so unknown models still
+  // produce a non-zero estimate. Local models (Ollama, vLLM) report
+  // $0 from the backend, which lands here as the FALLBACK's default
+  // — slightly wrong but harmless and the operator will recognize the
+  // model didn't get priced if they care.
+  return table[DEFAULT_MODEL] ?? FALLBACK[DEFAULT_MODEL]
 }
 
 export type Usage = {
@@ -43,8 +117,7 @@ export type Usage = {
 
 export function costForUsage(usage: Usage | undefined, model: string = DEFAULT_MODEL): number {
   if (!usage) return 0
-  const key = _stripProvider(model)
-  const p = PRICING_PER_MTOK[key] ?? PRICING_PER_MTOK[DEFAULT_MODEL]
+  const p = _priceFor(model)
   const fresh = usage.input_tokens ?? 0 // already excludes cache reads/writes
   const cached = usage.cache_read_input_tokens ?? 0
   const cacheWrite = usage.cache_creation_input_tokens ?? 0

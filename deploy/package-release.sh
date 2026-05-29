@@ -37,14 +37,17 @@ NOTES_FILE=""
 TARGET_REPO=""
 TARGET_BRANCH=""
 
+REFRESH_PRICES=false
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --allow-dirty) ALLOW_DIRTY=true; shift ;;
-    --image-only)  IMAGE_ONLY=true; PUBLISH=true; shift ;;
-    --publish)     PUBLISH=true; shift ;;
-    --notes)       NOTES_FILE=$2; shift 2 ;;
-    --repo)        TARGET_REPO=$2; shift 2 ;;
-    --target)      TARGET_BRANCH=$2; shift 2 ;;
+    --allow-dirty)          ALLOW_DIRTY=true; shift ;;
+    --image-only)           IMAGE_ONLY=true; PUBLISH=true; shift ;;
+    --publish)              PUBLISH=true; shift ;;
+    --notes)                NOTES_FILE=$2; shift 2 ;;
+    --repo)                 TARGET_REPO=$2; shift 2 ;;
+    --target)               TARGET_BRANCH=$2; shift 2 ;;
+    --refresh-model-prices) REFRESH_PRICES=true; shift ;;
     -h|--help)
       sed -n '2,25p' "$0"; exit 0 ;;
     -*)
@@ -53,6 +56,65 @@ while [ $# -gt 0 ]; do
       VERSION=$1; shift ;;
   esac
 done
+
+# ---------- model-pricing snapshot refresh ----------
+# Resyncs deploy/models.json's pricing fields against the current
+# LiteLLM data. Doesn't touch the model selection (the curated list
+# stays the same); just refreshes the per-million-token prices so
+# install.sh shows current numbers. Run before cutting a release
+# whenever a vendor changes pricing.
+if [ "$REFRESH_PRICES" = "true" ]; then
+  python3 -c "
+import json, sys, urllib.request
+catalog_path = '$DEPLOY_DIR/models.json'
+url = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
+with open(catalog_path) as f:
+    catalog = json.load(f)
+with urllib.request.urlopen(url, timeout=15) as r:
+    litellm = json.load(r)
+def lookup(model_id):
+    # Direct hit, or strip 'provider/' prefix and try again, or
+    # search for an entry whose id ENDS with the bare model name.
+    if model_id in litellm:
+        return litellm[model_id]
+    bare = model_id.split('/', 1)[-1]
+    if bare in litellm:
+        return litellm[bare]
+    for k, v in litellm.items():
+        if k.endswith(bare) and isinstance(v, dict):
+            return v
+    return None
+missing = []
+for tier in catalog['tiers']:
+    for m in tier['models']:
+        info = lookup(m['id'])
+        if info is None:
+            missing.append(m['id'])
+            continue
+        in_p = float(info.get('input_cost_per_token') or 0) * 1_000_000
+        out_p = float(info.get('output_cost_per_token') or 0) * 1_000_000
+        cr_p = float(info.get('cache_read_input_token_cost') or 0) * 1_000_000
+        cw_p = float(info.get('cache_creation_input_token_cost') or 0) * 1_000_000
+        m['input_per_mtok'] = round(in_p, 6)
+        m['output_per_mtok'] = round(out_p, 6)
+        m['cache_read_per_mtok'] = round(cr_p, 6)
+        m['cache_write_per_mtok'] = round(cw_p, 6)
+        if info.get('max_input_tokens'):
+            m['context_window'] = int(info['max_input_tokens'])
+        if info.get('supports_prompt_caching') is not None:
+            m['supports_prompt_caching'] = bool(info['supports_prompt_caching'])
+import datetime
+catalog['generated_at'] = datetime.datetime.utcnow().strftime('%Y-%m-%d')
+with open(catalog_path, 'w') as f:
+    json.dump(catalog, f, indent=2)
+    f.write('\n')
+print(f'updated {catalog_path}')
+if missing:
+    print(f'WARN: not found in LiteLLM: {missing}', file=sys.stderr)
+"
+  echo "  ✓ refreshed deploy/models.json"
+  exit 0
+fi
 
 # ---------- version ----------
 if [ -z "$VERSION" ]; then
