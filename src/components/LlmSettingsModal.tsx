@@ -23,12 +23,17 @@ import VisibilityOffIcon from '@mui/icons-material/VisibilityOffOutlined'
 import { apiBase } from '../lib/apiBase'
 import { formatUsd } from '../lib/pricing'
 
-// Model of the admin /api/admin/llm-settings GET response.
+// Model of the admin /api/admin/llm-settings GET response. Current
+// API-key values come back in full so the modal can pre-populate;
+// the endpoint is admin-only and admins already have root access to
+// the .env that holds these values.
 type LlmSettings = {
   model: string
   effort: string
   max_tokens: number
-  configured_keys: { anthropic: boolean; openai: boolean; gemini: boolean; ollama: boolean }
+  anthropic_api_key: string
+  openai_api_key: string
+  gemini_api_key: string
   ollama_api_base: string
   current_provider: 'anthropic' | 'openai' | 'gemini' | 'ollama' | 'unknown'
 }
@@ -77,17 +82,16 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
-  // Form state mirrors what gets PUT. Each API key starts blank — the
-  // backend's GET never returns existing values, so the "current" state
-  // is "we know it's set, here's where you can rotate it." Empty submit
-  // = no change for that field; explicit clearing requires the operator
-  // to type a space (which the trim() server-side reduces to "").
+  // Form state mirrors what gets PUT. API-key fields are pre-populated
+  // from GET so the operator can see the current value, edit it in
+  // place, and submit. The backend diffs against settings server-side
+  // and writes only fields the operator actually changed.
   const [model, setModel] = useState('')
   const [anthropicKey, setAnthropicKey] = useState('')
   const [openaiKey, setOpenaiKey] = useState('')
   const [geminiKey, setGeminiKey] = useState('')
   const [ollamaBase, setOllamaBase] = useState('')
-  const [showKeys, setShowKeys] = useState(false)
+  const [showKey, setShowKey] = useState(false)
 
   // Fetch settings + pricing whenever the modal opens. Both are
   // single-shot — once loaded, the modal works against the cached
@@ -111,6 +115,9 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
         setSettings(sData)
         setPricing(pData.models)
         setModel(sData.model)
+        setAnthropicKey(sData.anthropic_api_key)
+        setOpenaiKey(sData.openai_api_key)
+        setGeminiKey(sData.gemini_api_key)
         setOllamaBase(sData.ollama_api_base)
       } catch (e) {
         if (!cancelled) setError((e as Error).message)
@@ -154,9 +161,19 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
       const body: Record<string, unknown> = {}
       if (model !== settings.model) body.model = model
       if (ollamaBase !== settings.ollama_api_base) body.ollama_api_base = ollamaBase
-      if (anthropicKey.trim() !== '') body.anthropic_api_key = anthropicKey
-      if (openaiKey.trim() !== '') body.openai_api_key = openaiKey
-      if (geminiKey.trim() !== '') body.gemini_api_key = geminiKey
+      // Only send the key field that matches the active provider, and
+      // only when its value differs from what GET returned. This way
+      // the operator picking a new model doesn't accidentally rotate
+      // the key for the previously-selected provider.
+      if (targetProvider === 'anthropic' && anthropicKey !== settings.anthropic_api_key) {
+        body.anthropic_api_key = anthropicKey
+      }
+      if (targetProvider === 'openai' && openaiKey !== settings.openai_api_key) {
+        body.openai_api_key = openaiKey
+      }
+      if (targetProvider === 'gemini' && geminiKey !== settings.gemini_api_key) {
+        body.gemini_api_key = geminiKey
+      }
 
       if (Object.keys(body).length === 0) {
         setSuccess('Nothing changed.')
@@ -309,45 +326,40 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
               )}
             </Box>
 
-            {/* API key fields — only the relevant provider's row is
-                primary; the others stay visible but inactive-looking
-                so the operator can rotate any of them without
-                navigating away. */}
-            <Box>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
-                API keys (leave blank to keep the existing value)
-              </Typography>
-              <Stack spacing={1}>
-                <KeyField
-                  label="Anthropic"
-                  configured={settings.configured_keys.anthropic}
-                  highlight={targetProvider === 'anthropic'}
-                  value={anthropicKey}
-                  onChange={setAnthropicKey}
-                  show={showKeys}
-                  toggleShow={() => setShowKeys((s) => !s)}
-                />
-                <KeyField
-                  label="OpenAI"
-                  configured={settings.configured_keys.openai}
-                  highlight={targetProvider === 'openai'}
-                  value={openaiKey}
-                  onChange={setOpenaiKey}
-                  show={showKeys}
-                  toggleShow={() => setShowKeys((s) => !s)}
-                />
-                <KeyField
-                  label="Gemini"
-                  configured={settings.configured_keys.gemini}
-                  highlight={targetProvider === 'gemini'}
-                  value={geminiKey}
-                  onChange={setGeminiKey}
-                  show={showKeys}
-                  toggleShow={() => setShowKeys((s) => !s)}
-                />
-              </Stack>
-            </Box>
-
+            {/* Just one credential field, matching the selected model's
+                provider. Picking a different model swaps the field; the
+                untouched provider key stays in .env (the diff in apply()
+                only sends fields the operator actually edited). */}
+            {targetProvider === 'anthropic' && (
+              <KeyField
+                label="Anthropic API key"
+                value={anthropicKey}
+                onChange={setAnthropicKey}
+                show={showKey}
+                toggleShow={() => setShowKey((s) => !s)}
+                helper="ANTHROPIC_API_KEY in .env. Saved value pre-filled — edit to rotate."
+              />
+            )}
+            {targetProvider === 'openai' && (
+              <KeyField
+                label="OpenAI API key"
+                value={openaiKey}
+                onChange={setOpenaiKey}
+                show={showKey}
+                toggleShow={() => setShowKey((s) => !s)}
+                helper="OPENAI_API_KEY in .env. Saved value pre-filled — edit to rotate."
+              />
+            )}
+            {targetProvider === 'gemini' && (
+              <KeyField
+                label="Gemini API key"
+                value={geminiKey}
+                onChange={setGeminiKey}
+                show={showKey}
+                toggleShow={() => setShowKey((s) => !s)}
+                helper="GEMINI_API_KEY in .env. Saved value pre-filled — edit to rotate."
+              />
+            )}
             {targetProvider === 'ollama' && (
               <TextField
                 fullWidth
@@ -356,8 +368,13 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
                 value={ollamaBase}
                 onChange={(e) => setOllamaBase(e.target.value)}
                 placeholder="http://host.docker.internal:11434"
-                helperText="Reachable from inside the drift-agent container."
+                helperText="Reachable from inside the drift-agent container. No API key needed for local models."
               />
+            )}
+            {targetProvider === 'unknown' && (
+              <Alert severity="warning" variant="outlined">
+                Provider for <code>{model}</code> not recognized. Set the right *_API_KEY in <code>.env</code> manually, or pick a model from the list above.
+              </Alert>
             )}
           </Stack>
         )}
@@ -377,29 +394,29 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
 
 function KeyField({
   label,
-  configured,
-  highlight,
   value,
   onChange,
   show,
   toggleShow,
+  helper,
 }: {
   label: string
-  configured: boolean
-  highlight: boolean
   value: string
   onChange: (v: string) => void
   show: boolean
   toggleShow: () => void
+  helper?: string
 }) {
   return (
     <TextField
+      fullWidth
       size="small"
       label={label}
       type={show ? 'text' : 'password'}
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      placeholder={configured ? '••• existing value •••' : '(not configured)'}
+      placeholder="(not set)"
+      helperText={helper}
       InputProps={{
         endAdornment: (
           <InputAdornment position="end">
@@ -410,11 +427,6 @@ function KeyField({
             </Tooltip>
           </InputAdornment>
         ),
-      }}
-      sx={{
-        ...(highlight && {
-          '& .MuiOutlinedInput-notchedOutline': { borderColor: 'primary.main' },
-        }),
       }}
     />
   )

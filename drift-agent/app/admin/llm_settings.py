@@ -175,13 +175,17 @@ class LlmSettingsOut(BaseModel):
     model: str
     effort: str
     max_tokens: int
-    # Whether each provider's API key is non-empty. Values themselves
-    # are NEVER returned; the modal only needs to know which keys are
-    # already present so it can prompt only for missing ones.
-    configured_keys: dict[str, bool]
+    # Current values of every provider API key. Returned in full so the
+    # modal can pre-populate its input field (the admin opening this
+    # modal already has root access on the host where .env lives, so
+    # streaming the same value back through an admin-gated HTTPS API
+    # doesn't expand the trust boundary). Empty string means unset.
+    anthropic_api_key: str
+    openai_api_key: str
+    gemini_api_key: str
     ollama_api_base: str
-    # Provider of the currently-configured model. The frontend uses
-    # this to decide which key field to highlight.
+    # Provider of the currently-configured model. Frontend uses this
+    # to decide which one API-key field to render.
     current_provider: str
 
 
@@ -203,12 +207,9 @@ async def get_llm_settings(
         model=settings.model,
         effort=settings.effort,
         max_tokens=settings.max_tokens,
-        configured_keys={
-            "anthropic": bool(settings.anthropic_api_key),
-            "openai": bool(settings.openai_api_key),
-            "gemini": bool(settings.gemini_api_key),
-            "ollama": bool(settings.ollama_api_base),
-        },
+        anthropic_api_key=settings.anthropic_api_key,
+        openai_api_key=settings.openai_api_key,
+        gemini_api_key=settings.gemini_api_key,
         ollama_api_base=settings.ollama_api_base,
         current_provider=_detect_provider(settings.model),
     )

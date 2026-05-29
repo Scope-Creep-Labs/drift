@@ -23,6 +23,7 @@ import LogoutIcon from '@mui/icons-material/LogoutOutlined'
 import SearchIcon from '@mui/icons-material/SearchOutlined'
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAltOutlined'
 import TerminalIcon from '@mui/icons-material/Terminal'
+import TuneIcon from '@mui/icons-material/TuneOutlined'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
@@ -30,6 +31,7 @@ import { useTerminalUiStore } from '../../state/terminalUiStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
+import { LlmSettingsModal } from '../LlmSettingsModal'
 import { SoftwareUpdatesModal } from '../SoftwareUpdatesModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
 import { type App, type DeploymentTarget, type Device } from '../../lib/deployApi'
@@ -115,6 +117,7 @@ export function InvestigationList() {
   const [credsModalOpen, setCredsModalOpen] = useState(false)
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [updatesModalOpen, setUpdatesModalOpen] = useState(false)
+  const [llmModalOpen, setLlmModalOpen] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
   const [tagEditDevice, setTagEditDevice] = useState<Device | null>(null)
   // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
@@ -652,8 +655,15 @@ export function InvestigationList() {
           )}
         </Box>
         <Stack direction="row" spacing={0.2}>
-          {/* Theme toggle lives in the top-right utility bar now (see
-              UtilityBar in Shell.tsx). */}
+          {/* Theme toggle lives in the top-right utility bar now
+              (see UtilityBar.tsx). Admin-only settings sit here. */}
+          {user?.role === 'admin' && (
+            <Tooltip title="LLM model + API key">
+              <IconButton size="small" onClick={() => setLlmModalOpen(true)} sx={{ p: 0.4 }}>
+                <TuneIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           {user?.role === 'admin' && (
             <Tooltip title="Software updates">
               <IconButton size="small" onClick={() => setUpdatesModalOpen(true)} sx={{ p: 0.4 }}>
@@ -693,6 +703,9 @@ export function InvestigationList() {
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
       <SoftwareUpdatesModal open={updatesModalOpen} onClose={() => setUpdatesModalOpen(false)} />
+      {user?.role === 'admin' && (
+        <LlmSettingsModal open={llmModalOpen} onClose={() => setLlmModalOpen(false)} />
+      )}
       <TagEditModal
         open={tagEditDevice !== null}
         device={tagEditDevice}
