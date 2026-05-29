@@ -272,7 +272,9 @@ def _schedule_drift_agent_recreate() -> bool:
     interrupts the HTTP flush. The helper-container indirection lets
     this endpoint respond cleanly first.
     """
-    deploy_dir = os.environ.get("DEPLOY_DIR", "/root/setup/drift-deploy")
+    # v0.1.39+ pins this to /var/lib/drift-cp; honor a legacy DEPLOY_DIR
+    # override if .env still carries one from a pre-refactor install.
+    deploy_dir = os.environ.get("DEPLOY_DIR", "/var/lib/drift-cp")
     helper_image = "ghcr.io/kidproquo/drift-agent:latest"
     cmd = [
         "docker", "run", "--rm", "-d",

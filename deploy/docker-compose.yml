@@ -232,23 +232,23 @@ services:
       - ./config/alertmanager-secrets:/etc/alertmanager/secrets:ro
       - drift-bundles:/var/lib/drift/bundles
       - /var/run/docker.sock:/var/run/docker.sock
-      # Install dir mirrored at the SAME path inside the container as on
-      # the host. Required because `docker compose` from inside this
-      # container reads .env + compose files from its own filesystem,
-      # then sends mount specs (./config/alerts → absolute paths) to
-      # the daemon which resolves them on the host. Both filesystems
-      # need the path to exist with the same value, hence the mirror.
-      # Read-only — we only read compose files, never modify from here.
-      - ${DEPLOY_DIR:-/root/setup/drift-deploy}:${DEPLOY_DIR:-/root/setup/drift-deploy}:ro
+      # CP state dir mirrored at the SAME path inside the container as
+      # on the host. The agent's "Update now" path runs `docker compose`
+      # from inside this container; that subprocess needs the compose
+      # file + .env + rendered config templates visible at the same
+      # absolute path as the host so mount specs the daemon receives
+      # resolve correctly. /var/lib/drift-cp is the canonical state
+      # location set by v0.1.39's install.sh refactor (stable across
+      # bundle versions, survives `rm -rf` of the bundle extraction
+      # dir). Read-only — we only read compose files from here.
+      - /var/lib/drift-cp:/var/lib/drift-cp:ro
       # Writable bind-mount of just the .env file at a stable in-
       # container path. The admin LLM-settings endpoint updates
       # MODEL + *_API_KEY lines here so changes persist across
-      # restarts and a subsequent install.sh re-run sees the
-      # current values (sidecar mirror keeps them across DEPLOY_DIR
-      # changes too). Bind-mount granularity is the file, not the
+      # restarts. Bind-mount granularity is the file, not the
       # parent dir, so this doesn't conflict with the :ro mirror
       # above and doesn't grant write access to anything else.
-      - ${DEPLOY_DIR:-/root/setup/drift-deploy}/.env:/etc/drift/cp.env:rw
+      - /var/lib/drift-cp/.env:/etc/drift/cp.env:rw
     group_add:
       - "${DOCKER_GID:-999}"
     environment:

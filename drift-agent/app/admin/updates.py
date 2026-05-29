@@ -482,24 +482,23 @@ async def apply_cp_updates() -> dict:
                     "pull_output": "\n".join(pull_log),
                 }
 
-        # Recreate via compose. The install dir is bind-mounted at the
+        # Recreate via compose. The CP state dir is bind-mounted at the
         # SAME path inside this container as on the host (see compose
         # `volumes:` block) so we can use one consistent path for
         # `compose -f` AND `--project-directory`. The daemon also sees
         # bind-mount sources (./config/alerts → DEPLOY_DIR/config/...)
         # on that identical path on the host — no translation needed.
-        deploy_dir = os.environ.get("DEPLOY_DIR")
-        if not deploy_dir:
-            return {
-                "error": "DEPLOY_DIR env var not set on drift-agent — "
-                         "rerun install.sh to update docker-compose.yml.",
-                "pull_output": "\n".join(pull_log),
-            }
+        #
+        # As of v0.1.39 the state dir is fixed at /var/lib/drift-cp
+        # regardless of where the operator extracted the bundle. The
+        # DEPLOY_DIR env var (if still in .env from a legacy install)
+        # is honored as an override for non-default deployments.
+        deploy_dir = os.environ.get("DEPLOY_DIR", "/var/lib/drift-cp")
         if not os.path.isdir(deploy_dir):
             return {
                 "error": f"DEPLOY_DIR={deploy_dir} not mounted into drift-agent. "
-                         "Recreate the container (docker compose up -d drift-agent) "
-                         "after upgrading docker-compose.yml to v0.1.15+.",
+                         "Rerun the v0.1.39+ install.sh to recreate with the "
+                         "stable /var/lib/drift-cp bind-mount.",
                 "pull_output": "\n".join(pull_log),
             }
         compose_files = ["-f", f"{deploy_dir}/docker-compose.yml"]

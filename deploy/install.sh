@@ -25,32 +25,57 @@ INSTALL_VERSION="dev"
 
 cd "$(dirname "$0")"
 
-DEPLOY_DIR=$(pwd)
-ENV_FILE="$DEPLOY_DIR/.env"
-ENV_EXAMPLE="$DEPLOY_DIR/.env.example"
+# v0.1.39 split: the bundle dir (where the operator extracted the
+# tarball) is now a pure delivery payload — install.sh copies what
+# it needs to a stable state dir and then never touches the bundle
+# dir again. The bundle dir can be `rm -rf`'d after install.sh
+# finishes.
+#
+#   BUNDLE_DIR — where the tarball was extracted (this script's $PWD)
+#   DEPLOY_DIR — canonical state. All runtime ops (docker compose,
+#                config templates, .env, install logs) live here.
+#                Stable host path so a `mv bundle_dir` is a no-op for
+#                the running stack.
+#
+# DRIFT_STATE_DIR overrides the default if /var/lib isn't appropriate
+# (e.g., hosts with /var on read-only media).
+BUNDLE_DIR=$(pwd)
+DEPLOY_DIR="${DRIFT_STATE_DIR:-/var/lib/drift-cp}"
+(umask 077 && mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/logs" "$DEPLOY_DIR/config")
+chmod 700 "$DEPLOY_DIR" "$DEPLOY_DIR/logs" 2>/dev/null || true
 
-# Persistent state across install-version directories. When you extract
-# drift-deploy-0.1.7.tar.gz next to your existing drift-deploy-0.1.6/
-# dir, the new install.sh finds the prior .env and answers sidecar at a
-# stable host path so prefill works without copying files by hand.
-# Override via DRIFT_STATE_DIR=... in the environment if /var/lib isn't
-# right for your host.
-STATE_DIR="${DRIFT_STATE_DIR:-/var/lib/drift-cp}"
-(umask 077 && mkdir -p "$STATE_DIR" "$STATE_DIR/logs")
-chmod 700 "$STATE_DIR" "$STATE_DIR/logs" 2>/dev/null || true
-ENV_FILE_STATE="$STATE_DIR/.env"
-ANSWERS_FILE="$STATE_DIR/logs/last-answers.env"
+ENV_FILE="$DEPLOY_DIR/.env"
+ENV_EXAMPLE="$BUNDLE_DIR/.env.example"
+ANSWERS_FILE="$DEPLOY_DIR/logs/last-answers.env"
 (umask 077 && touch "$ANSWERS_FILE")
 chmod 600 "$ANSWERS_FILE"
 
-# Restore the install dir's .env from state if it's missing — this is
-# the cross-version reuse path. If both exist, leave the install dir's
-# copy alone (the operator may have hand-edited it between runs); env_get
-# reads from it first so manual edits take precedence.
-if [ ! -f "$ENV_FILE" ] && [ -f "$ENV_FILE_STATE" ]; then
-  (umask 077 && cp -p "$ENV_FILE_STATE" "$ENV_FILE")
-  chmod 600 "$ENV_FILE"
-  echo "→ restored .env from $STATE_DIR (previous install version)"
+# Migration from pre-v0.1.39 installs. v0.1.37/v0.1.38 stacks kept
+# the running compose attached to the bundle dir (the dir DEPLOY_DIR
+# used to alias). Inspect drift-agent's recorded working_dir and
+# copy its compose+config+env over to the canonical DEPLOY_DIR if
+# they're not already there. After this runs once, every subsequent
+# install.sh from any bundle directory writes to the same DEPLOY_DIR
+# without further migration.
+if [ ! -f "$ENV_FILE" ]; then
+  legacy_dir=$(docker inspect drift-agent \
+    --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
+    2>/dev/null || true)
+  if [ -n "$legacy_dir" ] && [ -d "$legacy_dir" ] && [ "$legacy_dir" != "$DEPLOY_DIR" ] \
+       && [ -f "$legacy_dir/.env" ]; then
+    echo "→ migrating from legacy install at $legacy_dir → $DEPLOY_DIR"
+    # Copy everything the running stack was using: compose files,
+    # configs (with rendered templates), .env. The bundle copy step
+    # below overwrites docker-compose.yml + templates with the new
+    # bundle's versions; the legacy copy is only authoritative for
+    # the operator-edited bits (.env, alertmanager-secrets contents).
+    (umask 077 && cp -p "$legacy_dir/.env" "$ENV_FILE")
+    chmod 600 "$ENV_FILE"
+    if [ -d "$legacy_dir/config" ]; then
+      mkdir -p "$DEPLOY_DIR/config"
+      cp -a "$legacy_dir/config/." "$DEPLOY_DIR/config/"
+    fi
+  fi
 fi
 
 # NOTE on umask: we used to set `umask 077` globally here, which had
@@ -59,9 +84,7 @@ fi
 # `umask 077` only as a brief shield around individual secret-bearing
 # writes (.env, last-answers.env, log files) and rely on explicit chmod
 # for the rest. Default umask (usually 022) is preserved.
-LOG_DIR="$DEPLOY_DIR/logs"
-(umask 077 && mkdir -p "$LOG_DIR")
-chmod 700 "$LOG_DIR" 2>/dev/null || true
+LOG_DIR="$DEPLOY_DIR/logs"  # already created above; this is just a name shortcut
 
 # Tee the entire run to a timestamped log so the operator has a
 # permanent record of what was set + what was generated. Mode 600
@@ -279,8 +302,8 @@ command -v docker >/dev/null || err "docker not installed"
 docker compose version >/dev/null 2>&1 || err "docker compose plugin missing"
 info "docker $(docker --version | awk '{print $3}' | tr -d ',')"
 info "compose $(docker compose version | awk '{print $4}')"
-info "deploy dir: $DEPLOY_DIR"
-info "state dir:  $STATE_DIR  (persistent across install-version dirs)"
+info "bundle dir: $BUNDLE_DIR  (delivery payload; safe to rm -rf after install)"
+info "state dir:  $DEPLOY_DIR  (canonical; persists across bundle versions)"
 
 if [ -f "$ENV_FILE" ]; then
   info "found existing .env (will prompt to keep or change values)"
@@ -432,7 +455,7 @@ heading "LLM"
 # number, or types a model ID for anything not in the catalog (LiteLLM
 # supports hundreds; the catalog is just the recommended subset).
 pick_model_from_catalog() {
-  local catalog="$DEPLOY_DIR/models.json"
+  local catalog="$BUNDLE_DIR/models.json"
   if [ ! -r "$catalog" ]; then
     warn "models.json missing — falling back to free-text prompt."
     ask MODEL "Model id" claude-opus-4-7
@@ -522,7 +545,7 @@ ask MAX_TOKENS "Max output tokens per call" 64000
 # prefix-matching for anything typed in "Other".
 detect_provider() {
   local model=$1
-  local catalog="$DEPLOY_DIR/models.json"
+  local catalog="$BUNDLE_DIR/models.json"
   if [ -r "$catalog" ]; then
     local p
     p=$(jq -r --arg m "$model" '
@@ -747,20 +770,23 @@ EOF
 # write access from the same group is not a new trust boundary.
 chown "root:${_DOCKER_GID}" "$ENV_FILE" 2>/dev/null || true
 chmod 660 "$ENV_FILE"
-# Mirror to the persistent state dir so the next install-version
-# extract (different DEPLOY_DIR) finds the same values.
-(umask 077 && cp -p "$ENV_FILE" "$ENV_FILE_STATE")
-chown "root:${_DOCKER_GID}" "$ENV_FILE_STATE" 2>/dev/null || true
-chmod 660 "$ENV_FILE_STATE"
-info ".env written ($(wc -l < "$ENV_FILE") lines, mode 660 root:docker · mirrored to $STATE_DIR)"
+# As of v0.1.39 ENV_FILE IS the canonical state — no mirror needed.
+# The bundle dir's .env (if it existed) is irrelevant; compose runs
+# from DEPLOY_DIR and binds /var/lib/drift-cp/.env directly.
+info ".env written to $ENV_FILE ($(wc -l < "$ENV_FILE") lines, mode 660 root:docker)"
 
 # ---------- render config templates ----------
 
 heading "Rendering config templates"
+# Templates live in the BUNDLE (read-only payload); rendered output
+# goes into DEPLOY_DIR/config (state). render() takes paths relative
+# to those roots so the call sites stay readable.
 render() {
-  local src=$1 dst=$2
+  local rel_src=$1 rel_dst=$2
   shift 2
-  # Pairs of __KEY__ value [__KEY__ value …]; rendered via sed.
+  local src="$BUNDLE_DIR/$rel_src"
+  local dst="$DEPLOY_DIR/$rel_dst"
+  mkdir -p "$(dirname "$dst")"
   local input
   input=$(cat "$src")
   while [ $# -gt 0 ]; do
@@ -775,6 +801,51 @@ render() {
   printf '%s\n' "$input" > "$dst"
   info "  rendered $dst"
 }
+
+# Copy the bundle's static state into DEPLOY_DIR before rendering /
+# starting compose. These files don't need substitution — they're
+# version-controlled artifacts the running stack reads directly:
+#   - docker-compose.yml + docker-compose.external.yml
+#   - models.json (consumed by drift-agent's admin LLM modal + by
+#     this script's model-picker on subsequent runs)
+#   - empty dirs that bind-mounts expect (alertmanager-secrets etc.)
+# We don't copy install.sh / README.md / release-notes — those are
+# operator-facing and stay in the bundle dir.
+copy_bundle_to_state() {
+  local f
+  for f in docker-compose.yml docker-compose.external.yml models.json; do
+    if [ -f "$BUNDLE_DIR/$f" ]; then
+      cp -f "$BUNDLE_DIR/$f" "$DEPLOY_DIR/$f"
+    fi
+  done
+  # alertmanager-secrets is operator-managed (drop bearer tokens
+  # here). Preserve any existing contents; only ensure the dir
+  # exists with the right perms for AM to read.
+  mkdir -p "$DEPLOY_DIR/config/alertmanager-secrets"
+  chmod 755 "$DEPLOY_DIR/config/alertmanager-secrets"
+  # Hand-curated alert rule files live in the bundle too. Copy them
+  # into state so drift-agent's alert-rule tools (which edit
+  # drift-managed.yml in place) and the operator-edited starter
+  # rules co-exist at the same path.
+  if [ -d "$BUNDLE_DIR/config/alerts" ]; then
+    mkdir -p "$DEPLOY_DIR/config/alerts"
+    cp -n "$BUNDLE_DIR/config/alerts"/*.yml "$DEPLOY_DIR/config/alerts/" 2>/dev/null || true
+  fi
+  # Alertmanager base config: same deal — copy if missing, preserve
+  # operator edits on subsequent runs.
+  if [ -f "$BUNDLE_DIR/config/alertmanager/alertmanager.yml" ]; then
+    mkdir -p "$DEPLOY_DIR/config/alertmanager"
+    cp -n "$BUNDLE_DIR/config/alertmanager/alertmanager.yml" \
+          "$DEPLOY_DIR/config/alertmanager/alertmanager.yml" 2>/dev/null || true
+  fi
+  # Reporter config (vmagent prometheus.yml + vector + process-exporter)
+  # is bundle-authoritative and shipped as-is.
+  if [ -d "$BUNDLE_DIR/config/reporter" ]; then
+    mkdir -p "$DEPLOY_DIR/config/reporter"
+    cp -f "$BUNDLE_DIR/config/reporter"/* "$DEPLOY_DIR/config/reporter/" 2>/dev/null || true
+  fi
+}
+copy_bundle_to_state
 
 if [ "$USE_BUNDLED_CADDY" = "true" ]; then
   render config/Caddyfile.tmpl              config/Caddyfile \
@@ -845,8 +916,22 @@ if [ "$USE_BUNDLED_CADDY" = "true" ]; then
 else
   COMPOSE_ARGS=(-f docker-compose.yml -f docker-compose.external.yml)
 fi
+# Run compose from DEPLOY_DIR so the project name, working_dir label,
+# env_file resolution, and ${DEPLOY_DIR}-anchored bind mounts all
+# align with the canonical state location. As of v0.1.39 the bundle
+# dir doesn't host runtime state — only the bundle's templates +
+# install.sh itself.
+cd "$DEPLOY_DIR"
+# --force-recreate handles the v0.1.39 migration case (and only
+# costs an extra restart on routine reruns). In legacy installs
+# the running drift-agent's working_dir label still points at the
+# old bundle dir; compose's normal "diff the config" idempotency
+# DOES catch the new cp.env bind path, but only when the diff
+# happens against a container the daemon recognizes as belonging
+# to this compose project — which can be flaky during a working_dir
+# change. Force-recreate side-steps the ambiguity.
 docker compose "${COMPOSE_ARGS[@]}" pull
-docker compose "${COMPOSE_ARGS[@]}" up -d
+docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate --remove-orphans
 echo
 
 # ---------- health check ----------
@@ -899,7 +984,7 @@ else
   echo "  Drift web UI may still load if drift-agent, drift-postgres, and"
   echo "  drift-frontend are healthy. If drift-agent is restarting on"
   echo "  'InvalidPasswordError', there's a stale postgres volume — see"
-  echo "  $DEPLOY_DIR/README.md (troubleshooting)."
+  echo "  $BUNDLE_DIR/README.md (troubleshooting; same file ships in every bundle)."
 fi
 echo
 
