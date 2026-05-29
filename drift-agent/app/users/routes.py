@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, AsyncIterator, Optional
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +25,7 @@ from .deps import (
     require_role,
 )
 from .passwords import hash_password, verify_password
+from .rate_limit import client_ip_from_request, get_login_limiter
 from .sessions import create_session, revoke_session
 
 
@@ -82,9 +83,27 @@ async def _groups_for(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
 @router.post("/login", response_model=UserOut)
 async def login(
     body: LoginRequest,
+    request: Request,
     response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> UserOut:
+    # Rate-limit check BEFORE the database lookup + bcrypt verify, so a
+    # lockout costs us almost nothing and an attacker can't keep
+    # exhausting CPU on bcrypt past the threshold.
+    limiter = get_login_limiter()
+    user_key = f"user:{body.username.strip().lower()}"
+    ip_key = f"ip:{client_ip_from_request(request)}"
+    if await limiter.is_locked(user_key) or await limiter.is_locked(ip_key):
+        # 429 instead of 401 so the SPA can surface a distinct
+        # "too many attempts, try again later" message. We don't
+        # leak whether the lockout is on the username or the IP
+        # (that's an enumeration hint).
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed login attempts, try again later",
+            headers={"Retry-After": str(settings.login_failure_window_seconds)},
+        )
+
     user = (
         await db.execute(select(User).where(User.username == body.username))
     ).scalar_one_or_none()
@@ -93,10 +112,19 @@ async def login(
     if user is None:
         # Burn a bcrypt verify on a dummy hash to keep timing similar.
         verify_password(body.password, "$2b$12$" + "x" * 53)
+        await limiter.record_failure(user_key)
+        await limiter.record_failure(ip_key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     if not verify_password(body.password, user.password_hash):
+        await limiter.record_failure(user_key)
+        await limiter.record_failure(ip_key)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
 
+    # Success: clear the username's failure tally so the legitimate
+    # user starts fresh. Leave the IP bucket alone — a single correct
+    # guess shouldn't reset network-wide enforcement (an attacker
+    # would just rotate to other accounts).
+    await limiter.clear(user_key)
     sess = await create_session(db, user)
     user.last_login_at = sess.created_at
     groups = await _groups_for(db, user.id)
@@ -255,12 +283,30 @@ async def me_usage(user: UserContext = Depends(get_current_user)) -> MeUsage:
 @router.post("/me/password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     body: PasswordChangeRequest,
+    request: Request,
     actor: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     """Self-serve password change. Verifies the caller's current password,
     then updates the hash. Existing sessions stay valid — the caller is
-    still authenticated under their current cookie."""
+    still authenticated under their current cookie.
+
+    Rate-limited on the same buckets as /login (per-username + per-IP) so
+    a stolen-session attacker can't quietly grind the current_password
+    field to find leverage for a wider takeover."""
+    # Same lockout posture as /login. Uses the authenticated user's
+    # canonical username (not anything from the body) so an attacker
+    # with a stolen cookie can't bypass by sending a different name.
+    limiter = get_login_limiter()
+    user_key = f"user:{actor.username.strip().lower()}"
+    ip_key = f"ip:{client_ip_from_request(request)}"
+    if await limiter.is_locked(user_key) or await limiter.is_locked(ip_key):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="too many failed password attempts, try again later",
+            headers={"Retry-After": str(settings.login_failure_window_seconds)},
+        )
+
     if body.new_password == body.current_password:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "new password must differ from current"
@@ -272,9 +318,14 @@ async def change_password(
         # Should be impossible — the dep guard already loaded the user.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
     if not verify_password(body.current_password, user.password_hash):
+        await limiter.record_failure(user_key)
+        await limiter.record_failure(ip_key)
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED, "current password is incorrect"
         )
+    # Success: clear the username bucket so a legitimate user who
+    # mistyped once isn't carrying a stale failure count.
+    await limiter.clear(user_key)
     user.password_hash = hash_password(body.new_password)
     await db.commit()
 

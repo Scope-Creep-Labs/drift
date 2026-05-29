@@ -77,6 +77,14 @@ LLM-tool equivalents (admin-only): `list_users`, `create_user`, `set_user_role`,
 
 **Self-serve password change** (any role): sidebar footer → 🔁 icon → enter current + new + confirm. POSTs to `/api/auth/me/password`. Verifies the current password server-side; existing sessions are preserved (the user stays logged in afterwards). Min length 8 characters. Cannot reuse the same password. Importantly, **this flow keeps the password off the chat surface entirely** — it never enters the LLM context.
 
+**Login rate limiting.** Both `/api/auth/login` and `/api/auth/me/password` enforce a sliding-window failure counter in two independent buckets: per username (catches slow account-grinding) and per source IP (catches credential stuffing across many usernames from one source). Either bucket hitting its threshold returns `HTTP 429` with a `Retry-After` header and skips bcrypt verify entirely. Successful login clears the username bucket; the IP bucket is never cleared by success so a single correct guess can't reset network-wide enforcement. Tunables in `.env`:
+
+- `LOGIN_MAX_FAILURES_PER_USERNAME` (default 5)
+- `LOGIN_MAX_FAILURES_PER_IP` (default 30)
+- `LOGIN_FAILURE_WINDOW_SECONDS` (default 900 = 15 min)
+
+State is in-memory on the drift-agent process; restarts reset every counter. Behind a reverse proxy, the limiter prefers the leftmost hop of `X-Forwarded-For` for IP bucketing — Caddy + nginx set this by default in the bundled compose.
+
 Last-admin protection: the system refuses to demote or delete the only admin so it can't lock itself out.
 
 **Session shape:** server-side, in the `sessions` table. Cookie value is an opaque UUID; HttpOnly, SameSite=Lax, Secure in production. 30-day rolling expiry — every authenticated request bumps `expires_at` so active users don't get logged out.

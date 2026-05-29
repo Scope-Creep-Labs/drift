@@ -105,6 +105,20 @@ class Settings(BaseSettings):
     # blips, tight enough to surface real outages within minutes.
     drift_device_stale_after_seconds: int = 300
 
+    # Login rate limiting (in-memory, per drift-agent process). Failed
+    # password checks at /api/auth/login and /api/auth/me/password are
+    # tracked in two sliding windows: per username (catches slow
+    # account-grinding) and per source IP (catches credential stuffing
+    # across many accounts from one source). Either bucket hitting its
+    # max returns 429 and skips bcrypt verify entirely. Successful login
+    # clears the username bucket; the IP bucket is never cleared by
+    # success, so a single correct guess can't reset network-wide
+    # enforcement. Tune higher for shared-IP environments (office NAT,
+    # CGNAT residential), lower for single-user installs.
+    login_max_failures_per_username: int = 5
+    login_max_failures_per_ip: int = 30
+    login_failure_window_seconds: int = 900  # 15 minutes
+
     @property
     def deploy_enabled(self) -> bool:
         """Deploy subsystem requires Postgres + a bundle storage backend.
