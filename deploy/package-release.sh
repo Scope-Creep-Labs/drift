@@ -103,6 +103,22 @@ for tier in catalog['tiers']:
             m['context_window'] = int(info['max_input_tokens'])
         if info.get('supports_prompt_caching') is not None:
             m['supports_prompt_caching'] = bool(info['supports_prompt_caching'])
+
+# Provider validate URLs. LiteLLM's JSON doesn't expose these
+# directly (the URLs are baked into per-provider handler classes),
+# so we maintain a small canonical map here and write it through.
+# install.sh reads catalog['providers'][\"<p>\"].validate_url at
+# install time. If a provider ever changes its /models endpoint,
+# update this map and re-run --refresh-model-prices.
+provider_validate_urls = {
+    'anthropic': 'https://api.anthropic.com/v1/models',
+    'openai':    'https://api.openai.com/v1/models',
+    'gemini':    'https://generativelanguage.googleapis.com/v1beta/models',
+}
+catalog.setdefault('providers', {})
+for prov, validate_url in provider_validate_urls.items():
+    catalog['providers'].setdefault(prov, {})['validate_url'] = validate_url
+
 import datetime
 catalog['generated_at'] = datetime.datetime.utcnow().strftime('%Y-%m-%d')
 with open(catalog_path, 'w') as f:

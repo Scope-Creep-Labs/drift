@@ -156,111 +156,90 @@ def _write_env_file(path: Path, updates: dict[str, str]) -> None:
         raise
 
 
-# Same probe set install.sh runs at install time, ported to async
-# httpx. Each provider exposes a cheap auth-only `/models` (or
-# equivalent) endpoint that a valid key resolves to HTTP 200. We
-# use it as a "would this key authenticate at all" smoke test — no
-# token gets consumed beyond a HEAD-like list response.
-async def _probe_anthropic(key: str) -> tuple[bool, str]:
+# Validate (model, credential) via the same LiteLLM completion code
+# path the agent uses at runtime. No hardcoded provider URLs — LiteLLM
+# owns the per-provider routing, base URLs, auth header shapes, and
+# the rule set for whether OpenAI's `Authorization: Bearer …` or
+# Anthropic's `x-api-key …` applies. A green result here guarantees
+# the agent's next /investigate call would also authenticate; a
+# `/v1/models`-style probe could pass for a key gated to different
+# scopes than what completions actually need.
+#
+# Cost: one max_tokens=5 completion per validate click — fractions of
+# a cent on Haiku/Flash, ~$0.005 on Opus, which is fine for an
+# operator-triggered button.
+async def _validate_via_litellm(
+    model: str,
+    api_key: Optional[str] = None,
+    api_base: Optional[str] = None,
+) -> tuple[bool, str]:
+    """Send a 5-token completion through LiteLLM. Returns (ok, message).
+    Wraps exception types into operator-readable strings."""
     try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.get(
-                "https://api.anthropic.com/v1/models",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-            )
-    except httpx.RequestError as e:
-        return False, f"network error reaching Anthropic ({e.__class__.__name__})"
-    if r.status_code == 200:
-        return True, ""
-    if r.status_code in (401, 403):
-        return False, f"Anthropic rejected the key (HTTP {r.status_code})"
-    return False, f"Anthropic returned HTTP {r.status_code}"
+        import litellm
+    except ImportError:
+        return False, "litellm not installed inside drift-agent"
 
-
-async def _probe_openai(key: str) -> tuple[bool, str]:
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.get(
-                "https://api.openai.com/v1/models",
-                headers={"Authorization": f"Bearer {key}"},
-            )
-    except httpx.RequestError as e:
-        return False, f"network error reaching OpenAI ({e.__class__.__name__})"
-    if r.status_code == 200:
-        return True, ""
-    if r.status_code in (401, 403):
-        return False, f"OpenAI rejected the key (HTTP {r.status_code})"
-    return False, f"OpenAI returned HTTP {r.status_code}"
-
-
-async def _probe_gemini(key: str) -> tuple[bool, str]:
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.get(
-                "https://generativelanguage.googleapis.com/v1beta/models",
-                params={"key": key},
-            )
-    except httpx.RequestError as e:
-        return False, f"network error reaching Gemini ({e.__class__.__name__})"
-    if r.status_code == 200:
-        return True, ""
-    if r.status_code in (401, 403):
-        return False, f"Gemini rejected the key (HTTP {r.status_code})"
-    return False, f"Gemini returned HTTP {r.status_code}"
-
-
-async def _probe_ollama(base_url: str) -> tuple[bool, str]:
-    """Hit /api/tags on the operator-supplied Ollama base. Validates
-    both reachability AND that it's actually an Ollama daemon (the
-    JSON shape from /api/tags is Ollama-specific)."""
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as c:
-            r = await c.get(f"{base_url.rstrip('/')}/api/tags")
-    except httpx.RequestError as e:
-        return False, (
-            f"can't reach {base_url} from drift-agent ({e.__class__.__name__}). "
-            "Make sure the URL is resolvable from inside the container "
-            "(use host.docker.internal for an Ollama on the host)."
+    # Run the completion in a thread so the async-handler stays
+    # responsive. LiteLLM's `completion` is sync; `acompletion` exists
+    # but its surface differs slightly per provider — sticking with
+    # `completion` keeps the validate path identical to the agent's
+    # path (which currently also uses `completion`).
+    def _do() -> None:
+        litellm.completion(
+            model=model,
+            messages=[{"role": "user", "content": "ok"}],
+            max_tokens=5,
+            api_key=api_key or None,
+            api_base=api_base or None,
+            timeout=10.0,
         )
-    if r.status_code != 200:
-        return False, f"Ollama at {base_url} returned HTTP {r.status_code}"
+
     try:
-        body = r.json()
-    except ValueError:
-        return False, f"{base_url} responded but the body isn't JSON — wrong service?"
-    if "models" not in body:
-        return False, f"{base_url} responded but doesn't look like an Ollama daemon"
-    return True, ""
+        await asyncio.to_thread(_do)
+        return True, ""
+    except Exception as e:
+        # LiteLLM normalizes provider errors into its own hierarchy.
+        # We match by class name (rather than importing the classes)
+        # because the namespace varies a bit across versions.
+        kind = e.__class__.__name__
+        if kind == "AuthenticationError":
+            return False, f"provider rejected the credential — {e}"
+        if kind == "NotFoundError":
+            return False, f"model not available with this credential — {e}"
+        if kind in ("APIConnectionError", "ConnectError", "ConnectTimeout"):
+            return False, f"can't reach the provider — {e}"
+        if kind == "BadRequestError":
+            return False, f"provider rejected the request — {e}"
+        # Anything else: surface the type + message so the operator
+        # has something searchable.
+        return False, f"{kind}: {e}"
 
 
-async def _validate_updates(updates: dict[str, str]) -> list[tuple[str, str]]:
-    """Run validation probes for any provider credential being
-    changed. Returns a list of `(field_name, message)` errors. Empty
-    list = all good. Empty-string values (an explicit "clear this
-    field") skip validation since there's nothing to test.
-    """
-    errors: list[tuple[str, str]] = []
-    probes = []
+async def _validate_updates(
+    updates: dict[str, str], target_model: str
+) -> list[tuple[str, str]]:
+    """Run a validation probe for the credential the operator changed,
+    against the model they're configuring. Returns `(field, message)`
+    error tuples. Empty list = all good.
+
+    Only one probe runs because the modal collapses credentials to a
+    single field-per-provider; you can't change e.g. the OpenAI key
+    while also configuring Anthropic from the same Save."""
+    target = target_model.lower()
     if updates.get("ANTHROPIC_API_KEY"):
-        probes.append(("anthropic_api_key", _probe_anthropic(updates["ANTHROPIC_API_KEY"])))
+        ok, msg = await _validate_via_litellm(target_model, api_key=updates["ANTHROPIC_API_KEY"])
+        return [] if ok else [("anthropic_api_key", msg)]
     if updates.get("OPENAI_API_KEY"):
-        probes.append(("openai_api_key", _probe_openai(updates["OPENAI_API_KEY"])))
+        ok, msg = await _validate_via_litellm(target_model, api_key=updates["OPENAI_API_KEY"])
+        return [] if ok else [("openai_api_key", msg)]
     if updates.get("GEMINI_API_KEY"):
-        probes.append(("gemini_api_key", _probe_gemini(updates["GEMINI_API_KEY"])))
+        ok, msg = await _validate_via_litellm(target_model, api_key=updates["GEMINI_API_KEY"])
+        return [] if ok else [("gemini_api_key", msg)]
     if updates.get("OLLAMA_API_BASE"):
-        probes.append(("ollama_api_base", _probe_ollama(updates["OLLAMA_API_BASE"])))
-    # Run probes concurrently — three providers + Ollama in parallel
-    # finish in roughly the latency of the slowest single probe (~1-3s
-    # on a healthy network).
-    results = await asyncio.gather(*(p for _, p in probes), return_exceptions=True)
-    for (field, _), result in zip(probes, results):
-        if isinstance(result, Exception):
-            errors.append((field, f"validation crashed: {result!r}"))
-            continue
-        ok, msg = result
-        if not ok:
-            errors.append((field, msg))
-    return errors
+        ok, msg = await _validate_via_litellm(target_model, api_base=updates["OLLAMA_API_BASE"])
+        return [] if ok else [("ollama_api_base", msg)]
+    return []
 
 
 def _detect_provider(model: str) -> str:
@@ -323,6 +302,48 @@ async def get_llm_settings(
     )
 
 
+class ValidateRequest(BaseModel):
+    # The (model, credential) pair to test together. The credential is
+    # a provider API key for hosted providers (Anthropic/OpenAI/Gemini)
+    # or an Ollama base URL for local models. We validate them as a
+    # pair via a 5-token LiteLLM completion so a green result reflects
+    # the exact same code path the agent uses at runtime.
+    model: str
+    credential: str
+
+
+class ValidateResponse(BaseModel):
+    valid: bool
+    # Empty on success, human-readable explanation on failure.
+    message: str
+
+
+@router.post("/validate", response_model=ValidateResponse)
+async def validate_credential(
+    body: ValidateRequest = Body(...),
+    _admin: UserContext = Depends(require_role("admin")),
+) -> ValidateResponse:
+    """Test a (model, credential) pair via a LiteLLM 5-token completion.
+    Returns valid+empty message on success, valid=false with the
+    provider's error on failure. Doesn't write to .env."""
+    cred = body.credential.strip()
+    if not cred:
+        return ValidateResponse(valid=False, message="credential is empty")
+    if not body.model.strip():
+        return ValidateResponse(valid=False, message="model is required")
+    provider = _detect_provider(body.model)
+    if provider == "ollama":
+        ok, msg = await _validate_via_litellm(body.model, api_base=cred)
+    elif provider in ("anthropic", "openai", "gemini"):
+        ok, msg = await _validate_via_litellm(body.model, api_key=cred)
+    else:
+        return ValidateResponse(
+            valid=False,
+            message=f"don't know how to validate model '{body.model}' — provider not recognized",
+        )
+    return ValidateResponse(valid=ok, message="" if ok else msg)
+
+
 @router.put("")
 async def update_llm_settings(
     body: LlmSettingsUpdate = Body(...),
@@ -356,7 +377,12 @@ async def update_llm_settings(
     # every LLM call until the operator noticed. Catching it here means
     # one round-trip + a clear modal error instead of "Drift is broken,
     # let me check logs."
-    errors = await _validate_updates(updates)
+    #
+    # `target_model` is the model the validation should test against —
+    # either the one being changed in this PUT, or the currently
+    # configured model if the operator only rotated a credential.
+    target_model = updates.get("MODEL") or settings.model
+    errors = await _validate_updates(updates, target_model)
     if errors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

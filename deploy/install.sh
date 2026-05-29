@@ -391,24 +391,53 @@ ask_secret_autogen DRIFT_ADMIN_PASSWORD "Drift admin password"
 # Validate an LLM API key against the provider's `/models` endpoint.
 # Returns 0 on success, 1 on auth failure, 2 on network error.
 # Doesn't echo the key — only the status code.
+#
+# URL per provider comes from $BUNDLE_DIR/models.json's `providers`
+# block when present, so a `package-release.sh --refresh-model-prices`
+# can update the validate URLs without code changes here. Falls back
+# to the historical hardcoded URLs when the catalog is absent or
+# missing the provider (e.g., a fork that ships a stripped catalog).
+# Auth shape stays hardcoded per provider — those headers are stable
+# and provider-specific in ways the catalog can't easily model.
+_provider_validate_url() {
+  local provider=$1
+  local url=""
+  if [ -r "$BUNDLE_DIR/models.json" ]; then
+    url=$(jq -r --arg p "$provider" '.providers[$p].validate_url // empty' \
+      "$BUNDLE_DIR/models.json" 2>/dev/null)
+  fi
+  if [ -z "$url" ] || [ "$url" = "null" ]; then
+    case "$provider" in
+      anthropic) url="https://api.anthropic.com/v1/models" ;;
+      openai)    url="https://api.openai.com/v1/models" ;;
+      gemini)    url="https://generativelanguage.googleapis.com/v1beta/models" ;;
+    esac
+  fi
+  echo "$url"
+}
+
 validate_llm_key() {
   local provider=$1 key=$2 code
+  local url
+  url=$(_provider_validate_url "$provider")
+  [ -z "$url" ] && return 2
   case "$provider" in
     anthropic)
       code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
         -H "x-api-key: $key" -H "anthropic-version: 2023-06-01" \
-        https://api.anthropic.com/v1/models)
+        "$url")
       ;;
     openai)
       code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
         -H "Authorization: Bearer $key" \
-        https://api.openai.com/v1/models)
+        "$url")
       ;;
     gemini)
-      # Gemini's API key is a URL param. Use a different host probe so
-      # we don't leak the key in process listings.
+      # Gemini's API key is a URL param. The catalog URL is the path
+      # only; we append ?key= at probe time so the catalog stays
+      # credential-agnostic.
       code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 8 \
-        "https://generativelanguage.googleapis.com/v1beta/models?key=$key")
+        "${url}?key=$key")
       ;;
     *) return 2 ;;
   esac
@@ -509,6 +538,12 @@ pick_model_from_catalog() {
   local other_idx=$((idx + 1))
   echo
   printf "    %2d) Other (type a model id)\n" "$other_idx"
+  echo
+  echo "  The curated list above is a small subset. LiteLLM speaks the"
+  echo "  full provider catalog — Azure, Bedrock, vLLM, OpenRouter,"
+  echo "  Anyscale, Together, Replicate, etc. — and accepts model IDs in"
+  echo "  '<provider>/<model>' form."
+  echo "    Providers + model IDs:  https://docs.litellm.ai/docs/providers"
   echo
 
   local current default

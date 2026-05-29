@@ -96,6 +96,50 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
   // Per-field validation errors from the backend's PUT 400 response.
   // Keyed by the same field names the backend emits.
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({})
+  // Tracks which field is currently mid-validate (so we can disable
+  // the button + show a spinner) and which fields the operator has
+  // successfully validated since opening / last editing. Clearing on
+  // value change so an old ✓ doesn't sit next to a freshly-edited key.
+  const [validating, setValidating] = useState<string | null>(null)
+  const [validatedFields, setValidatedFields] = useState<Record<string, boolean>>({})
+
+  // Reset both error + validated state for a field when the operator
+  // edits it. Wrapped in a helper so each onChange call stays short.
+  const editField = (field: string, value: string, setter: (v: string) => void) => {
+    setter(value)
+    if (fieldErrors[field]) setFieldErrors((s) => ({ ...s, [field]: '' }))
+    if (validatedFields[field]) setValidatedFields((s) => ({ ...s, [field]: false }))
+  }
+
+  const validateField = async (field: string, credential: string) => {
+    if (!credential.trim()) return
+    setValidating(field)
+    setFieldErrors((s) => ({ ...s, [field]: '' }))
+    setValidatedFields((s) => ({ ...s, [field]: false }))
+    try {
+      // Send the (model, credential) pair — backend validates them
+      // together via a 5-token LiteLLM completion so we exercise the
+      // exact code path the agent will use at runtime. The model is
+      // whatever the operator currently has selected in the form.
+      const res = await fetch(`${apiBase()}/admin/llm-settings/validate`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, credential }),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = (await res.json()) as { valid: boolean; message: string }
+      if (data.valid) {
+        setValidatedFields((s) => ({ ...s, [field]: true }))
+      } else {
+        setFieldErrors((s) => ({ ...s, [field]: data.message || 'invalid' }))
+      }
+    } catch (e) {
+      setFieldErrors((s) => ({ ...s, [field]: (e as Error).message }))
+    } finally {
+      setValidating(null)
+    }
+  }
 
   // Fetch settings + pricing whenever the modal opens. Both are
   // single-shot — once loaded, the modal works against the cached
@@ -125,6 +169,8 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
         setGeminiKey(sData.gemini_api_key)
         setOllamaBase(sData.ollama_api_base)
         setFieldErrors({})
+        setValidatedFields({})
+        setValidating(null)
       } catch (e) {
         if (!cancelled) setError((e as Error).message)
       } finally {
@@ -377,46 +423,76 @@ export function LlmSettingsModal({ open, onClose }: { open: boolean; onClose: ()
               <KeyField
                 label="Anthropic API key"
                 value={anthropicKey}
-                onChange={setAnthropicKey}
+                onChange={(v) => editField('anthropic_api_key', v, setAnthropicKey)}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper={fieldErrors.anthropic_api_key || 'ANTHROPIC_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against api.anthropic.com/v1/models on save.'}
+                helper={fieldErrors.anthropic_api_key || 'ANTHROPIC_API_KEY in .env. Click Validate to test against api.anthropic.com/v1/models before saving.'}
                 error={!!fieldErrors.anthropic_api_key}
+                onValidate={() => validateField('anthropic_api_key', anthropicKey)}
+                validating={validating === 'anthropic_api_key'}
+                validated={!!validatedFields.anthropic_api_key}
               />
             )}
             {targetProvider === 'openai' && (
               <KeyField
                 label="OpenAI API key"
                 value={openaiKey}
-                onChange={setOpenaiKey}
+                onChange={(v) => editField('openai_api_key', v, setOpenaiKey)}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper={fieldErrors.openai_api_key || 'OPENAI_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against api.openai.com/v1/models on save.'}
+                helper={fieldErrors.openai_api_key || 'OPENAI_API_KEY in .env. Click Validate to test against api.openai.com/v1/models before saving.'}
                 error={!!fieldErrors.openai_api_key}
+                onValidate={() => validateField('openai_api_key', openaiKey)}
+                validating={validating === 'openai_api_key'}
+                validated={!!validatedFields.openai_api_key}
               />
             )}
             {targetProvider === 'gemini' && (
               <KeyField
                 label="Gemini API key"
                 value={geminiKey}
-                onChange={setGeminiKey}
+                onChange={(v) => editField('gemini_api_key', v, setGeminiKey)}
                 show={showKey}
                 toggleShow={() => setShowKey((s) => !s)}
-                helper={fieldErrors.gemini_api_key || 'GEMINI_API_KEY in .env. Saved value pre-filled — edit to rotate. Validated against generativelanguage.googleapis.com on save.'}
+                helper={fieldErrors.gemini_api_key || 'GEMINI_API_KEY in .env. Click Validate to test against generativelanguage.googleapis.com before saving.'}
                 error={!!fieldErrors.gemini_api_key}
+                onValidate={() => validateField('gemini_api_key', geminiKey)}
+                validating={validating === 'gemini_api_key'}
+                validated={!!validatedFields.gemini_api_key}
               />
             )}
             {targetProvider === 'ollama' && (
-              <TextField
-                fullWidth
-                size="small"
-                label="Ollama API base"
-                value={ollamaBase}
-                onChange={(e) => setOllamaBase(e.target.value)}
-                placeholder="http://host.docker.internal:11434"
-                helperText={fieldErrors.ollama_api_base || 'Reachable from inside the drift-agent container. No API key needed for local models. Validated by probing /api/tags on save.'}
-                error={!!fieldErrors.ollama_api_base}
-              />
+              <Stack direction="row" spacing={1} alignItems="flex-start">
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Ollama API base"
+                  value={ollamaBase}
+                  onChange={(e) => editField('ollama_api_base', e.target.value, setOllamaBase)}
+                  placeholder="http://host.docker.internal:11434"
+                  helperText={
+                    fieldErrors.ollama_api_base ||
+                    (validatedFields.ollama_api_base
+                      ? '✓ reached an Ollama daemon at this URL'
+                      : 'Reachable from inside the drift-agent container. Click Validate to probe /api/tags before saving.')
+                  }
+                  error={!!fieldErrors.ollama_api_base}
+                />
+                <Button
+                  variant="outlined"
+                  size="small"
+                  disabled={!ollamaBase.trim() || validating === 'ollama_api_base'}
+                  onClick={() => validateField('ollama_api_base', ollamaBase)}
+                  sx={{ mt: 0.25, minWidth: 90 }}
+                  color={validatedFields.ollama_api_base ? 'success' : 'primary'}
+                >
+                  {validating === 'ollama_api_base'
+                    ? 'Testing…'
+                    : validatedFields.ollama_api_base
+                      ? '✓ Valid'
+                      : 'Validate'}
+                </Button>
+              </Stack>
             )}
             {targetProvider === 'unknown' && (
               <Alert severity="warning" variant="outlined">
@@ -447,6 +523,9 @@ function KeyField({
   toggleShow,
   helper,
   error,
+  onValidate,
+  validating,
+  validated,
 }: {
   label: string
   value: string
@@ -455,29 +534,54 @@ function KeyField({
   toggleShow: () => void
   helper?: string
   error?: boolean
+  onValidate?: () => void
+  validating?: boolean
+  validated?: boolean
 }) {
+  // Helper text overrides: a successful validate wins over the default
+  // helper string, but field-level errors (set by the parent) take
+  // precedence above both — they arrive via `helper` already.
+  const effectiveHelper =
+    validated && !error && !helper?.startsWith('✓')
+      ? `✓ provider accepted the credential — safe to save`
+      : helper
+
   return (
-    <TextField
-      fullWidth
-      size="small"
-      label={label}
-      type={show ? 'text' : 'password'}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder="(not set)"
-      helperText={helper}
-      error={error}
-      InputProps={{
-        endAdornment: (
-          <InputAdornment position="end">
-            <Tooltip title={show ? 'Hide' : 'Show'}>
-              <IconButton size="small" onClick={toggleShow}>
-                {show ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
-              </IconButton>
-            </Tooltip>
-          </InputAdornment>
-        ),
-      }}
-    />
+    <Stack direction="row" spacing={1} alignItems="flex-start">
+      <TextField
+        fullWidth
+        size="small"
+        label={label}
+        type={show ? 'text' : 'password'}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="(not set)"
+        helperText={effectiveHelper}
+        error={error}
+        InputProps={{
+          endAdornment: (
+            <InputAdornment position="end">
+              <Tooltip title={show ? 'Hide' : 'Show'}>
+                <IconButton size="small" onClick={toggleShow}>
+                  {show ? <VisibilityOffIcon fontSize="small" /> : <VisibilityIcon fontSize="small" />}
+                </IconButton>
+              </Tooltip>
+            </InputAdornment>
+          ),
+        }}
+      />
+      {onValidate && (
+        <Button
+          variant="outlined"
+          size="small"
+          disabled={!value.trim() || !!validating}
+          onClick={onValidate}
+          sx={{ mt: 0.25, minWidth: 90 }}
+          color={validated ? 'success' : 'primary'}
+        >
+          {validating ? 'Testing…' : validated ? '✓ Valid' : 'Validate'}
+        </Button>
+      )}
+    </Stack>
   )
 }

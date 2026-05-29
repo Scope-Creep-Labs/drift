@@ -2,6 +2,17 @@
   "_comment": "Curated LLM catalog shown by install.sh when the operator picks a model. Prices in USD per 1M tokens; null where the provider doesn't bill separately for that channel. Regenerate from LiteLLM with: ./deploy/package-release.sh --refresh-model-prices",
   "generated_at": "2026-05-29",
   "source": "litellm-snapshot",
+  "providers": {
+    "anthropic": {
+      "validate_url": "https://api.anthropic.com/v1/models"
+    },
+    "openai": {
+      "validate_url": "https://api.openai.com/v1/models"
+    },
+    "gemini": {
+      "validate_url": "https://generativelanguage.googleapis.com/v1beta/models"
+    }
+  },
   "tiers": [
     {
       "id": "premium",
