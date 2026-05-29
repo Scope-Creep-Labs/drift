@@ -8,6 +8,10 @@ Drift is a prompt-driven control plane for time-series systems and edge fleets. 
 prompt → agent (tool use → metrics / fleet / alerts) → streaming render blocks → UI
 ```
 
+<img width="1492" height="869" alt="image" src="https://github.com/user-attachments/assets/368b04c2-de48-43dd-9b5e-a432ed5430a2" />
+
+[Blog post](https://scopecreeplabs.com/blog/drift-observe-deploy-respond---from-a-prompt/) with details. 
+
 > 📐 [ARCHITECTURE.md](./ARCHITECTURE.md) — data flow, dataRef pattern, agent loop, tool catalog, extension points, file reference.
 >
 > 🚀 [DEPLOY.md](./DEPLOY.md) — Drift Deploy: fleet management, compose-app delivery, scenarios.
