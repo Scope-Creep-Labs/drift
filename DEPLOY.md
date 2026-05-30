@@ -238,6 +238,56 @@ If a bundle author declares their own volume at one of the standard CA paths, `d
 
 ---
 
+## Built-in env vars available to deployed apps
+
+The edge agent injects these into every `docker compose` subshell it runs (apply, pull, restart, health probe). Bundle authors reference them as `${DRIFT_…}` in `compose.yaml` (or any `.env` file the bundle ships) and they resolve to the right value per device. No operator setup beyond `install.sh` is required to access any of these.
+
+| Variable | Value | Source |
+|---|---|---|
+| `DRIFT_DEVICE_NAME` | This device's name in the control plane (e.g. `home-pi4-001`). | `/etc/drift-deploy/env` (set at commission time from `DEVICE_NAME`). |
+| `DRIFT_GROUP_ID` | Logical group (`cloud`, `edge`, `drift_home`, ...). | `/etc/drift-deploy/env` (set at commission time from `GROUP_ID`). |
+| `DRIFT_APP` | The current app's name during its compose invocation. Empty during whole-bundle config validation passes. | Set per-app by the reconcile loop. |
+| `DRIFT_APP_STATE_DIR` | **Per-app persistent directory** at `/var/lib/drift-deploy/apps/<app>/state/`. Lives alongside the per-revision dirs and **survives revision bumps**. Auto-`mkdir`ed and `chown`ed to the host's `drift` user on first apply. Use as the host side of bind mounts for any state the container itself writes (configs, sqlite DBs, settings). Empty during whole-bundle config validation. | Set per-app by the reconcile loop (v0.1.44+). |
+| `DRIFT_USER_UID` | UID of the host's `drift` user (the account `install.sh` provisions for web-terminal sessions). Use as `PUID=${DRIFT_USER_UID}` for LinuxServer.io–style containers so files land owned by `drift`, matching `DRIFT_APP_STATE_DIR`. Falls back to `1000` if the user is missing. | `id -u drift` resolved once at agent startup (v0.1.44+). |
+| `DRIFT_USER_GID` | GID of the host's `drift` user. Pairs with `DRIFT_USER_UID`. Falls back to `1000`. | `id -g drift` resolved once at agent startup (v0.1.44+). |
+| `DRIFT_DOCKER_DATA_DIR` | The host's docker data root: `/var/lib/docker` on vanilla Linux, `/volume1/@docker` on Synology, etc. Useful for tools that need to introspect docker state (cAdvisor, etc.) — not for app data, which should live under `DRIFT_APP_STATE_DIR` or an absolute host path. | Auto-detected by `install.sh` via `docker info`. |
+| `DRIFT_HOST_CA_BUNDLE` | Path to the host's combined CA bundle, bind-mounted into containers at `/host/etc/ssl/host-ca-bundle.crt`. Empty on hosts without a recognized bundle. Drift's auto-generated `compose.override.yaml` already mounts the bundle at standard CA paths AND sets `SSL_CERT_FILE` / `CURL_CA_BUNDLE` — bundle authors only need to reference this var if a specific tool wants the path string. See "Custom root certificates" above. | Auto-detected by `install.sh` from standard host paths. |
+| `DRIFT_CP_PUBLIC_URL` | The CP's public base URL (e.g. `https://drift.example.com`). Use it to build remote-write / vmauth / vmalert URLs without hardcoding the operator's domain into the bundle. | Returned by the CP on every check-in. |
+| `DRIFT_VM_WRITE_USER` | Basic-auth user for the CP's vmauth remote-write endpoint. Always `reporter` today. | Returned by the CP on every check-in. |
+| `DRIFT_VM_WRITE_PASSWORD` | Basic-auth password for the vmauth remote-write endpoint (the CP's `REPORTER_PASSWORD`). | Returned by the CP on every check-in. |
+
+### Where to put state — quick decision guide
+
+| State shape | Where to mount | Persistence |
+|---|---|---|
+| Bundle-shipped read-only configs (e.g. `prometheus.yml`) | `./` (relative to bundle) | Re-shipped on every revision; one source of truth. |
+| App-generated state (configs the container writes, sqlite DBs, settings) | `${DRIFT_APP_STATE_DIR}/<name>` | Survives revision bumps. Auto-chowned to `drift`. |
+| Bulk data (media downloads, Plex library, backups) | Absolute host path on the right disk | Operator-once: `mkdir -p && chown -R drift:drift`. |
+| Ephemeral runtime caches | named docker volume | Survives container recreate, lost on `docker volume rm`. |
+
+For LinuxServer.io images and anything else that takes `PUID`/`PGID`:
+
+```yaml
+environment:
+  - PUID=${DRIFT_USER_UID}
+  - PGID=${DRIFT_USER_GID}
+volumes:
+  - ${DRIFT_APP_STATE_DIR}/config:/config
+```
+
+Files land owned by `drift:drift`, matching the state dir's ownership. Cross-distro safe — `install.sh`'s `useradd` lands at different UIDs on Alpine vs Debian vs Synology DSM, but `drift` always exists.
+
+### Substitution timing — two stages
+
+| Where | Syntax | Expanded by | When |
+|---|---|---|---|
+| `compose.yaml` env values and bind paths | `${DRIFT_DEVICE_NAME}`, `${DRIFT_APP_STATE_DIR}`, ... | docker compose | At `compose up` time, from the shell exports the bash agent set |
+| Inside a config file the bundle ships (e.g. `prometheus.yml`) | `%{HOSTNAME}` (or whatever the consuming tool's own substitution shape is) | the tool itself at startup | At config-load time, from env vars on the container (which the bundle set in stage 1) |
+
+A common pattern: `compose.yaml` does `HOSTNAME: ${DRIFT_DEVICE_NAME}` (stage 1), and `prometheus.yml` does `external_labels: { host: %{HOSTNAME} }` (stage 2). See `examples/reporter.md` for a worked recipe.
+
+---
+
 ## Releases
 
 The drift-agent and drift-frontend images ship under `ghcr.io/kidproquo/drift-agent` and `ghcr.io/kidproquo/drift-frontend`, tagged with semantic versions (`vX.Y.Z`) plus a moving `:latest`. The `drift-deploy-agent.sh` script (run on edge devices) is baked into the drift-agent image and self-updates on every check-in via SHA comparison — so once a release lands on the control plane, the fleet picks up the new script within one poll cycle without any per-device action.

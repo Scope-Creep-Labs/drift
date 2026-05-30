@@ -97,6 +97,24 @@ DRIFT_CP_PUBLIC_URL="${DRIFT_CP_PUBLIC_URL:-}"
 DRIFT_VM_WRITE_USER="${DRIFT_VM_WRITE_USER:-}"
 DRIFT_VM_WRITE_PASSWORD="${DRIFT_VM_WRITE_PASSWORD:-}"
 
+# Resolve the host's `drift` user once at agent startup. install.sh
+# provisions this account on every device for web-terminal sessions;
+# bundle authors can now reuse the same identity for LSIO-style
+# images that take PUID/PGID env vars, e.g.
+#
+#   environment:
+#     - PUID=${DRIFT_USER_UID}
+#     - PGID=${DRIFT_USER_GID}
+#
+# Files written by the container land owned by `drift`, which
+# matches who owns ${DRIFT_APP_STATE_DIR} (auto-chowned per app in
+# apply_revision) and any host paths the operator chowned to
+# `drift:drift` for per-app bulk state. Fallback to 1000:1000 when
+# the user doesn't exist — defensive for hosts where install.sh
+# either failed or was skipped (DSM-style).
+DRIFT_USER_UID="$(id -u drift 2>/dev/null || echo 1000)"
+DRIFT_USER_GID="$(id -g drift 2>/dev/null || echo 1000)"
+
 # Atomic-write the cp-env file. Values bash-quote-escape '"' and '\'
 # defensively — current rand_token output doesn't contain either, but
 # operator-set values might.
@@ -137,7 +155,7 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.12.0"
+AGENT_VERSION="0.13.0"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -247,6 +265,7 @@ generate_drift_override() {
     && DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
        DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
        DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+       DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="$APPS_DIR/$app/state" \
        docker compose config --services 2>/dev/null)
   if [ -z "$services" ]; then
     log_warn "[$app] could not enumerate services for override; bundle env-vars will still apply via shell"
@@ -304,6 +323,7 @@ bundle_touches_protected() {
     DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
     DRIFT_APP="" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
     DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+    DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="" \
     docker compose config --format json 2>/dev/null \
     | jq -r '.services | to_entries[] | (.key, .value.container_name // empty)' \
     | sort -u)
@@ -410,6 +430,16 @@ apply_revision() {
   local bundle_gz="$rev_dir/bundle.tar.gz"
   local bundle_tar="$rev_dir/bundle.tar"
   local err   # last error message, captured for state_set_error
+
+  # Per-app state dir lives ALONGSIDE the per-revision dirs and
+  # survives revision bumps. Bundle authors mount paths under
+  # ${DRIFT_APP_STATE_DIR}/... (instead of ./) to get persistence
+  # without picking an absolute host path or a named docker volume.
+  # Chown to drift:drift so containers running as PUID=${DRIFT_USER_UID}
+  # can write into it without further operator setup.
+  local app_state_dir="$APPS_DIR/$app/state"
+  mkdir -p "$app_state_dir"
+  chown "$DRIFT_USER_UID:$DRIFT_USER_GID" "$app_state_dir" 2>/dev/null || true
 
   log_info "[$app] applying revision $rev_id"
   mkdir -p "$rev_dir"
@@ -518,6 +548,7 @@ apply_revision() {
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
                  DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+                 DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="$app_state_dir" \
        && docker compose -p "$app" pull 2>&1 \
        && docker compose -p "$app" up -d --remove-orphans 2>&1 ); then
     # err contains the combined output; take the last few lines for the
@@ -535,6 +566,7 @@ apply_revision() {
        && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                  DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
                  DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+                 DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="$app_state_dir" \
        && docker compose -p "$app" ps --format json \
        | jq -c 'select(.State != "running") | {Service, State}' )
   if [ -n "$bad" ]; then
@@ -966,6 +998,7 @@ reconcile_once() {
            && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
                      DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
                      DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+                     DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="$APPS_DIR/$app/state" \
            && docker compose -p "$app" restart 2>&1 ); then
         local err_tail
         err_tail=$(printf '%s' "$err" | tail -n 5 | tr '\n' ' ')

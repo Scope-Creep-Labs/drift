@@ -20,6 +20,9 @@ for a deployed app. Bundle authors reference them with normal compose
 | `DRIFT_DEVICE_NAME` | This device's name in the control plane | `/etc/drift-deploy/env` (set by `install.sh` from `DEVICE_NAME`) |
 | `DRIFT_GROUP_ID` | Logical grouping (`cloud`, `edge`, `drift_home`, ...) | `/etc/drift-deploy/env` (set by `install.sh` from `GROUP_ID`) |
 | `DRIFT_APP` | The current app's name during its compose invocation | Set per-app by the reconcile loop |
+| `DRIFT_APP_STATE_DIR` | Per-app persistent directory at `/var/lib/drift-deploy/apps/<app>/state/`. Lives alongside the per-revision dirs and survives revision bumps. Auto-created and `chown`ed to the host's `drift` user on first apply. Mount paths under it (instead of `./`) to get persistence without picking an absolute host path. | Set per-app by the reconcile loop (v0.1.44+) |
+| `DRIFT_USER_UID` | UID of the host's `drift` user (the account `install.sh` provisions for web-terminal sessions). Use as `PUID=${DRIFT_USER_UID}` for LinuxServer.io–style containers so files land owned by `drift`, matching `DRIFT_APP_STATE_DIR`. Falls back to `1000` if the user doesn't exist. | `id -u drift` at agent startup (v0.1.44+) |
+| `DRIFT_USER_GID` | GID of the host's `drift` user. Pairs with `DRIFT_USER_UID`. | `id -g drift` at agent startup (v0.1.44+) |
 | `DRIFT_DOCKER_DATA_DIR` | The host's docker root (`/var/lib/docker` on vanilla Linux; `/volume1/@docker` on Synology) | Auto-detected by `install.sh` via `docker info` |
 | `DRIFT_HOST_CA_BUNDLE` | Path to the host's combined CA bundle, bind-mounted at `/host/etc/ssl/...` inside containers. Empty on hosts without a recognized bundle. | Auto-detected by `install.sh` from standard host paths |
 | `DRIFT_CP_PUBLIC_URL` | The CP's public base URL (e.g. `https://drift.example.com`). Use it to build remote-write / vmauth / vmalert URLs. | Returned by the CP on every check-in |
