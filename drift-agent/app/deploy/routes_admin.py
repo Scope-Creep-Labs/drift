@@ -28,7 +28,7 @@ from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
 from .models import App, AppRevision, Device, DeploymentTarget, RegistryCredential
-from .naming import normalize_device_name
+from .naming import normalize_device_name, validate_app_name
 from .tagging import normalize_tags
 from .schemas import (
     AppCreate,
@@ -218,10 +218,14 @@ async def create_app(
     _user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> AppOut:
-    existing = await db.execute(select(App).where(App.name == body.name))
+    name = (body.name or "").strip()
+    err = validate_app_name(name)
+    if err:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, err)
+    existing = await db.execute(select(App).where(App.name == name))
     if existing.scalar_one_or_none() is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, f"app '{body.name}' already exists")
-    app = App(name=body.name)
+        raise HTTPException(status.HTTP_409_CONFLICT, f"app '{name}' already exists")
+    app = App(name=name)
     db.add(app)
     await db.commit()
     await db.refresh(app)

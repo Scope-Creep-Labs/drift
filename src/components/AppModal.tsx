@@ -298,19 +298,34 @@ export function AppModal({
       </DialogTitle>
 
       <DialogContent dividers>
-        {mode.kind === 'create' && (
-          <TextField
-            label="App name"
-            placeholder="e.g. reporter, podnot, hello-world"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            disabled={loading}
-            fullWidth
-            size="small"
-            sx={{ mb: 2 }}
-            helperText="Lower-case letters, digits, hyphens. Must be unique across the fleet."
-          />
-        )}
+        {mode.kind === 'create' && (() => {
+          // Mirror the backend's app-name validation so the operator
+          // sees the rule violation as they type instead of after a
+          // failed save. Same regex as
+          // drift-agent/app/deploy/naming.py:_APP_NAME_RE — keep the
+          // two in sync if you tighten either.
+          const nameTrim = name.trim()
+          const nameValid = /^[a-z0-9][a-z0-9_-]{0,127}$/.test(nameTrim)
+          const showError = nameTrim.length > 0 && !nameValid
+          return (
+            <TextField
+              label="App name"
+              placeholder="e.g. node-red, reporter, podnot, hello_world"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              disabled={loading}
+              fullWidth
+              size="small"
+              sx={{ mb: 2 }}
+              error={showError}
+              helperText={
+                showError
+                  ? "Must be lowercase letters/digits/hyphens/underscores, starting with a letter or digit (Docker Compose project-name rules)."
+                  : "Lowercase letters, digits, hyphens, underscores. Start with a letter or digit. Must be unique across the fleet."
+              }
+            />
+          )
+        })()}
 
         {loadingFiles ? (
           <Box sx={{ py: 6, display: 'flex', justifyContent: 'center' }}>

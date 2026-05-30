@@ -29,7 +29,7 @@ from ..config import settings
 from ..deploy import bundles, security
 from ..deploy.db import session
 from ..deploy.models import App, AppRevision, Device, DeploymentTarget
-from ..deploy.naming import normalize_device_name
+from ..deploy.naming import normalize_device_name, validate_app_name
 from ..deploy.schemas import COMPOSE_FILE_CANDIDATES
 from .metrics import ToolContext
 
@@ -548,9 +548,9 @@ async def create_app(ctx: ToolContext, args: dict) -> dict:
         return err
     if (err := _ensure_deploy_enabled()):
         return err
-    name = args.get("name")
-    if not name:
-        return {"error": "name is required"}
+    name = (args.get("name") or "").strip()
+    if (verr := validate_app_name(name)):
+        return {"error": verr}
     async with session() as s:
         if await _app_by_name(s, name):
             return {"error": f"app '{name}' already exists"}
@@ -629,11 +629,16 @@ async def fork_app(ctx: ToolContext, args: dict) -> dict:
     if (err := _ensure_deploy_enabled()):
         return err
     source = args.get("source_app")
-    target = args.get("target_app")
+    target = (args.get("target_app") or "").strip()
     if not source or not target:
         return {"error": "source_app and target_app are required"}
     if source == target:
         return {"error": "source_app and target_app must differ; use apply_app_revision to add a version to the same app"}
+    # Validate the TARGET name only — source is an existing app, name
+    # already passed validation at create time. Skipping target
+    # validation here would let an invalid name land via the fork path.
+    if (verr := validate_app_name(target)):
+        return {"error": verr}
     source_version_arg = args.get("source_version")
 
     async with session() as s:
