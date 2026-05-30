@@ -112,8 +112,14 @@ DRIFT_VM_WRITE_PASSWORD="${DRIFT_VM_WRITE_PASSWORD:-}"
 # `drift:drift` for per-app bulk state. Fallback to 1000:1000 when
 # the user doesn't exist — defensive for hosts where install.sh
 # either failed or was skipped (DSM-style).
-DRIFT_USER_UID="$(id -u drift 2>/dev/null || echo 1000)"
-DRIFT_USER_GID="$(id -g drift 2>/dev/null || echo 1000)"
+#
+# nsenter -m -t 1 enters PID 1's mount namespace (the host's init,
+# reachable because we run --pid host). Without this, `id -u drift`
+# reads /etc/passwd from THIS container, which has no drift user —
+# the fallback fires and PUID/PGID become 1000 instead of the host's
+# actual drift UID.
+DRIFT_USER_UID="$(nsenter -m -t 1 id -u drift 2>/dev/null || echo 1000)"
+DRIFT_USER_GID="$(nsenter -m -t 1 id -g drift 2>/dev/null || echo 1000)"
 
 # Atomic-write the cp-env file. Values bash-quote-escape '"' and '\'
 # defensively — current rand_token output doesn't contain either, but
@@ -155,7 +161,7 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.13.0"
+AGENT_VERSION="0.13.1"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -538,6 +544,31 @@ apply_revision() {
   fi
 
   generate_drift_override "$rev_dir" "$app" "$rev_id"
+
+  # Pre-create bind-mount sources rooted under ${DRIFT_APP_STATE_DIR}.
+  # Docker auto-creates missing bind-mount host paths as root:root (the
+  # daemon runs as root and doesn't chown the synthesized dir). LSIO-
+  # style containers running as PUID then fail to chown their workdirs
+  # — "Permissions could not be set" + downstream missing-file errors.
+  # `compose config --format json` gives us the fully-resolved mount
+  # block (env vars + relative paths expanded); we mkdir + chown any
+  # source whose host path falls under our managed state dir. Existing
+  # paths are left alone — preserves operator-set perms inside the
+  # state dir.
+  ( cd "$rev_dir" \
+    && export DRIFT_DEVICE_NAME="$DRIFT_DEVICE_NAME" DRIFT_GROUP_ID="$DRIFT_GROUP_ID" \
+              DRIFT_APP="$app" DRIFT_DOCKER_DATA_DIR="$DRIFT_DOCKER_DATA_DIR" \
+              DRIFT_HOST_CA_BUNDLE="$DRIFT_HOST_CA_BUNDLE" DRIFT_CP_PUBLIC_URL="$DRIFT_CP_PUBLIC_URL" DRIFT_VM_WRITE_USER="$DRIFT_VM_WRITE_USER" DRIFT_VM_WRITE_PASSWORD="$DRIFT_VM_WRITE_PASSWORD" \
+              DRIFT_USER_UID="$DRIFT_USER_UID" DRIFT_USER_GID="$DRIFT_USER_GID" DRIFT_APP_STATE_DIR="$app_state_dir" \
+    && docker compose -p "$app" config --format json 2>/dev/null \
+    | jq -r --arg root "$app_state_dir/" \
+         '.services[]?.volumes[]? | select(.type=="bind") | .source | select(startswith($root))' \
+    | while IFS= read -r src; do
+        [ -z "$src" ] && continue
+        [ -e "$src" ] && continue
+        mkdir -p "$src"
+        chown "$DRIFT_USER_UID:$DRIFT_USER_GID" "$src" 2>/dev/null || true
+      done ) || true
 
   # -p <app-name> pins the compose project name to the app, so containers
   # get human-readable names (hello-world-echo-1) instead of UUID-prefixed
