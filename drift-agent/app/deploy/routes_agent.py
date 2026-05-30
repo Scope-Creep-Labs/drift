@@ -155,8 +155,17 @@ async def serve_bundle(
 
     # Find any device whose hash matches this bearer. Linear scan is
     # fine for fleets in the low thousands — bcrypt verify dominates,
-    # and bundle downloads only happen on revision change.
-    devices = (await db.execute(select(Device).where(Device.bootstrap_token_hash.is_not(None)))).scalars().all()
+    # and bundle downloads only happen on revision change. Excludes
+    # tombstoned devices so a soft-deleted device's preserved token
+    # can't be used to fetch bundles.
+    devices = (
+        await db.execute(
+            select(Device).where(
+                Device.bootstrap_token_hash.is_not(None),
+                Device.status != "removed",
+            )
+        )
+    ).scalars().all()
     if not any(verify_token(bearer, d.bootstrap_token_hash) for d in devices if d.bootstrap_token_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
 

@@ -74,7 +74,10 @@ async def list_devices(
     user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[DeviceOut]:
-    q = select(Device).order_by(Device.created_at.desc())
+    # Hide soft-deleted tombstones from every caller (UI, chat tools).
+    # Restoring a removed device is an out-of-band operator-side UPDATE
+    # — not a listable state.
+    q = select(Device).where(Device.status != "removed").order_by(Device.created_at.desc())
     if not user.is_admin:
         # Filter to the user's groups. Devices with no group are hidden
         # for non-admins; admins always see them.
@@ -136,13 +139,22 @@ async def delete_device(
     user: UserContext = Depends(require_role("deploy")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
+    # Soft-delete: flip status to 'removed' instead of issuing a real
+    # DELETE. The partial unique index (LOWER(name) WHERE status !=
+    # 'removed') lets the same name be re-commissioned later; the
+    # tombstone row preserves audit trail (terminal_sessions +
+    # deployment_targets FK references stay valid via ON DELETE
+    # CASCADE no-op). authenticate_device rejects removed-status
+    # devices, so the preserved bootstrap_token_hash can't revive the
+    # row via check-in — restoring requires an explicit operator-side
+    # UPDATE.
     normalized = normalize_device_name(name)
     row = await db.execute(select(Device).where(Device.name == normalized))
     device = row.scalar_one_or_none()
     if device is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"device '{name}' not found")
     _check_group_access(user, device.group_id)
-    await db.delete(device)
+    device.status = "removed"
     await db.commit()
 
 

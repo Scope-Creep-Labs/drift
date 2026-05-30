@@ -38,8 +38,11 @@ async def authenticate_device(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid device or token")
     row = await db.execute(select(Device).where(Device.name == normalized))
     device = row.scalar_one_or_none()
-    if device is None or device.bootstrap_token_hash is None:
-        # Same error shape for "not found" and "no token" — don't leak which.
+    if device is None or device.bootstrap_token_hash is None or device.status == "removed":
+        # Same error shape for "not found", "no token", and "tombstoned"
+        # — don't leak which. Removed devices keep their bootstrap_token_hash
+        # so the row stays restorable, but check-in is refused until an
+        # operator-side UPDATE flips status back.
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid device or token")
     if not verify_token(bearer, device.bootstrap_token_hash):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="invalid device or token")
