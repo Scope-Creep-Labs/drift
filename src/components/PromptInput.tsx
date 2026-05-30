@@ -113,7 +113,17 @@ export function PromptInput() {
       : []
   const aggregate = sumUsage([...turns, ...liveTurn])
   const totalTok = totalTokens(aggregate)
-  const totalCost = costForUsage(aggregate)
+  // Per-turn cost using each turn's actual model. costForUsage(aggregate)
+  // would default to DEFAULT_MODEL (claude-opus-4-7) for any session
+  // that used a different model, which over-prices anything cheaper by
+  // up to 50x (a non-Opus session of gpt-5.4-mini gets billed as Opus).
+  // Pricing each turn against its own metadata.engine produces the
+  // correct number even for mixed-model sessions.
+  const totalCost = [...turns, ...liveTurn].reduce((sum, t) => {
+    const u = t.metadata?.usage
+    if (!u) return sum
+    return sum + costForUsage(u, t.metadata?.engine ?? undefined)
+  }, 0)
 
   // Prompt history navigation (↑/↓). -1 means "live draft", 0 = newest historical.
   const history = turns.map((t) => t.prompt)
