@@ -13,12 +13,15 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  InputAdornment,
   Link,
   Stack,
+  TextField,
   Typography,
 } from '@mui/material'
 import CloseIcon from '@mui/icons-material/Close'
 import RefreshIcon from '@mui/icons-material/Refresh'
+import SearchIcon from '@mui/icons-material/Search'
 import UpdateIcon from '@mui/icons-material/Update'
 import CheckCircleIcon from '@mui/icons-material/CheckCircle'
 import NewReleasesIcon from '@mui/icons-material/NewReleases'
@@ -249,6 +252,25 @@ export function SoftwareUpdatesModal({
   // Newest release first; the first one expanded by default if an update
   // is available, collapsed otherwise (room is tight).
   const releases = useMemo(() => snapshot?.releases ?? [], [snapshot])
+
+  // Free-text search across release notes. Matches anywhere in the tag,
+  // name, or markdown body (case-insensitive). Skips the "What's new"
+  // banner deduplication when searching — operators looking for "now()
+  // query fix" want to find it whether it's in the latest release or
+  // years back. Accordions default-expand when the search is active so
+  // matches are immediately visible.
+  const [search, setSearch] = useState('')
+  const trimmedSearch = search.trim().toLowerCase()
+  const searching = trimmedSearch.length > 0
+  const filteredReleases = useMemo(() => {
+    if (!searching) return releases
+    return releases.filter(
+      (r) =>
+        (r.tag || '').toLowerCase().includes(trimmedSearch) ||
+        (r.name || '').toLowerCase().includes(trimmedSearch) ||
+        (r.body || '').toLowerCase().includes(trimmedSearch),
+    )
+  }, [releases, searching, trimmedSearch])
 
   return (
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
@@ -522,15 +544,53 @@ export function SoftwareUpdatesModal({
 
             {releases.length > 0 && (
               <Box>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  {snapshot.has_newer_release ? 'Previous releases' : 'Recent releases'}
-                </Typography>
-                {/* Skip the newest release when the "What's new" banner
-                    above already shows it, to avoid duplication. */}
-                {(snapshot.has_newer_release ? releases.slice(1) : releases).map((r, i) => (
+                <Stack
+                  direction="row"
+                  alignItems="center"
+                  spacing={1}
+                  sx={{ mb: 1 }}
+                >
+                  <Typography variant="subtitle2" sx={{ flexShrink: 0 }}>
+                    {searching
+                      ? `Search results · ${filteredReleases.length} of ${releases.length}`
+                      : snapshot.has_newer_release
+                        ? 'Previous releases'
+                        : 'Recent releases'}
+                  </Typography>
+                  <Box sx={{ flex: 1 }} />
+                  <TextField
+                    size="small"
+                    placeholder="Search release notes…"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ fontSize: 16 }} />
+                        </InputAdornment>
+                      ),
+                    }}
+                    sx={{ width: 260 }}
+                  />
+                </Stack>
+                {searching && filteredReleases.length === 0 && (
+                  <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                    No release notes mention "{search.trim()}".
+                  </Typography>
+                )}
+                {/* Without a search, hide the newest release here — the
+                    "What's new" banner above already covers it. With a
+                    search active, include everything so a match in the
+                    latest release isn't hidden. */}
+                {(searching
+                  ? filteredReleases
+                  : snapshot.has_newer_release
+                    ? releases.slice(1)
+                    : releases
+                ).map((r, i) => (
                   <Accordion
                     key={r.tag || i}
-                    defaultExpanded={false}
+                    defaultExpanded={searching}
                     disableGutters
                     elevation={0}
                     sx={{
