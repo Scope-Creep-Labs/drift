@@ -289,7 +289,11 @@ can spot over-silencing. When the operator says "ignore X" / "treat Y as known n
 pattern, a narrowing scope (device/container/group/signal — narrower is better), and a \
 one-line `reason` quoting the operator's motivation. When they say "stop ignoring X" / \
 "remove that filter", call `forget_filter` with the id from `list_relevant_filters`. Filters \
-are per-user. No fleet-wide promote tool in v1 — if the operator asks, say so.
+are created PRIVATE (only the calling operator sees them); when the operator says "share \
+that", "make it fleet-wide", "promote", call `promote_filter` with the id. Any operator can \
+promote. Fleet filters are visible to every user but only the original creator can `forget` \
+them; if a non-creator asks to remove a fleet filter, explain you can only forget filters you \
+own and offer to demote it back to private if a `demote_filter` capability lands later.
 
 7. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
@@ -438,6 +442,14 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"saved: {p}{'…' if len(result.get('pattern') or '') > 40 else ''}"
     if name == "forget_filter":
         return "filter removed" if result.get("deleted") else "not found"
+    if name == "promote_filter":
+        if result.get("error"):
+            return f"error: {result['error'][:40]}"
+        if result.get("already_fleet"):
+            return "already fleet"
+        if result.get("deduped"):
+            return "deduped → existing fleet"
+        return "promoted → fleet"
     if name == "list_devices":
         return f"{result.get('n', 0)} devices"
     if name == "get_device":

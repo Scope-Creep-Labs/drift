@@ -320,6 +320,17 @@ class OperatorFilter(Base):
         default="",
         server_default=text("''"),
     )
+    # 'private' (default) — only the owning user sees it.
+    # 'fleet'   — visible to every authenticated operator. Promoted by
+    #             any user via promote_filter; only the original
+    #             creator can hard-delete (forget_filter). Other users
+    #             see fleet filters in lookups but can't revoke them.
+    visibility: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="private",
+        server_default=text("'private'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc, nullable=False
     )

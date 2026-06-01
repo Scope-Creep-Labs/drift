@@ -17,6 +17,7 @@ import {
 } from '@mui/material'
 import AddIcon from '@mui/icons-material/Add'
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
+import FilterAltOutlinedIcon from '@mui/icons-material/FilterAltOutlined'
 import KeyIcon from '@mui/icons-material/Key'
 import LockResetIcon from '@mui/icons-material/LockReset'
 import LogoutIcon from '@mui/icons-material/LogoutOutlined'
@@ -31,6 +32,7 @@ import { useTerminalUiStore } from '../../state/terminalUiStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
+import { FiltersModal } from '../FiltersModal'
 import { LlmSettingsModal } from '../LlmSettingsModal'
 import { SoftwareUpdatesModal } from '../SoftwareUpdatesModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
@@ -118,6 +120,7 @@ export function InvestigationList() {
   const [passwordModalOpen, setPasswordModalOpen] = useState(false)
   const [updatesModalOpen, setUpdatesModalOpen] = useState(false)
   const [llmModalOpen, setLlmModalOpen] = useState(false)
+  const [filtersModalOpen, setFiltersModalOpen] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
   const [tagEditDevice, setTagEditDevice] = useState<Device | null>(null)
   // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
@@ -678,6 +681,11 @@ export function InvestigationList() {
               </IconButton>
             </Tooltip>
           )}
+          <Tooltip title="Noise filters">
+            <IconButton size="small" onClick={() => setFiltersModalOpen(true)} sx={{ p: 0.4 }}>
+              <FilterAltOutlinedIcon sx={{ fontSize: 14 }} />
+            </IconButton>
+          </Tooltip>
           <Tooltip title="Change password">
             <IconButton size="small" onClick={() => setPasswordModalOpen(true)} sx={{ p: 0.4 }}>
               <LockResetIcon sx={{ fontSize: 14 }} />
@@ -703,6 +711,7 @@ export function InvestigationList() {
       <RegistryCredsModal open={credsModalOpen} onClose={() => setCredsModalOpen(false)} />
       <ChangePasswordModal open={passwordModalOpen} onClose={() => setPasswordModalOpen(false)} />
       <SoftwareUpdatesModal open={updatesModalOpen} onClose={() => setUpdatesModalOpen(false)} />
+      <FiltersModal open={filtersModalOpen} onClose={() => setFiltersModalOpen(false)} />
       {user?.role === 'admin' && (
         <LlmSettingsModal open={llmModalOpen} onClose={() => setLlmModalOpen(false)} />
       )}
