@@ -340,3 +340,30 @@ class OperatorFilter(Base):
     apply_count: Mapped[int] = mapped_column(
         Integer, default=0, server_default=text("0"), nullable=False
     )
+
+
+class OperatorFilterMute(Base):
+    """Per-user opt-out for an OperatorFilter.
+
+    A row's presence means: the user has explicitly muted the filter
+    for themselves. list_relevant_filters (agent tool) excludes muted
+    filters from its return; /api/filters (sidebar) keeps showing
+    them so the operator can flip the toggle back. Composite PK makes
+    mute idempotent. CASCADE both ways for clean delete propagation.
+    """
+
+    __tablename__ = "operator_filter_mutes"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    filter_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("operator_filters.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )

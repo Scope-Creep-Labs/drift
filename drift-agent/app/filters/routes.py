@@ -21,10 +21,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..deploy.models import OperatorFilter
+from ..deploy.models import OperatorFilter, OperatorFilterMute
 from ..tools.filters import (
     _VISIBILITY_FLEET,
     _VISIBILITY_PRIVATE,
+    _muted_ids_for,
     _normalize_scope,
     _pattern_canon,
     _scope_equal,
@@ -59,6 +60,7 @@ class FilterOut(BaseModel):
     reason: str
     visibility: str
     owned_by_me: bool
+    muted_by_me: bool
     created_at: str
     last_applied_at: Optional[str]
     apply_count: int
@@ -72,7 +74,14 @@ async def list_filters(
     user: UserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[FilterOut]:
-    """Filters visible to the operator: own private + every fleet row."""
+    """Filters visible to the operator: own private + every fleet row.
+
+    Muted filters are INCLUDED here (with `muted_by_me: true`) so the
+    sidebar can render the "muted" state and offer an unmute action.
+    The agent-tool variant (`list_relevant_filters`) excludes muted
+    rows entirely — that's the per-user opt-out at investigation time.
+    """
+    muted = await _muted_ids_for(db, user.id)
     rows = (
         await db.execute(
             select(OperatorFilter)
@@ -86,7 +95,14 @@ async def list_filters(
             .order_by(OperatorFilter.created_at.desc())
         )
     ).scalars().all()
-    return [FilterOut(**_serialize_filter(r, viewer_id=user.id)) for r in rows]
+    return [
+        FilterOut(**_serialize_filter(r, viewer_id=user.id, muted_ids=muted))
+        for r in rows
+    ]
+
+
+def _serialize_with_mute(row: OperatorFilter, *, user_id: uuid.UUID, muted: set[uuid.UUID]) -> dict:
+    return _serialize_filter(row, viewer_id=user_id, muted_ids=muted)
 
 
 @router.post("", response_model=FilterOut, status_code=status.HTTP_201_CREATED)
@@ -107,6 +123,7 @@ async def create_filter(
     scope = _normalize_scope(body.scope.model_dump(exclude_none=True))
     reason = body.reason.strip()
 
+    muted = await _muted_ids_for(db, user.id)
     visible = (
         await db.execute(
             select(OperatorFilter).where(
@@ -121,7 +138,7 @@ async def create_filter(
     canon_p = _pattern_canon(pattern)
     for r in visible:
         if _pattern_canon(r.pattern) == canon_p and _scope_equal(r.scope or {}, scope):
-            return FilterOut(**_serialize_filter(r, viewer_id=user.id))
+            return FilterOut(**_serialize_with_mute(r, user_id=user.id, muted=muted))
 
     row = OperatorFilter(
         user_id=user.id,
@@ -133,7 +150,7 @@ async def create_filter(
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return FilterOut(**_serialize_filter(row, viewer_id=user.id))
+    return FilterOut(**_serialize_with_mute(row, user_id=user.id, muted=muted))
 
 
 @router.post("/{filter_id}/promote", response_model=FilterOut)
@@ -160,10 +177,11 @@ async def promote_filter(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"filter '{filter_id}' not found")
 
+    muted = await _muted_ids_for(db, user.id)
     if row.visibility == _VISIBILITY_FLEET:
         # Already fleet — nothing to do, return the row as-is so the
         # UI re-renders consistently.
-        return FilterOut(**_serialize_filter(row, viewer_id=user.id))
+        return FilterOut(**_serialize_with_mute(row, user_id=user.id, muted=muted))
 
     # Promoting requires the row be visible to the caller. Private
     # rows are only visible to their owner.
@@ -188,12 +206,85 @@ async def promote_filter(
         if _pattern_canon(f.pattern) == canon_p and _scope_equal(f.scope or {}, scope):
             await db.delete(row)
             await db.commit()
-            return FilterOut(**_serialize_filter(f, viewer_id=user.id))
+            return FilterOut(**_serialize_with_mute(f, user_id=user.id, muted=muted))
 
     row.visibility = _VISIBILITY_FLEET
     await db.commit()
     await db.refresh(row)
-    return FilterOut(**_serialize_filter(row, viewer_id=user.id))
+    return FilterOut(**_serialize_with_mute(row, user_id=user.id, muted=muted))
+
+
+@router.post("/{filter_id}/mute", response_model=FilterOut)
+async def mute_filter(
+    filter_id: str,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FilterOut:
+    """Per-user opt-out. Works on any visible filter: own private, own
+    fleet, or someone else's fleet. Idempotent."""
+    try:
+        fid = uuid.UUID(filter_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"filter_id '{filter_id}' is not a valid UUID")
+
+    row = (
+        await db.execute(select(OperatorFilter).where(OperatorFilter.id == fid))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"filter '{filter_id}' not found")
+    # Visibility check — caller has to be able to see the filter to
+    # mute it. Private filters are visible only to the owner.
+    if row.visibility == _VISIBILITY_PRIVATE and row.user_id != user.id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"filter '{filter_id}' not found")
+
+    existing = (
+        await db.execute(
+            select(OperatorFilterMute).where(
+                OperatorFilterMute.user_id == user.id,
+                OperatorFilterMute.filter_id == fid,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(OperatorFilterMute(user_id=user.id, filter_id=fid))
+        await db.commit()
+
+    muted = await _muted_ids_for(db, user.id)
+    return FilterOut(**_serialize_with_mute(row, user_id=user.id, muted=muted))
+
+
+@router.delete("/{filter_id}/mute", response_model=FilterOut)
+async def unmute_filter(
+    filter_id: str,
+    user: UserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FilterOut:
+    """Reverse mute. Idempotent."""
+    try:
+        fid = uuid.UUID(filter_id)
+    except ValueError:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"filter_id '{filter_id}' is not a valid UUID")
+
+    row = (
+        await db.execute(select(OperatorFilter).where(OperatorFilter.id == fid))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"filter '{filter_id}' not found")
+
+    existing = (
+        await db.execute(
+            select(OperatorFilterMute).where(
+                OperatorFilterMute.user_id == user.id,
+                OperatorFilterMute.filter_id == fid,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        await db.delete(existing)
+        await db.commit()
+
+    muted = await _muted_ids_for(db, user.id)
+    return FilterOut(**_serialize_with_mute(row, user_id=user.id, muted=muted))
 
 
 @router.delete("/{filter_id}", status_code=status.HTTP_204_NO_CONTENT)

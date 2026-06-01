@@ -292,8 +292,12 @@ one-line `reason` quoting the operator's motivation. When they say "stop ignorin
 are created PRIVATE (only the calling operator sees them); when the operator says "share \
 that", "make it fleet-wide", "promote", call `promote_filter` with the id. Any operator can \
 promote. Fleet filters are visible to every user but only the original creator can `forget` \
-them; if a non-creator asks to remove a fleet filter, explain you can only forget filters you \
-own and offer to demote it back to private if a `demote_filter` capability lands later.
+them; a non-creator who wants out should `mute_filter` instead — that's the per-user opt-out \
+path. When the operator says "mute that", "skip X for now", "opt me out", or "don't apply \
+that filter in this conversation", call `mute_filter` (works on ANY filter — own private, own \
+fleet, or someone else's fleet). `unmute_filter` reverses it. Muting is per-user state; the \
+muted filter still appears in the Filters sidebar with a "muted" chip but is excluded from \
+`list_relevant_filters` returns until unmuted.
 
 7. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
@@ -450,6 +454,14 @@ def _summarize_for_event(name: str, result: Any) -> str:
         if result.get("deduped"):
             return "deduped → existing fleet"
         return "promoted → fleet"
+    if name == "mute_filter":
+        if result.get("error"):
+            return f"error: {result['error'][:40]}"
+        return "already muted" if result.get("already_muted") else "muted (per-user)"
+    if name == "unmute_filter":
+        if result.get("error"):
+            return f"error: {result['error'][:40]}"
+        return "unmuted" if result.get("was_muted") else "wasn't muted"
     if name == "list_devices":
         return f"{result.get('n', 0)} devices"
     if name == "get_device":

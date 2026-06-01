@@ -21,10 +21,15 @@ export type OperatorFilterRow = {
   scope: FilterScope
   reason: string
   visibility: 'private' | 'fleet'
-  // True iff the calling operator created this row. Drives the UI's
-  // delete / promote affordances — non-owners can see fleet filters but
-  // can't revoke them.
+  // True iff the calling operator created this row. Drives the delete /
+  // promote affordances — non-owners can see fleet filters but can't
+  // revoke them.
   owned_by_me: boolean
+  // True iff the calling operator has personally muted this filter.
+  // Muted filters are still listed (so the UI can render a muted chip
+  // and an "unmute" action) but excluded from the agent's
+  // list_relevant_filters lookups — i.e. not applied in investigations.
+  muted_by_me: boolean
   created_at: string
   last_applied_at: string | null
   apply_count: number
@@ -56,6 +61,16 @@ export const filtersApi = {
   promote: (id: string) =>
     api<OperatorFilterRow>(`/${encodeURIComponent(id)}/promote`, {
       method: 'POST',
+    }),
+
+  mute: (id: string) =>
+    api<OperatorFilterRow>(`/${encodeURIComponent(id)}/mute`, {
+      method: 'POST',
+    }),
+
+  unmute: (id: string) =>
+    api<OperatorFilterRow>(`/${encodeURIComponent(id)}/mute`, {
+      method: 'DELETE',
     }),
 
   delete: (id: string) =>

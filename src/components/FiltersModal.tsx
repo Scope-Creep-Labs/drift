@@ -20,6 +20,8 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import FilterAltIcon from '@mui/icons-material/FilterAlt'
 import PublicIcon from '@mui/icons-material/Public'
 import LockIcon from '@mui/icons-material/Lock'
+import VolumeOffIcon from '@mui/icons-material/VolumeOff'
+import VolumeUpIcon from '@mui/icons-material/VolumeUp'
 import { filtersApi, type OperatorFilterRow } from '../lib/filtersApi'
 
 export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -58,6 +60,19 @@ export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => 
     setPendingId(id)
     try {
       await filtersApi.promote(id)
+      refresh()
+    } catch (e) {
+      setListError((e as Error).message)
+    } finally {
+      setPendingId(null)
+    }
+  }
+
+  const handleToggleMute = async (id: string, currentlyMuted: boolean) => {
+    setPendingId(id)
+    try {
+      if (currentlyMuted) await filtersApi.unmute(id)
+      else await filtersApi.mute(id)
       refresh()
     } catch (e) {
       setListError((e as Error).message)
@@ -141,10 +156,11 @@ export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => 
                 alignItems: 'flex-start',
                 justifyContent: 'space-between',
                 gap: 1,
+                opacity: f.muted_by_me ? 0.6 : 1,
               }}
             >
               <Box sx={{ minWidth: 0, flex: 1 }}>
-                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
+                <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }} flexWrap="wrap" useFlexGap>
                   <Tooltip title={isFleet ? 'Fleet-wide: visible to every operator' : 'Private: visible only to you'}>
                     <Chip
                       size="small"
@@ -154,6 +170,17 @@ export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => 
                       sx={{ fontWeight: 600 }}
                     />
                   </Tooltip>
+                  {f.muted_by_me && (
+                    <Tooltip title="You've muted this filter — it won't be applied in your investigations">
+                      <Chip
+                        size="small"
+                        label="muted"
+                        color="warning"
+                        variant="outlined"
+                        icon={<VolumeOffIcon sx={{ fontSize: 14 }} />}
+                      />
+                    </Tooltip>
+                  )}
                   {scopeChips.length === 0 ? (
                     <Chip size="small" label="any source" variant="outlined" />
                   ) : (
@@ -195,6 +222,21 @@ export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => 
                 </Typography>
               </Box>
               <Stack direction="row" spacing={0.4} sx={{ flexShrink: 0 }}>
+                <Tooltip title={f.muted_by_me ? 'Unmute: apply this filter again' : 'Mute: stop applying this filter in YOUR investigations (others unaffected)'}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={() => handleToggleMute(f.id, f.muted_by_me)}
+                      disabled={pendingId === f.id}
+                    >
+                      {f.muted_by_me ? (
+                        <VolumeUpIcon fontSize="small" />
+                      ) : (
+                        <VolumeOffIcon fontSize="small" />
+                      )}
+                    </IconButton>
+                  </span>
+                </Tooltip>
                 {!isFleet && f.owned_by_me && (
                   <Tooltip title="Promote to fleet-wide">
                     <span>
@@ -221,7 +263,7 @@ export function FiltersModal({ open, onClose }: { open: boolean; onClose: () => 
                     </span>
                   </Tooltip>
                 ) : (
-                  <Tooltip title="Only the original creator can delete this fleet filter">
+                  <Tooltip title="Only the original creator can delete this fleet filter — use mute to opt yourself out">
                     <span>
                       <IconButton size="small" disabled>
                         <DeleteOutlineIcon fontSize="small" />

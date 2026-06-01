@@ -41,7 +41,7 @@ from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deploy.db import session
-from ..deploy.models import OperatorFilter
+from ..deploy.models import OperatorFilter, OperatorFilterMute
 from .metrics import ToolContext
 
 
@@ -140,7 +140,12 @@ async def _find_duplicate(
     return None
 
 
-def _serialize_filter(r: OperatorFilter, *, viewer_id: Optional[uuid.UUID] = None) -> dict:
+def _serialize_filter(
+    r: OperatorFilter,
+    *,
+    viewer_id: Optional[uuid.UUID] = None,
+    muted_ids: Optional[set[uuid.UUID]] = None,
+) -> dict:
     return {
         "id": str(r.id),
         "pattern": r.pattern,
@@ -148,10 +153,20 @@ def _serialize_filter(r: OperatorFilter, *, viewer_id: Optional[uuid.UUID] = Non
         "reason": r.reason or "",
         "visibility": r.visibility,
         "owned_by_me": (viewer_id is not None and r.user_id == viewer_id),
+        "muted_by_me": (muted_ids is not None and r.id in muted_ids),
         "created_at": r.created_at.isoformat(),
         "last_applied_at": r.last_applied_at.isoformat() if r.last_applied_at else None,
         "apply_count": r.apply_count,
     }
+
+
+async def _muted_ids_for(s: AsyncSession, user_id: uuid.UUID) -> set[uuid.UUID]:
+    rows = (
+        await s.execute(
+            select(OperatorFilterMute.filter_id).where(OperatorFilterMute.user_id == user_id)
+        )
+    ).scalars().all()
+    return set(rows)
 
 
 # ---------- tool handlers ----------
@@ -212,6 +227,7 @@ async def list_relevant_filters(ctx: ToolContext, args: dict) -> dict:
     request_scope = _normalize_scope(args or {})
 
     async with session() as s:
+        muted = await _muted_ids_for(s, ctx.user.id)
         rows = (
             await s.execute(
                 select(OperatorFilter).where(
@@ -227,8 +243,14 @@ async def list_relevant_filters(ctx: ToolContext, args: dict) -> dict:
     matches: list[dict] = []
     matched_ids: list[uuid.UUID] = []
     for r in rows:
+        # Skip filters the caller has explicitly muted. The sidebar
+        # GET /api/filters keeps them visible (with `muted_by_me: true`)
+        # so the operator can flip the toggle back, but the agent's
+        # investigation-time lookup excludes them entirely.
+        if r.id in muted:
+            continue
         if _scope_matches(r.scope or {}, request_scope):
-            matches.append(_serialize_filter(r, viewer_id=ctx.user.id))
+            matches.append(_serialize_filter(r, viewer_id=ctx.user.id, muted_ids=muted))
             matched_ids.append(r.id)
 
     if matched_ids:
@@ -368,6 +390,98 @@ async def promote_filter(ctx: ToolContext, args: dict) -> dict:
     }
 
 
+async def mute_filter(ctx: ToolContext, args: dict) -> dict:
+    """Mark a filter as muted FOR THE CALLING OPERATOR only. The filter
+    row is left intact (others keep seeing it / applying it); future
+    list_relevant_filters calls from this operator will exclude it.
+    Idempotent: muting a filter that's already muted is a no-op."""
+    if (err := _require_user(ctx)):
+        return err
+    raw_id = (args.get("filter_id") or "").strip()
+    if not raw_id:
+        return {"error": "filter_id is required"}
+    try:
+        fid = uuid.UUID(raw_id)
+    except ValueError:
+        return {"error": f"filter_id '{raw_id}' is not a valid UUID"}
+
+    async with session() as s:
+        row = (
+            await s.execute(select(OperatorFilter).where(OperatorFilter.id == fid))
+        ).scalar_one_or_none()
+        if row is None:
+            return {"error": f"filter '{raw_id}' not found"}
+        # Visibility check — caller has to actually be able to see the
+        # filter to mute it. Private filters are visible only to the
+        # owner; fleet filters are visible to all.
+        if row.visibility == _VISIBILITY_PRIVATE and row.user_id != ctx.user.id:
+            return {"error": f"filter '{raw_id}' not found"}
+
+        existing = (
+            await s.execute(
+                select(OperatorFilterMute).where(
+                    OperatorFilterMute.user_id == ctx.user.id,
+                    OperatorFilterMute.filter_id == fid,
+                )
+            )
+        ).scalar_one_or_none()
+        already_muted = existing is not None
+        if not already_muted:
+            s.add(OperatorFilterMute(user_id=ctx.user.id, filter_id=fid))
+            await s.commit()
+
+    return {
+        "filter_id": str(fid),
+        "muted": True,
+        "already_muted": already_muted,
+        "pattern": row.pattern,
+        "visibility": row.visibility,
+        "note": (
+            "The filter is no longer applied in your investigations. "
+            + ("(No-op — it was already muted.)" if already_muted else "Use unmute_filter to re-enable.")
+        ),
+    }
+
+
+async def unmute_filter(ctx: ToolContext, args: dict) -> dict:
+    """Reverse mute_filter. Idempotent: unmuting a filter that wasn't
+    muted is a no-op."""
+    if (err := _require_user(ctx)):
+        return err
+    raw_id = (args.get("filter_id") or "").strip()
+    if not raw_id:
+        return {"error": "filter_id is required"}
+    try:
+        fid = uuid.UUID(raw_id)
+    except ValueError:
+        return {"error": f"filter_id '{raw_id}' is not a valid UUID"}
+
+    async with session() as s:
+        existing = (
+            await s.execute(
+                select(OperatorFilterMute).where(
+                    OperatorFilterMute.user_id == ctx.user.id,
+                    OperatorFilterMute.filter_id == fid,
+                )
+            )
+        ).scalar_one_or_none()
+        was_muted = existing is not None
+        if was_muted:
+            await s.delete(existing)
+            await s.commit()
+
+    return {
+        "filter_id": str(fid),
+        "muted": False,
+        "was_muted": was_muted,
+        "note": (
+            "The filter will apply again in your future investigations."
+            if was_muted
+            else "No-op — the filter was not muted to begin with."
+        ),
+    }
+
+
 # ---------- Tool schemas (Claude tool-use shape) ----------
 
 
@@ -486,8 +600,8 @@ FILTERS_TOOLS: list[dict] = [
             "Hard-delete a filter you own. Call when the operator says 'stop ignoring X', "
             "'remove that filter', 'I was wrong about Y'. You can only forget filters whose "
             "owner is the calling operator — i.e. your own private filters AND any fleet "
-            "filters you originally created. Other operators' fleet filters are read-only "
-            "to you; the tool returns an error pointing the operator at the creator."
+            "filters you originally created. For filters owned by another operator, use "
+            "`mute_filter` instead (per-user opt-out without removing the row for others)."
         ),
         "input_schema": {
             "type": "object",
@@ -495,6 +609,47 @@ FILTERS_TOOLS: list[dict] = [
                 "filter_id": {
                     "type": "string",
                     "description": "UUID returned when the filter was created or listed.",
+                },
+            },
+            "required": ["filter_id"],
+        },
+    },
+    {
+        "name": "mute_filter",
+        "description": (
+            "Per-user opt-out: stop applying this filter in YOUR investigations without "
+            "removing the row for anyone else. Works on any filter you can see — your own "
+            "private (kept around but skipped this debugging session), your own fleet "
+            "(opt yourself out without affecting the team), or someone else's fleet (the "
+            "only way to opt out when you can't delete). The filter STAYS visible in the "
+            "Filters sidebar with a 'muted' chip — `unmute_filter` re-enables. Idempotent. "
+            "Call when the operator says 'mute that', 'skip applying X for now', 'don't "
+            "use that filter in this conversation', or 'opt me out'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter_id": {
+                    "type": "string",
+                    "description": "UUID of the filter to mute (from list_relevant_filters).",
+                },
+            },
+            "required": ["filter_id"],
+        },
+    },
+    {
+        "name": "unmute_filter",
+        "description": (
+            "Re-enable a previously-muted filter for the calling operator. Idempotent — "
+            "unmuting an already-active filter is a no-op. Call when the operator says "
+            "'unmute X', 'apply that filter again', 'turn it back on'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "filter_id": {
+                    "type": "string",
+                    "description": "UUID of the filter to unmute.",
                 },
             },
             "required": ["filter_id"],
@@ -508,4 +663,6 @@ FILTERS_HANDLERS: dict = {
     "list_relevant_filters": list_relevant_filters,
     "forget_filter": forget_filter,
     "promote_filter": promote_filter,
+    "mute_filter": mute_filter,
+    "unmute_filter": unmute_filter,
 }
