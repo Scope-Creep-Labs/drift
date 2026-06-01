@@ -27,6 +27,7 @@ litellm.suppress_debug_info = True
 from .tools.alerts import ALERT_HANDLERS, ALERT_TOOLS, make_alert_client
 from .tools.analysis import ANALYSIS_HANDLERS, ANALYSIS_TOOLS
 from .tools.deploy import DEPLOY_HANDLERS, DEPLOY_TOOLS
+from .tools.filters import FILTERS_HANDLERS, FILTERS_TOOLS
 from .tools.users import USER_HANDLERS, USER_TOOLS
 from .tools.emit import EMIT_HANDLERS, EMIT_TOOLS
 from .tools.logs import LOGS_HANDLERS, LOGS_TOOLS, make_vl_client
@@ -271,7 +272,21 @@ any side-files in the bundle (e.g. `./prometheus.yml`); only real host resources
 hostnames — the edge agent injects these at apply time, so one revision serves a \
 heterogeneous fleet.
 
-6. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
+6. **Honor operator-learned noise filters.** Drift evolves across sessions via operator-supplied \
+suppression rules. BEFORE summarizing errors, alerts, or noisy logs in any investigation scoped \
+to a specific device, group, or container, call `list_relevant_filters` (pass whichever of \
+device/container/group/signal apply). For each filter returned, drop matching lines (case-\
+insensitive substring on `pattern`) from your narrative and append a small footer in your \
+final `make_markdown` like `_suppressed N lines matching M operator filters_`. This lets the \
+operator catch over-silencing. When the operator says "ignore X" / "treat Y as known noise" / \
+"don't report Z" / "make a note to skip that next time", call `remember_filter` with the \
+pattern, a narrowing scope (device/container/group), and a one-line `reason` quoting the \
+operator's motivation. When they say "stop ignoring X" / "remove that filter", call \
+`forget_filter` with the id from `list_relevant_filters`. Filters are per-user. There is no \
+fleet-wide promote tool yet — if the operator asks for that, say so and offer to create \
+per-user copies if they list the operators.
+
+7. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
 user-visible response — narrative, charts, tables, metrics, timelines — must be assembled \
 by calling `make_markdown`, `make_chart`, `make_table`, `make_metric`, `make_timeline`, or \
@@ -332,21 +347,26 @@ what you tried and what would be needed to answer the question.\
 def all_tools() -> list[dict]:
     # User management tools come on the same flag as deploy — they share
     # the Postgres + auth subsystem and don't make sense in pure-VM mode.
+    # Operator filters ride the same flag — they're per-user state and
+    # need the users table to exist.
     deploy = DEPLOY_TOOLS if settings.deploy_enabled else []
     users = USER_TOOLS if settings.deploy_enabled else []
+    filters = FILTERS_TOOLS if settings.deploy_enabled else []
     logs = LOGS_TOOLS if settings.vl_url else []
-    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *users, *logs, *ANALYSIS_TOOLS, *EMIT_TOOLS]
+    return [*METRICS_TOOLS, *ALERT_TOOLS, *deploy, *users, *filters, *logs, *ANALYSIS_TOOLS, *EMIT_TOOLS]
 
 
 def all_handlers() -> dict:
     deploy = DEPLOY_HANDLERS if settings.deploy_enabled else {}
     users = USER_HANDLERS if settings.deploy_enabled else {}
+    filters = FILTERS_HANDLERS if settings.deploy_enabled else {}
     logs = LOGS_HANDLERS if settings.vl_url else {}
     return {
         **METRICS_HANDLERS,
         **ALERT_HANDLERS,
         **deploy,
         **users,
+        **filters,
         **logs,
         **ANALYSIS_HANDLERS,
         **EMIT_HANDLERS,
@@ -406,6 +426,13 @@ def _summarize_for_event(name: str, result: Any) -> str:
         return f"{result.get('action', '?')} route → {result.get('receiver', '?')}"
     if name == "delete_route":
         return f"deleted route → {result.get('deleted_for', '?')}"
+    if name == "list_relevant_filters":
+        return f"{result.get('n', 0)} filters in scope"
+    if name == "remember_filter":
+        p = (result.get("pattern") or "")[:40]
+        return f"saved: {p}{'…' if len(result.get('pattern') or '') > 40 else ''}"
+    if name == "forget_filter":
+        return "filter removed" if result.get("deleted") else "not found"
     if name == "list_devices":
         return f"{result.get('n', 0)} devices"
     if name == "get_device":

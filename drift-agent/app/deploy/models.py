@@ -279,3 +279,53 @@ class RegistryCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc, onupdate=_now_utc, nullable=False
     )
+
+
+class OperatorFilter(Base):
+    """Operator-supplied noise-suppression rule, learned via chat.
+
+    The investigation agent calls `remember_filter` when the operator
+    says things like "ignore that cadvisor product_name error on the
+    Pi", and `list_relevant_filters` at the start of any investigation
+    scoped to a device / group / container to apply the matching rules.
+
+    Scope is a sparse JSONB dict — today: {"device", "container",
+    "group", "signal"}. Adding new narrowing dimensions later doesn't
+    require a migration. Pattern is matched as case-insensitive
+    substring at READ time; no regex / wildcards in v1 (small surface,
+    no ReDoS risk). Filters are per-user; a future "promote to
+    fleet-wide" path would copy a row for each member of the
+    user-group.
+    """
+
+    __tablename__ = "operator_filters"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    pattern: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=text("'{}'::jsonb"),
+    )
+    reason: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default=text("''"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+    last_applied_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    apply_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
