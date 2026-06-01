@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
+  Badge,
   Box,
   Button,
   IconButton,
@@ -37,6 +38,7 @@ import { LlmSettingsModal } from '../LlmSettingsModal'
 import { SoftwareUpdatesModal } from '../SoftwareUpdatesModal'
 import { RegistryCredsModal } from '../RegistryCredsModal'
 import { type App, type DeploymentTarget, type Device } from '../../lib/deployApi'
+import { apiBase } from '../../lib/apiBase'
 import { TagEditModal } from '../TagEditModal'
 import LabelIcon from '@mui/icons-material/LabelOutlined'
 
@@ -121,6 +123,11 @@ export function InvestigationList() {
   const [updatesModalOpen, setUpdatesModalOpen] = useState(false)
   const [llmModalOpen, setLlmModalOpen] = useState(false)
   const [filtersModalOpen, setFiltersModalOpen] = useState(false)
+  // Background poll of /api/admin/updates so we can show a warning-color
+  // dot on the updates icon when a newer release lands. Matches the CP-
+  // side poller cadence (15min) — polling faster than that just hits the
+  // same cached snapshot.
+  const [updatesAvailable, setUpdatesAvailable] = useState(false)
   const [deviceFilter, setDeviceFilter] = useState('')
   const [tagEditDevice, setTagEditDevice] = useState<Device | null>(null)
   // Sidebar splits the previous one-scroll-fits-all layout into 3 tabs so
@@ -133,6 +140,37 @@ export function InvestigationList() {
   const user = auth.status === 'authenticated' ? auth.user : undefined
   const usage = auth.status === 'authenticated' ? auth.usage : null
   const canDeploy = isDeploy(user)
+
+  // Periodic check of /api/admin/updates so the updates icon can show a
+  // badge when a newer release lands. Admin-only — the endpoint requires
+  // it and non-admins can't apply updates anyway. Cadence matches the
+  // CP-side poller (15min); polling faster just hits the same cached
+  // snapshot.
+  useEffect(() => {
+    if (user?.role !== 'admin') {
+      setUpdatesAvailable(false)
+      return
+    }
+    let cancelled = false
+    const check = async () => {
+      try {
+        const res = await fetch(`${apiBase()}/admin/updates`, { credentials: 'include' })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled) {
+          setUpdatesAvailable(Boolean(data.has_newer_release || data.image_update_pending))
+        }
+      } catch {
+        // Best-effort; transient failures shouldn't surface as a UI badge.
+      }
+    }
+    check()
+    const id = window.setInterval(check, 15 * 60 * 1000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [user?.role])
 
   // Apps + deployments come from the shared fleetStore so:
   //  - the sidebar re-renders whenever useInvestigate fires a 'done'
@@ -668,10 +706,18 @@ export function InvestigationList() {
             </Tooltip>
           )}
           {user?.role === 'admin' && (
-            <Tooltip title="Software updates">
-              <IconButton size="small" onClick={() => setUpdatesModalOpen(true)} sx={{ p: 0.4 }}>
-                <SystemUpdateAltIcon sx={{ fontSize: 14 }} />
-              </IconButton>
+            <Tooltip title={updatesAvailable ? 'Software updates — newer release available' : 'Software updates'}>
+              <Badge
+                color="warning"
+                variant="dot"
+                invisible={!updatesAvailable}
+                overlap="circular"
+                anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+              >
+                <IconButton size="small" onClick={() => setUpdatesModalOpen(true)} sx={{ p: 0.4 }}>
+                  <SystemUpdateAltIcon sx={{ fontSize: 14 }} />
+                </IconButton>
+              </Badge>
             </Tooltip>
           )}
           {isDeploy(user) && (
