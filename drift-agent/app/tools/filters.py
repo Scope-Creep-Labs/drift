@@ -73,14 +73,28 @@ def _normalize_scope(raw: Any) -> dict:
 
 
 def _scope_matches(filter_scope: dict, request_scope: dict) -> bool:
-    """A filter applies if every key the filter pins matches the request.
-    The request can carry extra keys; filter empty-keys are wildcards."""
+    """A filter is COMPATIBLE with the request when no key pinned by both
+    has conflicting values. Keys the filter pins that the request omits
+    are NOT a disqualifier — the agent applies those constraints per-line
+    against the actual log/error source. This way an operator can save a
+    filter scoped to (device=pi, container=cadvisor) and the agent's
+    broader 'errors on pi?' query still loads it; per-line, the agent
+    drops only the lines whose container actually is cadvisor.
+
+    Examples (filter scope → request scope → match?):
+      {device: pi, signal: log}     {device: pi}                     → ✓ (request omits signal)
+      {device: pi, signal: log}     {device: pi, signal: alert}      → ✗ (signal conflicts)
+      {device: pi, container: x}    {device: pi}                     → ✓ (agent per-line filters)
+      {device: pi}                  {device: pi, container: x}       → ✓ (filter is broader)
+      {}                            {device: pi}                     → ✓ (user-wide filter)
+    """
     if not isinstance(filter_scope, dict):
         return False
     for k, v in filter_scope.items():
         if k not in _SCOPE_KEYS:
             continue
-        if request_scope.get(k) != v:
+        rv = request_scope.get(k)
+        if rv is not None and rv != v:
             return False
     return True
 

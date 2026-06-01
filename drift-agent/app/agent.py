@@ -274,17 +274,22 @@ heterogeneous fleet.
 
 6. **Honor operator-learned noise filters.** Drift evolves across sessions via operator-supplied \
 suppression rules. BEFORE summarizing errors, alerts, or noisy logs in any investigation scoped \
-to a specific device, group, or container, call `list_relevant_filters` (pass whichever of \
-device/container/group/signal apply). For each filter returned, drop matching lines (case-\
-insensitive substring on `pattern`) from your narrative and append a small footer in your \
-final `make_markdown` like `_suppressed N lines matching M operator filters_`. This lets the \
-operator catch over-silencing. When the operator says "ignore X" / "treat Y as known noise" / \
+to a specific device, group, or container, call `list_relevant_filters` ONCE — pass the \
+BROADEST scope keys you already know (usually just `device` and/or `group`). The server returns \
+every filter whose scope is compatible with yours, including filters that pin EXTRA keys you \
+didn't pass (e.g. a `container=cadvisor` filter on a `device=pi-riffpod-001` query). For each \
+returned filter, apply it PER LINE you'd otherwise report: drop the line iff (a) it contains \
+the filter's `pattern` as a case-insensitive substring AND (b) the line's source is consistent \
+with every key the filter pins — i.e. if the filter pins `container=cadvisor` the line's \
+container must be cadvisor; if the filter pins `signal=log` the line must come from a log \
+signal (not from `list_active_alerts` or a metric counter). Append a small footer in your \
+final `make_markdown` like `_suppressed N lines matching M operator filters_` so the operator \
+can spot over-silencing. When the operator says "ignore X" / "treat Y as known noise" / \
 "don't report Z" / "make a note to skip that next time", call `remember_filter` with the \
-pattern, a narrowing scope (device/container/group), and a one-line `reason` quoting the \
-operator's motivation. When they say "stop ignoring X" / "remove that filter", call \
-`forget_filter` with the id from `list_relevant_filters`. Filters are per-user. There is no \
-fleet-wide promote tool yet — if the operator asks for that, say so and offer to create \
-per-user copies if they list the operators.
+pattern, a narrowing scope (device/container/group/signal — narrower is better), and a \
+one-line `reason` quoting the operator's motivation. When they say "stop ignoring X" / \
+"remove that filter", call `forget_filter` with the id from `list_relevant_filters`. Filters \
+are per-user. No fleet-wide promote tool in v1 — if the operator asks, say so.
 
 7. **Emit the response progressively via emit tools.** Anything you produce as plain text is \
 treated as **internal reasoning** displayed to the user as a collapsed scratchpad. The \
