@@ -19,6 +19,7 @@ import uuid
 
 from sqlalchemy import select
 
+from ..config import settings
 from ..deploy.db import session
 from ..deploy.models import User, UserGroup
 from ..users.passwords import hash_password
@@ -53,6 +54,19 @@ def _require_admin(ctx: ToolContext) -> dict | None:
     return None
 
 
+def _refuse_in_demo(action: str) -> dict | None:
+    """Refuse user-management mutations in DEMO_MODE. Listing remains
+    allowed (read-only)."""
+    if settings.demo_mode:
+        return {
+            "error": (
+                f"DEMO_MODE blocked {action}. User accounts are managed out-of-band "
+                "for this demo deployment."
+            ),
+        }
+    return None
+
+
 async def list_users(ctx: ToolContext, _args: dict) -> dict:
     if (err := _require_admin(ctx)):
         return err
@@ -75,6 +89,8 @@ async def list_users(ctx: ToolContext, _args: dict) -> dict:
 
 async def create_user(ctx: ToolContext, args: dict) -> dict:
     if (err := _require_admin(ctx)):
+        return err
+    if (err := _refuse_in_demo("create_user")):
         return err
     username = (args.get("username") or "").strip()
     role = (args.get("role") or "observe").strip()
@@ -192,6 +208,8 @@ async def set_user_groups(ctx: ToolContext, args: dict) -> dict:
 async def reset_user_password(ctx: ToolContext, args: dict) -> dict:
     if (err := _require_admin(ctx)):
         return err
+    if (err := _refuse_in_demo("reset_user_password")):
+        return err
     username = (args.get("username") or "").strip()
     if not username:
         return {"error": "username is required"}
@@ -213,6 +231,8 @@ async def reset_user_password(ctx: ToolContext, args: dict) -> dict:
 
 async def delete_user(ctx: ToolContext, args: dict) -> dict:
     if (err := _require_admin(ctx)):
+        return err
+    if (err := _refuse_in_demo("delete_user")):
         return err
     username = (args.get("username") or "").strip()
     if not username:

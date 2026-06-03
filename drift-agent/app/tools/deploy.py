@@ -94,6 +94,21 @@ def _ensure_deploy_enabled() -> dict | None:
     return None
 
 
+def _refuse_in_demo(action: str) -> dict | None:
+    """Demo-mode guard for chat tools that would corrupt the simulator's
+    fixed fleet (commission_device, delete_device). Returns an error
+    dict the LLM can relay to the operator; otherwise None."""
+    if settings.demo_mode:
+        return {
+            "error": (
+                f"DEMO_MODE blocked {action}. This demo CP uses a fixed simulated "
+                "fleet — adding or removing devices would break the demo for other "
+                "operators. The deploy + filter + investigation flows all still work."
+            ),
+        }
+    return None
+
+
 def _require_deploy_role(ctx: ToolContext) -> dict | None:
     """Defense-in-depth: even though the /investigate HTTP endpoint
     enforces auth, the tools call into the DB directly and could be
@@ -446,6 +461,8 @@ async def commission_device(ctx: ToolContext, args: dict) -> dict:
         return err
     if (err := _ensure_deploy_enabled()):
         return err
+    if (err := _refuse_in_demo("commission_device")):
+        return err
     raw_name = args.get("name")
     group_id = args.get("group_id")
     name = normalize_device_name(raw_name)
@@ -516,6 +533,8 @@ async def delete_device(ctx: ToolContext, args: dict) -> dict:
     if (err := _require_deploy_role(ctx)):
         return err
     if (err := _ensure_deploy_enabled()):
+        return err
+    if (err := _refuse_in_demo("delete_device")):
         return err
     name = args.get("name")
     if not name:

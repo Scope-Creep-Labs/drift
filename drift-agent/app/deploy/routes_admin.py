@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
-from ..users.deps import UserContext, get_current_user, require_role
+from ..users.deps import UserContext, forbid_in_demo, get_current_user, require_role
 from . import bundles, secrets as crypto, security
 from .observability import revision_uploads_total
 from .db import session
@@ -90,6 +90,7 @@ async def list_devices(
 async def create_device(
     body: DeviceCreate,
     user: UserContext = Depends(require_role("deploy")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> DeviceCreated:
     # group_id is required + must be in the operator's allowed groups
@@ -137,6 +138,7 @@ async def create_device(
 async def delete_device(
     name: str,
     user: UserContext = Depends(require_role("deploy")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     # Soft-delete: flip status to 'removed' instead of issuing a real
@@ -531,6 +533,7 @@ async def list_registry_creds(
 async def upsert_registry_creds(
     body: RegistryCredentialSet,
     user: UserContext = Depends(require_role("deploy")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> RegistryCredentialOut:
     _require_secrets_enabled()
@@ -570,6 +573,7 @@ async def delete_registry_creds(
     registry: str,
     group_id: str,
     user: UserContext = Depends(require_role("deploy")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     _check_group_access(user, group_id)

@@ -160,3 +160,23 @@ def require_role(min_role: str):
         return user
 
     return _guard
+
+
+async def forbid_in_demo() -> None:
+    """FastAPI dependency: 403 if DEMO_MODE is on.
+
+    Applied to mutation endpoints that would either compromise the
+    shared demo experience (admin password, LLM key, registry creds)
+    or corrupt the simulator's fixed device fleet (device commission
+    / delete). The error body explains why — operators visiting the
+    demo benefit from "I can't do this BECAUSE demo mode" being
+    visible rather than a generic 403.
+    """
+    # Lazy import — avoids a cycle with config at module load time.
+    from ..config import settings
+
+    if settings.demo_mode:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "blocked in DEMO_MODE — this action would compromise the shared demo experience.",
+        )

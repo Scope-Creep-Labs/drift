@@ -20,6 +20,7 @@ from .deps import (
     ROLE_ORDER,
     SESSION_COOKIE,
     UserContext,
+    forbid_in_demo,
     get_current_user,
     get_db,
     require_role,
@@ -50,6 +51,12 @@ class UserOut(BaseModel):
     username: str
     role: str
     groups: list[str]
+    # Demo-mode metadata. Surfaced on /me so the frontend can render
+    # the demo banner and hide admin-only affordances. Always present
+    # in the response (defaults to False / None) so callers don't have
+    # to branch on the field's existence.
+    demo_mode: bool = False
+    demo_banner_message: Optional[str] = None
 
 
 class UserCreate(BaseModel):
@@ -67,7 +74,19 @@ class UserUpdate(BaseModel):
 
 
 def _user_out(user: User, groups: list[str]) -> UserOut:
-    return UserOut(id=user.id, username=user.username, role=user.role, groups=sorted(groups))
+    # demo_mode and demo_banner_message are global flags (from
+    # settings), not per-user state — but they hitch a ride on UserOut
+    # so the frontend has them on the SAME response as the auth state
+    # without an extra round-trip on page load. `me`, `login`,
+    # `create_user`, etc. all share this helper.
+    return UserOut(
+        id=user.id,
+        username=user.username,
+        role=user.role,
+        groups=sorted(groups),
+        demo_mode=settings.demo_mode,
+        demo_banner_message=settings.demo_banner_message if settings.demo_mode else None,
+    )
 
 
 async def _groups_for(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
@@ -171,7 +190,19 @@ async def me(user: UserContext = Depends(get_current_user)) -> UserOut:
         username=user.username,
         role=user.role,
         groups=sorted(user.groups),
+        demo_mode=settings.demo_mode,
+        demo_banner_message=settings.demo_banner_message if settings.demo_mode else None,
     )
+
+
+@router.get("/demo/status")
+async def demo_status() -> dict:
+    """Public — no auth required. Lets the login page surface a 'Demo
+    mode' label so visitors don't blindly enter random credentials."""
+    return {
+        "demo_mode": settings.demo_mode,
+        "banner_message": settings.demo_banner_message if settings.demo_mode else None,
+    }
 
 
 class MeUsageKinds(BaseModel):
@@ -350,6 +381,7 @@ async def list_users(
 async def create_user(
     body: UserCreate,
     _admin: UserContext = Depends(require_role("admin")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> UserOut:
     existing = (
@@ -376,6 +408,7 @@ async def update_user(
     username: str,
     body: UserUpdate,
     actor: UserContext = Depends(require_role("admin")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> UserOut:
     user = (
@@ -419,6 +452,7 @@ async def update_user(
 async def delete_user(
     username: str,
     actor: UserContext = Depends(require_role("admin")),
+    _no_demo: None = Depends(forbid_in_demo),
     db: AsyncSession = Depends(get_db),
 ) -> None:
     user = (

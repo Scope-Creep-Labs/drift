@@ -12,6 +12,7 @@ import {
 import MenuIcon from '@mui/icons-material/Menu'
 import { InvestigationList } from './Sidebar/InvestigationList'
 import { Conversation } from './Conversation'
+import { DemoBanner } from './DemoBanner'
 import { PromptInput } from './PromptInput'
 import { TerminalModal } from './TerminalModal'
 import { useTerminalUiStore } from '../state/terminalUiStore'
@@ -49,21 +50,24 @@ export function Shell() {
   if (!isMobile) {
     // Desktop / tablet landscape: persistent sidebar + main column.
     return (
-      <Box sx={{ display: 'flex', height: '100vh', bgcolor: 'background.default' }}>
-        <InvestigationList />
-        <Box
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            display: 'flex',
-            flexDirection: 'column',
-            height: '100vh',
-          }}
-        >
-          <Conversation />
-          <Box sx={{ px: 4, bgcolor: 'background.default' }}>
-            <Box sx={{ maxWidth: 920, mx: 'auto' }}>
-              <PromptInput />
+      <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: 'background.default' }}>
+        <DemoBanner />
+        <Box sx={{ display: 'flex', flex: 1, minHeight: 0 }}>
+          <InvestigationList />
+          <Box
+            sx={{
+              flex: 1,
+              minWidth: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              minHeight: 0,
+            }}
+          >
+            <Conversation />
+            <Box sx={{ px: 4, bgcolor: 'background.default' }}>
+              <Box sx={{ maxWidth: 920, mx: 'auto' }}>
+                <PromptInput />
+              </Box>
             </Box>
           </Box>
         </Box>
@@ -79,6 +83,7 @@ export function Shell() {
   // main content while open and closes on tap-outside.
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', bgcolor: 'background.default' }}>
+      <DemoBanner />
       <AppBar
         position="static"
         color="default"

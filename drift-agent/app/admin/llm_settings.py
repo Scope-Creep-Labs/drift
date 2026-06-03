@@ -37,7 +37,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from ..config import settings
-from ..users.deps import UserContext, require_role
+from ..users.deps import UserContext, forbid_in_demo, require_role
 
 
 router = APIRouter(prefix="/api/admin/llm-settings", tags=["admin"])
@@ -348,6 +348,7 @@ async def validate_credential(
 async def update_llm_settings(
     body: LlmSettingsUpdate = Body(...),
     _admin: UserContext = Depends(require_role("admin")),
+    _no_demo: None = Depends(forbid_in_demo),
 ) -> dict:
     # Build the {KEY: value} dict only with the fields the operator
     # actually changed. `None` means "leave alone"; empty string means

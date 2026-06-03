@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from ..users.deps import require_role, UserContext
+from ..users.deps import forbid_in_demo, require_role, UserContext
 from . import updates
 
 router = APIRouter(prefix="/api/admin/updates", tags=["admin"])
@@ -32,6 +32,7 @@ async def force_check(
 @router.post("/apply")
 async def apply_updates(
     _admin: UserContext = Depends(require_role("admin")),
+    _no_demo: None = Depends(forbid_in_demo),
 ) -> dict:
     # NOTE: drift-agent will recreate itself in this call. The HTTP
     # response races the container restart — the SPA should treat a

@@ -9,6 +9,12 @@ export type AuthUser = {
   username: string
   role: 'observe' | 'deploy' | 'admin'
   groups: string[]
+  // Demo-mode metadata. Both fields ride on every /me / login /
+  // create_user response so the SPA knows whether to render the demo
+  // banner without an extra round-trip. `demo_banner_message` is null
+  // when `demo_mode` is false (server-side guard).
+  demo_mode: boolean
+  demo_banner_message: string | null
 }
 
 // Mirrors MeUsage. Cumulative over `window_days` (default 30 from the

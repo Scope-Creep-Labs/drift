@@ -124,6 +124,24 @@ class Settings(BaseSettings):
     login_max_failures_per_ip: int = 30
     login_failure_window_seconds: int = 900  # 15 minutes
 
+    # Demo mode. When enabled, the CP refuses operator-side mutations
+    # that would either compromise the shared demo account's experience
+    # (changing the admin password / LLM key / API key for everyone) or
+    # corrupt the simulator's fixed device fleet (commission / delete
+    # device). Per-session investigation turns are capped so a single
+    # demo visitor can't burn the LLM budget. The frontend reads
+    # /api/auth/me to know whether to show the demo banner and hide
+    # admin-only affordances.
+    #
+    # Default off — drift behaves identically to non-demo when these
+    # are unset.
+    demo_mode: bool = False
+    demo_max_turns_per_session: int = 10
+    demo_banner_message: str = (
+        "Demo mode — actions are visible to other operators sharing this account. "
+        "State resets nightly."
+    )
+
     @property
     def deploy_enabled(self) -> bool:
         """Deploy subsystem requires Postgres + a bundle storage backend.

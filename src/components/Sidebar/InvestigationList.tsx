@@ -697,15 +697,22 @@ export function InvestigationList() {
         </Box>
         <Stack direction="row" spacing={0.2}>
           {/* Theme toggle lives in the top-right utility bar now
-              (see UtilityBar.tsx). Admin-only settings sit here. */}
-          {user?.role === 'admin' && (
+              (see UtilityBar.tsx). Admin-only settings sit here.
+
+              In DEMO_MODE the LLM-key, software-updates, and registry-
+              creds icons are hidden: the backend refuses those
+              mutations anyway, and rendering the buttons would invite
+              confusion. The change-password + sign-out icons stay
+              visible since they're per-user operations a demo visitor
+              might still want. */}
+          {user?.role === 'admin' && !user?.demo_mode && (
             <Tooltip title="LLM model + API key">
               <IconButton size="small" onClick={() => setLlmModalOpen(true)} sx={{ p: 0.4 }}>
                 <TuneIcon sx={{ fontSize: 14 }} />
               </IconButton>
             </Tooltip>
           )}
-          {user?.role === 'admin' && (
+          {user?.role === 'admin' && !user?.demo_mode && (
             <Tooltip title={updatesAvailable ? 'Software updates — newer release available' : 'Software updates'}>
               <Badge
                 color="warning"
@@ -720,7 +727,7 @@ export function InvestigationList() {
               </Badge>
             </Tooltip>
           )}
-          {isDeploy(user) && (
+          {isDeploy(user) && !user?.demo_mode && (
             <Tooltip title="Registry credentials">
               <IconButton size="small" onClick={() => setCredsModalOpen(true)} sx={{ p: 0.4 }}>
                 <KeyIcon sx={{ fontSize: 14 }} />

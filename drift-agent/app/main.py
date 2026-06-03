@@ -123,13 +123,47 @@ async def healthz() -> dict:
 # deploys, the endpoint is open and the surrounding layer (e.g. Caddy
 # basic_auth) is expected to gate access.
 if settings.drift_pg_url:
-    from .users.deps import UserContext, get_current_user
+    import uuid as _uuid
+
+    from fastapi import Cookie, HTTPException
+    from typing import Annotated
+
+    from . import demo as demo_state
+    from .users.deps import SESSION_COOKIE, UserContext, get_current_user
 
     @app.post("/investigate")
     async def investigate(
         req: PromptRequest,
         user: UserContext = Depends(get_current_user),
+        drift_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
     ) -> StreamingResponse:
+        # DEMO_MODE per-session turn cap. The session cookie is the
+        # natural key — same value for refreshes of the same browser tab
+        # / device pairing, but a fresh login on another machine gets a
+        # fresh budget. Over-budget = 429 with the cap surfaced in the
+        # response body so the frontend can render a useful message.
+        if settings.demo_mode and drift_session:
+            try:
+                sid = _uuid.UUID(drift_session)
+            except ValueError:
+                sid = None
+            if sid is not None:
+                remaining_after = demo_state.consume_turn(sid)
+                if remaining_after == -1:
+                    raise HTTPException(
+                        status_code=429,
+                        detail={
+                            "error": "demo_turn_cap_exceeded",
+                            "message": (
+                                f"Demo session cap reached: "
+                                f"{settings.demo_max_turns_per_session} turns. "
+                                "Sign out and back in for a fresh budget — "
+                                "shared demo accounts get one cap per session."
+                            ),
+                            "cap": settings.demo_max_turns_per_session,
+                            "remaining": 0,
+                        },
+                    )
         return StreamingResponse(
             run_agent(req, user=user),
             media_type="text/event-stream",
