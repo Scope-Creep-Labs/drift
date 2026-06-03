@@ -169,7 +169,7 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.13.2"
+AGENT_VERSION="0.13.3"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -487,6 +487,13 @@ collect_disk_observability() {
     # size); -s = summary only; -x = one-filesystem (skip bind mounts /
     # NFS / loopback fs that have their own accounting). nice + ionice
     # so a slow du doesn't choke other I/O on the device.
+    #
+    # nsenter -m -t 1 enters PID 1's mount namespace (the host's init,
+    # reachable via --pid host) so `du` reads the HOST filesystem, not
+    # the container's. Without this, /var/lib/docker/* doesn't exist in
+    # the container's view (nothing bind-mounted there) and /var/log
+    # etc. return the container's empty inodes. Same pattern as the
+    # nsenter id-u drift trick in v0.1.45.
     local -a paths=(
       "/var/lib/docker/overlay2"
       "/var/lib/docker/volumes"
@@ -501,9 +508,12 @@ collect_disk_observability() {
       printf '# HELP host_path_bytes Bytes used by well-known host paths (one-filesystem allocated du).\n'
       printf '# TYPE host_path_bytes gauge\n'
       for p in "${paths[@]}"; do
-        [ -d "$p" ] || continue
+        # Existence + du both run in the HOST mount NS via nsenter.
+        # Skip silently if the path doesn't exist on the host (e.g.
+        # /var/lib/docker/builder before the first build).
+        nsenter -m -t 1 test -d "$p" 2>/dev/null || continue
         local bytes
-        bytes=$(nice -n 19 ionice -c 3 du -B1 -sx "$p" 2>/dev/null | awk '{print $1}')
+        bytes=$(nsenter -m -t 1 nice -n 19 ionice -c 3 du -B1 -sx "$p" 2>/dev/null | awk '{print $1}')
         [ -n "$bytes" ] && printf 'host_path_bytes{path="%s"} %s\n' "$p" "$bytes"
       done
 
