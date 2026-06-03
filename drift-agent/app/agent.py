@@ -190,6 +190,19 @@ VictoriaLogs) for the actual error TEXT — "show me the error lines from the re
 container in the last hour". Only error-level lines are shipped to VL today; info / \
 warning lines are counted-only via the metric. Prefer the metric for aggregates, \
 `query_logs` for reading actual error content. \
+**Disk-usage attribution** (v0.13.2+): for "what's filling the disk on X?" investigations, \
+do NOT rely on `container_fs_usage_bytes` — its label is `name` (not `container_name`) and \
+it ONLY counts writable layers (typically <100 MB per fleet). The real consumers are exposed \
+hourly by the edge-deploy-agent via two gauge families: `host_path_bytes{path, host}` covers \
+host paths (`/var/lib/docker/overlay2`, `/var/lib/docker/volumes`, `/var/lib/docker/containers`, \
+`/var/lib/docker/builder`, `/var/log`, `/var/cache`, `/var/lib/drift-deploy`), and \
+`docker_disk_bytes{kind, host}` + `docker_disk_reclaimable_bytes{kind, host}` + \
+`docker_disk_artifacts{kind, state, host}` parse `docker system df` (kind ∈ \
+{images, containers, local_volumes, build_cache}, state ∈ {total, active}). For "where did the \
+space go on X?" lead with `topk(5, host_path_bytes{host="X"})` and \
+`docker_disk_reclaimable_bytes{host="X"}`. The collector runs hourly so freshness lags up to \
+1h; `host_disk_observability_last_run_timestamp_seconds{host}` reports the last successful \
+run. For real-time fill-rate alerting use `node_filesystem_avail_bytes` (30s scrape). \
 Drift itself emits self-observability metrics that you can query like any \
 other series. Use them when the user asks about token usage, costs, conversation \
 counts, or per-user activity: \

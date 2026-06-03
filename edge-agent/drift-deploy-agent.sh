@@ -146,6 +146,14 @@ STATE_FILE="$STATE_DIR/state.json"
 LOCK_FILE="$STATE_DIR/agent.lock"
 TEXTFILE_DIR=${TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}
 TEXTFILE_PATH="$TEXTFILE_DIR/drift_deploy_agent.prom"
+# Separate textfile for hourly disk-observability metrics. Lives next
+# to drift_deploy_agent.prom so node-exporter picks it up; kept in its
+# own file so a slow `du` (Pis with USB storage can take minutes)
+# never blocks normal metric writes.
+DISK_OBS_TEXTFILE="$TEXTFILE_DIR/drift_disk_observability.prom"
+DISK_OBS_LOCK_FILE="$STATE_DIR/.disk-obs.lock"
+DISK_OBS_LAST_RUN_FILE="$STATE_DIR/.disk-obs-last-run"
+DISK_OBS_INTERVAL_SECONDS=${DISK_OBS_INTERVAL_SECONDS:-3600}
 # Ensure the textfile dir exists with perms node-exporter (uid 65534
 # nobody) can traverse + read. install.sh creates this on first
 # commission but Synology DSM (and some other hosts) inherit a
@@ -161,7 +169,7 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.13.1"
+AGENT_VERSION="0.13.2"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -428,6 +436,137 @@ write_textfile() {
   # safe: this file is per-host self-metrics, no secrets.
   chmod 644 "$tmp"
   mv "$tmp" "$TEXTFILE_PATH"
+}
+
+# ---------- Hourly disk-observability collector ----------
+# Why: cAdvisor's container_fs_usage_bytes only captures container
+# writable layers — typically <100 MB total across an entire fleet —
+# which makes it useless for "what's filling the disk?" investigations.
+# The real consumers (image layers under overlay2/, named volumes,
+# container json.logs, build cache) need host-side du + docker system
+# df to attribute.
+#
+# Why hourly, not per-tick: du over /var/lib/docker/overlay2 can take
+# minutes on slow USB-attached storage (Pi, Synology). Running every
+# 30s would thrash the device. Disk-fill trends are slow enough that
+# hourly captures the curve fine. The acute "OMG disk is filling NOW"
+# case is already covered by node-exporter's 30s scrape of
+# node_filesystem_avail_bytes — this metric is for ATTRIBUTION, not
+# alerting.
+
+# Convert a human-readable docker size string ("41.4GB", "88.38kB",
+# "0B") to bytes. Returns 0 on unrecognized input so a parse miss
+# emits a clean zero instead of poisoning the textfile.
+_bytes_from_human() {
+  local s=$1 num unit
+  # Split into "numeric prefix" and "unit suffix".
+  num=$(printf '%s' "$s" | grep -oE '^[0-9.]+' || true)
+  unit=$(printf '%s' "$s" | grep -oE '[a-zA-Z]+$' || true)
+  [ -z "$num" ] && { echo 0; return; }
+  case "$unit" in
+    B|b|"")  awk -v n="$num" 'BEGIN{printf "%.0f", n}' ;;
+    kB|K|k)  awk -v n="$num" 'BEGIN{printf "%.0f", n*1000}' ;;
+    MB|M|m)  awk -v n="$num" 'BEGIN{printf "%.0f", n*1000000}' ;;
+    GB|G|g)  awk -v n="$num" 'BEGIN{printf "%.0f", n*1000000000}' ;;
+    TB|T|t)  awk -v n="$num" 'BEGIN{printf "%.0f", n*1000000000000}' ;;
+    *)       echo 0 ;;
+  esac
+}
+
+# Run the disk-observability collector. Heavy; flock -n skips if a
+# prior run is still going. Output is an atomic rename to the final
+# path so node-exporter never reads a half-written file.
+collect_disk_observability() {
+  local tmp="$DISK_OBS_TEXTFILE.tmp.$$"
+  (
+    # Non-blocking flock — skip cleanly if a prior collector is still
+    # running (du on /var/lib/docker can take minutes on slow storage).
+    flock -n 8 || exit 0
+
+    # Host paths to sample. -B1 = report allocated bytes (not apparent
+    # size); -s = summary only; -x = one-filesystem (skip bind mounts /
+    # NFS / loopback fs that have their own accounting). nice + ionice
+    # so a slow du doesn't choke other I/O on the device.
+    local -a paths=(
+      "/var/lib/docker/overlay2"
+      "/var/lib/docker/volumes"
+      "/var/lib/docker/containers"
+      "/var/lib/docker/builder"
+      "/var/log"
+      "/var/cache"
+      "/var/lib/drift-deploy"
+    )
+
+    {
+      printf '# HELP host_path_bytes Bytes used by well-known host paths (one-filesystem allocated du).\n'
+      printf '# TYPE host_path_bytes gauge\n'
+      for p in "${paths[@]}"; do
+        [ -d "$p" ] || continue
+        local bytes
+        bytes=$(nice -n 19 ionice -c 3 du -B1 -sx "$p" 2>/dev/null | awk '{print $1}')
+        [ -n "$bytes" ] && printf 'host_path_bytes{path="%s"} %s\n' "$p" "$bytes"
+      done
+
+      printf '# HELP docker_disk_bytes Bytes used by docker artifact category (from docker system df).\n'
+      printf '# TYPE docker_disk_bytes gauge\n'
+      printf '# HELP docker_disk_reclaimable_bytes Reclaimable bytes per docker category.\n'
+      printf '# TYPE docker_disk_reclaimable_bytes gauge\n'
+      printf '# HELP docker_disk_artifacts Count of docker artifacts per category and state.\n'
+      printf '# TYPE docker_disk_artifacts gauge\n'
+
+      # docker system df: pipe-separated to handle "Local Volumes"
+      # / "Build Cache" with internal spaces. Reclaimable arrives as
+      # "37.95GB (91%)" — strip trailing parenthetical.
+      local df_output
+      df_output=$(docker system df --format '{{.Type}}|{{.TotalCount}}|{{.Active}}|{{.Size}}|{{.Reclaimable}}' 2>/dev/null) || df_output=""
+      if [ -n "$df_output" ]; then
+        while IFS='|' read -r kind total active size reclaimable; do
+          [ -z "$kind" ] && continue
+          local kind_norm reclaim_size size_bytes reclaim_bytes
+          # "Local Volumes" -> "local_volumes"; "Build Cache" -> "build_cache"
+          kind_norm=$(printf '%s' "$kind" | tr '[:upper:] ' '[:lower:]_')
+          reclaim_size="${reclaimable%% *}"
+          size_bytes=$(_bytes_from_human "$size")
+          reclaim_bytes=$(_bytes_from_human "$reclaim_size")
+          printf 'docker_disk_bytes{kind="%s"} %s\n' "$kind_norm" "$size_bytes"
+          printf 'docker_disk_reclaimable_bytes{kind="%s"} %s\n' "$kind_norm" "$reclaim_bytes"
+          printf 'docker_disk_artifacts{kind="%s",state="total"} %s\n' "$kind_norm" "${total:-0}"
+          printf 'docker_disk_artifacts{kind="%s",state="active"} %s\n' "$kind_norm" "${active:-0}"
+        done <<< "$df_output"
+      fi
+
+      printf '# HELP host_disk_observability_last_run_timestamp_seconds Unix epoch of last completed collector run.\n'
+      printf '# TYPE host_disk_observability_last_run_timestamp_seconds gauge\n'
+      printf 'host_disk_observability_last_run_timestamp_seconds %s\n' "$(date +%s)"
+    } > "$tmp"
+
+    if [ -s "$tmp" ]; then
+      chmod 644 "$tmp"
+      mv "$tmp" "$DISK_OBS_TEXTFILE"
+    else
+      rm -f "$tmp"
+    fi
+  ) 8>"$DISK_OBS_LOCK_FILE"
+}
+
+# Decide whether to kick off a fresh collector run. Called from
+# reconcile_once each tick (~30s); the inner check throttles to once
+# per DISK_OBS_INTERVAL_SECONDS. Marker file is written BEFORE the run
+# (not after) so a hung collector doesn't trigger back-to-back attempts.
+#
+# Backgrounded with fd 9 closed in the child so this potentially-long
+# du doesn't hold the main reconcile lock — same fd 9 inheritance gotcha
+# we hit with the terminal bridge.
+maybe_collect_disk_observability() {
+  local now last
+  now=$(date +%s)
+  last=$(cat "$DISK_OBS_LAST_RUN_FILE" 2>/dev/null || echo 0)
+  if [ $((now - last)) -lt "$DISK_OBS_INTERVAL_SECONDS" ]; then
+    return
+  fi
+  echo "$now" > "$DISK_OBS_LAST_RUN_FILE"
+  ( collect_disk_observability </dev/null >/dev/null 2>&1 ) 9>&- &
+  disown
 }
 
 apply_revision() {
@@ -1051,6 +1190,7 @@ reconcile_once() {
   done
 
   write_textfile
+  maybe_collect_disk_observability
 }
 
 main() {
