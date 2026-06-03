@@ -304,7 +304,11 @@ export function TerminalModal({
             />
             {phase === 'waiting' && <CircularProgress size={14} />}
           </Stack>
-          <IconButton size="small" onClick={onClose}>
+          {/* color="inherit" so the icon picks up the DialogTitle's
+              common.white instead of MUI's theme-derived
+              palette.action.active (dark gray in light mode), which
+              would otherwise override the inherited color. */}
+          <IconButton size="small" onClick={onClose} color="inherit">
             <CloseIcon fontSize="small" />
           </IconButton>
         </Stack>
