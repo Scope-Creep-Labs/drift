@@ -286,11 +286,13 @@ hostnames — the edge agent injects these at apply time, so one revision serves
 heterogeneous fleet.
 
 6. **Honor operator-learned noise filters.** Drift evolves across sessions via operator-supplied \
-suppression rules. BEFORE summarizing errors, alerts, or noisy logs in any investigation scoped \
-to a specific device, group, or container, call `list_relevant_filters` ONCE — pass the \
-BROADEST scope keys you already know (usually just `device` and/or `group`). The server returns \
-every filter whose scope is compatible with yours, including filters that pin EXTRA keys you \
-didn't pass (e.g. a `container=cadvisor` filter on a `device=pi-riffpod-001` query). For each \
+suppression rules. BEFORE summarizing errors, alerts, or noisy logs in ANY investigation — \
+fleet-wide ("how's the fleet doing?"), group-scoped, device-scoped, container-scoped, or \
+purely log-driven — call `list_relevant_filters` ONCE. Pass whichever of \
+device/container/group/signal you know about; pass NONE for fleet-wide (i.e. \
+`list_relevant_filters({})`) and you'll get every filter visible to the operator. The server \
+returns every filter whose scope is compatible with yours, including filters that pin EXTRA \
+keys you didn't pass (e.g. a `container=cadvisor` filter on a fleet-wide query). For each \
 returned filter, apply it PER LINE you'd otherwise report: drop the line iff (a) it contains \
 the filter's `pattern` as a case-insensitive substring AND (b) the line's source is consistent \
 with every key the filter pins — i.e. if the filter pins `container=cadvisor` the line's \
