@@ -247,7 +247,14 @@ export function TerminalModal({
       disableEscapeKeyDown
       PaperProps={{ sx: { bgcolor: '#0b0b0d', display: 'flex', flexDirection: 'column' } }}
     >
-      <DialogTitle sx={{ pr: 1 }}>
+      {/* The Paper bgcolor is hardcoded #0b0b0d (terminals are always
+          dark, regardless of the app theme). That means every default-
+          themed child in the title bar — Typography, IconButton's
+          CloseIcon, default Chip — inherits the app's text.primary,
+          which is DARK in light mode → invisible on the dark Paper.
+          Force light foreground on the title chrome to keep it readable
+          in both themes. Same fix on the bottom helper text. */}
+      <DialogTitle sx={{ pr: 1, color: 'common.white' }}>
         <Stack direction="row" alignItems="center" justifyContent="space-between">
           <Stack direction="row" alignItems="center" spacing={1}>
             <TerminalIcon fontSize="small" />
@@ -279,7 +286,21 @@ export function TerminalModal({
                     ? 'default'
                     : 'error'
               }
-              sx={{ height: 18, fontSize: 10 }}
+              // color="default" in light mode renders with dark text
+              // and a faint border that vanishes on the dark Paper.
+              // Force a light-mode-safe palette for the chip chrome —
+              // success / error variants already pop on dark and are
+              // left alone.
+              sx={{
+                height: 18,
+                fontSize: 10,
+                ...(phase === 'waiting' || phase === 'creating'
+                  ? {
+                      color: 'rgba(255, 255, 255, 0.85)',
+                      borderColor: 'rgba(255, 255, 255, 0.3)',
+                    }
+                  : {}),
+              }}
             />
             {phase === 'waiting' && <CircularProgress size={14} />}
           </Stack>
@@ -317,7 +338,18 @@ export function TerminalModal({
             borderRadius: 1,
           }}
         />
-        <Typography variant="caption" color="text.disabled" sx={{ display: 'block', mt: 1, flexShrink: 0 }}>
+        <Typography
+          variant="caption"
+          sx={{
+            display: 'block',
+            mt: 1,
+            flexShrink: 0,
+            // Same dark-Paper concern as the title bar: text.disabled
+            // resolves to ~rgba(0,0,0,0.38) in light mode → invisible
+            // on #0b0b0d. Hardcode a light dim color.
+            color: 'rgba(255, 255, 255, 0.5)',
+          }}
+        >
           Log in as <code>drift</code> with the device's terminal password. Use{' '}
           <code>sudo</code> for root operations.
         </Typography>
