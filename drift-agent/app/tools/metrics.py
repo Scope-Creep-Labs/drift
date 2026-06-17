@@ -223,7 +223,7 @@ async def list_jobs(ctx: ToolContext, _input: dict) -> dict:
 async def list_containers(ctx: ToolContext, args: dict) -> dict:
     host = args.get("host")
     match = (
-        f'container_last_seen{{instance="{host}",name!=""}}'
+        f'container_last_seen{{host="{host}",name!=""}}'
         if host
         else 'container_last_seen{name!=""}'
     )
@@ -311,7 +311,7 @@ METRICS_TOOLS: list[dict] = [
             "properties": {
                 "host": {
                     "type": "string",
-                    "description": "Optional 'instance' label value to scope by (e.g. pi:9100).",
+                    "description": "Optional 'host' external_label value to scope by (e.g. debian-8gb-ash-1) — same identifier list_hosts returns.",
                 },
             },
         },
