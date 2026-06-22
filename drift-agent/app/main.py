@@ -44,6 +44,8 @@ if settings.drift_pg_url:
     from .deploy.routes_agent import router as deploy_agent_router
     from .deploy.seed import seed_default_apps
     from .deploy.terminal import router as terminal_router
+    from .deploy.tunnel import router as tunnel_router, start_sweep as start_tunnel_sweep, stop_sweep as stop_tunnel_sweep
+    from .deploy.tunnel_proxy import TunnelProxyMiddleware
     from .filters.routes import router as filters_router
     from .models_meta import router as models_router
     from .users.bootstrap import ensure_bootstrap_admin
@@ -55,8 +57,14 @@ if settings.drift_pg_url:
     app.include_router(deploy_admin_router)
     app.include_router(deploy_agent_router)
     app.include_router(terminal_router)
+    app.include_router(tunnel_router)
     app.include_router(filters_router)
     app.include_router(models_router)
+
+    # ASGI middleware that intercepts requests on tunnel-*.<base_domain>
+    # before FastAPI's router gets a look at them. Inert when
+    # TUNNEL_BASE_DOMAIN is unset.
+    app.add_middleware(TunnelProxyMiddleware)
 
     @app.on_event("startup")
     async def _on_startup() -> None:
@@ -69,11 +77,13 @@ if settings.drift_pg_url:
             await seed_default_apps()
         start_background_refresh()
         start_updates_poller()
+        start_tunnel_sweep()
 
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:
         await stop_background_refresh()
         await stop_updates_poller()
+        await stop_tunnel_sweep()
 
     @app.middleware("http")
     async def _record_http_metrics(request: Request, call_next) -> Response:

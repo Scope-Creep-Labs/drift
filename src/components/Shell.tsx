@@ -15,7 +15,9 @@ import { Conversation } from './Conversation'
 import { DemoBanner } from './DemoBanner'
 import { PromptInput } from './PromptInput'
 import { TerminalModal } from './TerminalModal'
+import { TunnelModal } from './TunnelModal'
 import { useTerminalUiStore } from '../state/terminalUiStore'
+import { useTunnelUiStore } from '../state/tunnelUiStore'
 import { useInvestigationStore } from '../state/investigationStore'
 
 const SIDEBAR_WIDTH = 260
@@ -25,6 +27,8 @@ export function Shell() {
   // device row, chat action card) can open it via the shared store.
   const openDevice = useTerminalUiStore((s) => s.openDevice)
   const close = useTerminalUiStore((s) => s.close)
+  const openTunnelDevice = useTunnelUiStore((s) => s.openDevice)
+  const closeTunnel = useTunnelUiStore((s) => s.close)
 
   const theme = useTheme()
   // md = 900px. Below this the persistent sidebar collapses into a
@@ -73,6 +77,13 @@ export function Shell() {
         </Box>
         {openDevice && (
           <TerminalModal open={openDevice !== null} deviceName={openDevice} onClose={close} />
+        )}
+        {openTunnelDevice && (
+          <TunnelModal
+            open={openTunnelDevice !== null}
+            deviceName={openTunnelDevice}
+            onClose={closeTunnel}
+          />
         )}
       </Box>
     )
@@ -138,6 +149,13 @@ export function Shell() {
       </Box>
       {openDevice && (
         <TerminalModal open={openDevice !== null} deviceName={openDevice} onClose={close} />
+      )}
+      {openTunnelDevice && (
+        <TunnelModal
+          open={openTunnelDevice !== null}
+          deviceName={openTunnelDevice}
+          onClose={closeTunnel}
+        />
       )}
     </Box>
   )

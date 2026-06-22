@@ -191,6 +191,15 @@ class DesiredApp(BaseModel):
     bundle_sha256: Optional[str] = None
 
 
+class PendingTunnel(BaseModel):
+    """One entry in AgentCheckInResponse.pending_tunnels. The edge agent
+    forks one tunnel-bridge.py per id; the port comes from here, not from
+    anything the device discovers on its own."""
+
+    id: uuid.UUID
+    port: int
+
+
 class AgentCheckInResponse(BaseModel):
     desired: list[DesiredApp] = Field(default_factory=list)
     # 12-char prefix of the canonical drift-deploy-agent.sh's SHA-256.
@@ -215,6 +224,14 @@ class AgentCheckInResponse(BaseModel):
     # list on every check-in until an operator clicks "Terminal" in the
     # UI, which inserts a `pending` row in terminal_sessions.
     pending_sessions: list[uuid.UUID] = Field(default_factory=list)
+    # 12-char SHA-256 prefix of the canonical tunnel-bridge.py. Same self-
+    # update model as terminal-bridge.py — script-level changes ship via
+    # check-in without an image rebuild on the device.
+    tunnel_bridge_target_sha: Optional[str] = None
+    # Tunnel sessions waiting for this device. Each entry carries enough
+    # for the edge agent to spawn tunnel-bridge.py with the right port
+    # (which is authoritative on the CP, not whatever the device offers).
+    pending_tunnels: list["PendingTunnel"] = Field(default_factory=list)
     # CP-side facts that bundles can reference via ${DRIFT_*}. The
     # edge agent persists these to /etc/drift-deploy/env on every
     # check-in and exports them into compose subshells, alongside the

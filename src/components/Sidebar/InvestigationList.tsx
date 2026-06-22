@@ -26,10 +26,12 @@ import SearchIcon from '@mui/icons-material/SearchOutlined'
 import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAltOutlined'
 import TerminalIcon from '@mui/icons-material/Terminal'
 import TuneIcon from '@mui/icons-material/TuneOutlined'
+import LanIcon from '@mui/icons-material/Lan'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
 import { useTerminalUiStore } from '../../state/terminalUiStore'
+import { useTunnelUiStore } from '../../state/tunnelUiStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
@@ -135,6 +137,7 @@ export function InvestigationList() {
   // 38% of the sidebar. Defaults to Conversations (matches prior UX).
   const [tab, setTab] = useState<'conversations' | 'devices' | 'apps'>('conversations')
   const openTerminal = useTerminalUiStore((s) => s.open)
+  const openTunnel = useTunnelUiStore((s) => s.open)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -420,15 +423,40 @@ export function InvestigationList() {
                     disablePadding
                     secondaryAction={
                       canDeploy ? (
-                        <Tooltip title="Edit tags" placement="left">
-                          <IconButton
-                            size="small"
-                            onClick={() => setTagEditDevice(d)}
-                            sx={{ p: 0.3 }}
+                        <Stack direction="row" alignItems="center" spacing={0}>
+                          <Tooltip
+                            title={
+                              online
+                                ? 'Open tunnel'
+                                : 'Device offline — tunnel disabled'
+                            }
+                            placement="left"
                           >
-                            <LabelIcon sx={{ fontSize: 13, color: 'text.disabled' }} />
-                          </IconButton>
-                        </Tooltip>
+                            <span>
+                              <IconButton
+                                size="small"
+                                onClick={() => openTunnel(d.name)}
+                                disabled={!online}
+                                sx={{ p: 0.3 }}
+                              >
+                                <LanIcon
+                                  sx={{ fontSize: 13, color: 'text.disabled' }}
+                                />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                          <Tooltip title="Edit tags" placement="left">
+                            <IconButton
+                              size="small"
+                              onClick={() => setTagEditDevice(d)}
+                              sx={{ p: 0.3 }}
+                            >
+                              <LabelIcon
+                                sx={{ fontSize: 13, color: 'text.disabled' }}
+                              />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
                       ) : null
                     }
                   >
@@ -450,9 +478,9 @@ export function InvestigationList() {
                             mx: 0.5,
                             py: 0.4,
                             // Right-pad to leave room for the secondaryAction
-                            // icon (~32px wide) so it doesn't overlap the
-                            // device name on long rows.
-                            pr: canDeploy ? 5 : 4,
+                            // icons (Tunnel + Edit-tags ≈ 2 × 24px) so they
+                            // don't overlap the device name on long rows.
+                            pr: canDeploy ? 8 : 4,
                             '&.Mui-disabled': { opacity: 0.55 },
                           }}
                         >

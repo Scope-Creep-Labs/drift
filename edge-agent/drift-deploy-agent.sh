@@ -1134,6 +1134,56 @@ reconcile_once() {
     done
   fi
 
+  # tunnel-bridge.py refresh — same self-update pattern as terminal-bridge.
+  local _tbridge_target _tbridge_path _tbridge_local _tbridge_tmp
+  _tbridge_target=$(echo "$resp" | jq -r '.tunnel_bridge_target_sha // empty' 2>/dev/null)
+  _tbridge_path=/opt/drift/tunnel-bridge.py
+  if [ -n "$_tbridge_target" ] && [ -f "$_tbridge_path" ]; then
+    _tbridge_local=$(sha256sum "$_tbridge_path" 2>/dev/null | cut -c1-12)
+    if [ "$_tbridge_local" != "$_tbridge_target" ]; then
+      _tbridge_tmp=$(mktemp /tmp/tunnel-bridge.XXXXXX.py)
+      if curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
+              --connect-timeout 5 --max-time 20 \
+              "$CP_URL/agent/tunnel-bridge.py" -o "$_tbridge_tmp" 2>/dev/null \
+         && [ -s "$_tbridge_tmp" ] \
+         && python3 -c "import py_compile; py_compile.compile('$_tbridge_tmp', doraise=True)" 2>/dev/null; then
+        local _tnew_sha
+        _tnew_sha=$(sha256sum "$_tbridge_tmp" | cut -c1-12)
+        if [ "$_tnew_sha" = "$_tbridge_target" ]; then
+          chmod +x "$_tbridge_tmp"
+          mv "$_tbridge_tmp" "$_tbridge_path"
+          log_info "tunnel-bridge.py updated: $_tbridge_local → $_tbridge_target"
+        else
+          rm -f "$_tbridge_tmp"
+          log_warn "tunnel-bridge.py download sha mismatch ($_tnew_sha vs target $_tbridge_target); kept current"
+        fi
+      else
+        rm -f "$_tbridge_tmp"
+        log_warn "tunnel-bridge.py fetch or syntax-check failed; kept current"
+      fi
+    fi
+  fi
+
+  # Pending tunnel sessions: each entry is {id, port}. Fork one
+  # tunnel-bridge.py per id; argv extends with the target port (which
+  # the CP authoritatively assigned at mint time). Same flock-fd-9
+  # close-on-spawn rule as the terminal case for the same reason.
+  if [ -x /opt/drift/tunnel-bridge.py ]; then
+    echo "$resp" | jq -c '(.pending_tunnels // [])[]' 2>/dev/null | while read -r tun; do
+      [ -z "$tun" ] && continue
+      local _tid _tport
+      _tid=$(echo "$tun" | jq -r '.id // empty' 2>/dev/null)
+      _tport=$(echo "$tun" | jq -r '.port // empty' 2>/dev/null)
+      [ -z "$_tid" ] && continue
+      [ -z "$_tport" ] && continue
+      local tws_url="${CP_URL/http:\/\//ws:\/\/}"
+      tws_url="${tws_url/https:\/\//wss:\/\/}"
+      tws_url="${tws_url%/}/agent/tunnel/ws/${_tid}"
+      log_info "spawning tunnel bridge for session $_tid → localhost:$_tport"
+      nohup /opt/drift/tunnel-bridge.py "$tws_url" "$BOOTSTRAP_TOKEN" "$_tport" 9>&- >&2 &
+    done
+  fi
+
   local n
   n=$(echo "$resp" | jq -r '(.desired // []) | length' 2>/dev/null)
   n=${n:-0}

@@ -18,7 +18,11 @@ RUN apk add --no-cache \
 
 COPY drift-deploy-agent.sh /usr/local/bin/drift-deploy-agent.sh
 COPY terminal-bridge.py /opt/drift/terminal-bridge.py
-RUN chmod +x /usr/local/bin/drift-deploy-agent.sh /opt/drift/terminal-bridge.py
+COPY tunnel-bridge.py /opt/drift/tunnel-bridge.py
+RUN chmod +x \
+    /usr/local/bin/drift-deploy-agent.sh \
+    /opt/drift/terminal-bridge.py \
+    /opt/drift/tunnel-bridge.py
 
 WORKDIR /var/lib/drift-deploy
 ENTRYPOINT ["/usr/local/bin/drift-deploy-agent.sh"]

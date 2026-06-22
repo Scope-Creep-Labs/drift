@@ -1,0 +1,48 @@
+# Drift tunnel — Caddy site block snippet (v0.1.59+).
+#
+# Drop this into your existing host Caddyfile NEXT TO the dabba.* (or
+# whatever your base domain is) site block. Two pre-reqs before reload:
+#
+#   1. Wildcard A record:  *.<TUNNEL_BASE_DOMAIN>  →  <host IP>
+#      (no DNS-01 challenge needed — Caddy uses HTTP-01 against each
+#      specific subdomain it gets asked to provision.)
+#
+#   2. Set TUNNEL_BASE_DOMAIN=<TUNNEL_BASE_DOMAIN> in the drift-agent
+#      env (deploy/.env). Without it the mint endpoint returns 503 and
+#      the ask hook below returns 404 for every probe.
+#
+# Replace <TUNNEL_BASE_DOMAIN>, <ASK_HOOK_HOST>, and <ASK_HOOK_PORT>:
+#   TUNNEL_BASE_DOMAIN   the base domain you matched DRIFT's setting
+#                        (e.g. dabba.princesamuel.me)
+#   ASK_HOOK_HOST:PORT   where Caddy reaches drift-frontend (for the
+#                        existing dabba.* block this is usually
+#                        localhost:10001 — the same port Caddy already
+#                        proxies /drift/ into).
+#
+# On-demand TLS w/ ask: Caddy hits the drift-frontend ask endpoint
+# BEFORE asking Let's Encrypt for a cert. The endpoint returns 200 only
+# if there's a live tunnel session for that subdomain — so a flood of
+# tunnel-junk.<base> requests can't burn through cert-issuance quota.
+#
+# Path-level routing inside the subdomain is up to drift-agent's
+# TunnelProxyMiddleware — nginx (in drift-frontend) just proxies the
+# whole Host to upstream by tunnel-* server_name match.
+
+tunnel-*.<TUNNEL_BASE_DOMAIN> {
+    tls {
+        on_demand
+    }
+    reverse_proxy <ASK_HOOK_HOST>:<ASK_HOOK_PORT> {
+        flush_interval -1
+    }
+}
+
+# Top-level on-demand-TLS allowlist. Caddy refuses to provision any
+# cert via on_demand UNLESS the hostname survives this `ask`. Required
+# even with the site block above — `ask` is a global setting, not
+# per-site. Put this OUTSIDE every site block (it's a global option).
+{
+    on_demand_tls {
+        ask http://<ASK_HOOK_HOST>:<ASK_HOOK_PORT>/api/internal/tunnel/check
+    }
+}

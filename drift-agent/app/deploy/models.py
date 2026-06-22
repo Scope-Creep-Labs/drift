@@ -251,6 +251,63 @@ class TerminalSession(Base):
     bytes_agent_to_browser: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
+class TunnelSession(Base):
+    """A subdomain-tunnel session against a device. The CP relays HTTP
+    requests landing on `tunnel-<subdomain_token>.<base_domain>` through
+    the edge agent's tunnel-bridge.py, which dials `localhost:<port>` on
+    the device.
+
+    Lifecycle:
+      - pending: row created by POST /devices/{name}/tunnel/open; agent
+        picks it up via pending_tunnels[] on its next check-in.
+      - active:  bridge attached + at least one channel opened OR the
+        bridge sent its ready frame. Subdomain router will proxy now.
+      - expired: bridge never attached within pending_timeout_seconds,
+        OR `expires_at` (TTL) has elapsed.
+      - revoked: operator clicked revoke in the UI, or a sibling session
+        on the same device replaced this one.
+
+    `subdomain_token` is the random portion of `tunnel-<token>.dabba…`.
+    We URL-encode session identity into DNS rather than a path prefix so
+    proxied apps see their own root paths (Grafana, anything with
+    hardcoded absolute paths) without response rewriting.
+    """
+
+    __tablename__ = "tunnel_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    device_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("devices.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # FK to users.id; mirrored from TerminalSession's pattern (no
+    # relationship() across to avoid deploy↔auth circular import).
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False, index=True
+    )
+    # Per session — unique non-guessable subdomain. The Caddy on-demand-
+    # TLS ask hook checks this column to decide whether to issue a cert
+    # for the requested hostname.
+    subdomain_token: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    # Target port on the device's localhost. Authoritative — the bridge
+    # gets it from the CP at spawn time (not from the WS handshake).
+    port: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class RegistryCredential(Base):
     """Per-registry pull credentials, scoped to a group. password_encrypted
     is Fernet ciphertext (see deploy.secrets). The same registry can have

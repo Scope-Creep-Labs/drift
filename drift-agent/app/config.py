@@ -93,6 +93,23 @@ class Settings(BaseSettings):
     public_url: str = ""
     reporter_password: str = ""
 
+    # Base domain for tunnel subdomains. When set, the tunnel feature mints
+    # sessions whose URLs look like `tunnel-<token>.<tunnel_base_domain>`;
+    # the subdomain router matches incoming requests by `Host` header.
+    # Leave empty to disable the tunnel feature (POST /tunnel/open returns
+    # 503). Should NOT include a scheme — just the bare domain (e.g.
+    # "dabba.princesamuel.me"). Operators also need a wildcard A record
+    # pointing `*.<tunnel_base_domain>` at the CP host + a Caddy site
+    # block with on-demand TLS for `tunnel-*.<tunnel_base_domain>` — see
+    # the release notes for the full setup.
+    tunnel_base_domain: str = ""
+    # How long a freshly minted tunnel is valid for (idle or active —
+    # there's no in-use timer extension). Operators reopen after expiry.
+    tunnel_default_ttl_seconds: int = 4 * 60 * 60  # 4h
+    # CP-wide ceiling so a runaway script can't open thousands of tunnels
+    # and exhaust the pg connection pool / OS fd budget.
+    tunnel_max_concurrent: int = 32
+
     # Tarball release this stack was installed from. Stamped into .env
     # by install.sh (which itself is stamped by package-release.sh at
     # tarball-build time). Empty / "dev" for unpackaged installs.

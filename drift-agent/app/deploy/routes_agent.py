@@ -23,11 +23,17 @@ EDGE_AGENT_DIR = Path("/opt/edge-agent")
 
 # Files included in the build context the device pulls to docker build the
 # agent image locally. Tiny — keeps install.sh dependency-free of a registry.
-BUILD_CONTEXT_FILES = ("Dockerfile", "drift-deploy-agent.sh", "terminal-bridge.py")
+BUILD_CONTEXT_FILES = (
+    "Dockerfile",
+    "drift-deploy-agent.sh",
+    "terminal-bridge.py",
+    "tunnel-bridge.py",
+)
 
 
 _agent_target_sha_cache: str | None = None
 _terminal_bridge_target_sha_cache: str | None = None
+_tunnel_bridge_target_sha_cache: str | None = None
 
 
 def _agent_target_sha() -> str:
@@ -52,6 +58,17 @@ def _terminal_bridge_target_sha() -> str:
     if _terminal_bridge_target_sha_cache is None:
         _terminal_bridge_target_sha_cache = _file_sha12("terminal-bridge.py")
     return _terminal_bridge_target_sha_cache
+
+
+def _tunnel_bridge_target_sha() -> str:
+    """12-char SHA-256 prefix of the canonical tunnel-bridge.py — same
+    self-update pattern as terminal-bridge.py. Empty string when the
+    file isn't bundled (older image / new build context not yet COPYed)
+    so the agent treats the feature as absent rather than failing."""
+    global _tunnel_bridge_target_sha_cache
+    if _tunnel_bridge_target_sha_cache is None:
+        _tunnel_bridge_target_sha_cache = _file_sha12("tunnel-bridge.py")
+    return _tunnel_bridge_target_sha_cache
 
 
 def _file_sha12(name: str) -> str:
@@ -102,6 +119,14 @@ async def terminal_bridge() -> FileResponse:
     rerun. Agent's bootstrap fetches this and replaces the in-image copy
     when the served SHA differs."""
     return _serve_edge_file("terminal-bridge.py", media_type="text/x-python")
+
+
+@router.get("/tunnel-bridge.py")
+async def tunnel_bridge_script() -> FileResponse:
+    """Latest tunnel-bridge.py — same self-update mechanism as
+    terminal-bridge.py. Forked per tunnel session, so an updated bridge
+    is picked up by the next session without a container restart."""
+    return _serve_edge_file("tunnel-bridge.py", media_type="text/x-python")
 
 
 @router.get("/build-context.tar")
@@ -421,20 +446,25 @@ async def check_in(
             auth = base64.b64encode(f"{c.username}:{password}".encode()).decode()
             creds_map[c.registry] = {"auth": auth}
 
-    # Pending terminal sessions for this device. Imported lazily to
-    # avoid a circular at module load (terminal.py also imports from
-    # this package). The agent forks one terminal-bridge.py per id.
+    # Pending terminal + tunnel sessions for this device. Imported
+    # lazily to avoid a circular at module load (both modules import
+    # from this package). The agent forks one bridge subprocess per id
+    # in each list.
     from .terminal import _get_pending_for_device
+    from .tunnel import _get_pending_tunnels_for_device
 
     pending_sessions = await _get_pending_for_device(db, device.id)
+    pending_tunnels = await _get_pending_tunnels_for_device(db, device.id)
 
     await db.commit()
     return AgentCheckInResponse(
         desired=desired,
         agent_target_sha=_agent_target_sha(),
         terminal_bridge_target_sha=_terminal_bridge_target_sha(),
+        tunnel_bridge_target_sha=_tunnel_bridge_target_sha(),
         registry_credentials=creds_map,
         pending_sessions=pending_sessions,
+        pending_tunnels=pending_tunnels,
         # CP-side facts piped through to compose subshells as DRIFT_*.
         # Empty string ↔ unset on the edge (the edge agent treats None
         # and "" identically when writing /etc/drift-deploy/env).
