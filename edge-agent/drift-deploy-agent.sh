@@ -1134,13 +1134,24 @@ reconcile_once() {
     done
   fi
 
-  # tunnel-bridge.py refresh — same self-update pattern as terminal-bridge.
+  # tunnel-bridge.py refresh — same self-update pattern as terminal-bridge,
+  # but here we ALSO first-provision the file when it's missing (devices
+  # upgrading from v0.1.58 don't have it baked into their image; gating
+  # on `[ -f file ]` like terminal-bridge does would leave them unable
+  # to ever spawn a tunnel without a fresh install.sh per device).
+  # The fetch is bearer-authenticated + SHA-verified post-download, so
+  # first-provision is safe.
   local _tbridge_target _tbridge_path _tbridge_local _tbridge_tmp
   _tbridge_target=$(echo "$resp" | jq -r '.tunnel_bridge_target_sha // empty' 2>/dev/null)
   _tbridge_path=/opt/drift/tunnel-bridge.py
-  if [ -n "$_tbridge_target" ] && [ -f "$_tbridge_path" ]; then
-    _tbridge_local=$(sha256sum "$_tbridge_path" 2>/dev/null | cut -c1-12)
+  if [ -n "$_tbridge_target" ]; then
+    if [ -f "$_tbridge_path" ]; then
+      _tbridge_local=$(sha256sum "$_tbridge_path" 2>/dev/null | cut -c1-12)
+    else
+      _tbridge_local=""
+    fi
     if [ "$_tbridge_local" != "$_tbridge_target" ]; then
+      mkdir -p "$(dirname "$_tbridge_path")"
       _tbridge_tmp=$(mktemp /tmp/tunnel-bridge.XXXXXX.py)
       if curl -sS -H "Authorization: Bearer $BOOTSTRAP_TOKEN" \
               --connect-timeout 5 --max-time 20 \
@@ -1152,7 +1163,11 @@ reconcile_once() {
         if [ "$_tnew_sha" = "$_tbridge_target" ]; then
           chmod +x "$_tbridge_tmp"
           mv "$_tbridge_tmp" "$_tbridge_path"
-          log_info "tunnel-bridge.py updated: $_tbridge_local → $_tbridge_target"
+          if [ -z "$_tbridge_local" ]; then
+            log_info "tunnel-bridge.py provisioned (first-install): → $_tbridge_target"
+          else
+            log_info "tunnel-bridge.py updated: $_tbridge_local → $_tbridge_target"
+          fi
         else
           rm -f "$_tbridge_tmp"
           log_warn "tunnel-bridge.py download sha mismatch ($_tnew_sha vs target $_tbridge_target); kept current"
@@ -1182,6 +1197,16 @@ reconcile_once() {
       log_info "spawning tunnel bridge for session $_tid → localhost:$_tport"
       nohup /opt/drift/tunnel-bridge.py "$tws_url" "$BOOTSTRAP_TOKEN" "$_tport" 9>&- >&2 &
     done
+  else
+    # Surface the gap explicitly when the CP is asking us to handle
+    # tunnels but the bridge isn't on disk yet (first-provision raced
+    # with this tick, fetch failed, etc.). Without this log, operators
+    # see tunnels stuck in `pending` with no signal what's wrong.
+    local _tcount
+    _tcount=$(echo "$resp" | jq -r '(.pending_tunnels // []) | length' 2>/dev/null)
+    if [ "${_tcount:-0}" -gt 0 ] 2>/dev/null; then
+      log_warn "$_tcount pending tunnel(s) but /opt/drift/tunnel-bridge.py missing — will retry next tick"
+    fi
   fi
 
   local n
