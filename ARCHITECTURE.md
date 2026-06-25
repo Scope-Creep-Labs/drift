@@ -84,14 +84,14 @@ What Drift is **not**:
         └────────────────────┘
 ```
 
-Two deployable services in `docker-compose.yml`:
+Two deployable services in `deploy/docker-compose.yml` (the canonical full-stack compose; see `deploy/install.sh`):
 
 | Service          | What it does                                                   |
 | ---------------- | -------------------------------------------------------------- |
 | `drift-agent`    | FastAPI backend, agent loop, tools, SSE endpoint               |
 | `drift-frontend` | nginx serving the built SPA + reverse-proxying `/api/*`        |
 
-The TSDB is **not** managed by this compose stack — point `VM_URL` at any Prometheus-API-compatible source (your own VictoriaMetrics, Prometheus, Thanos, Mimir, etc.). On this host, the VM stack at `/root/setup/victoria/` is reachable via its public vmauth proxy with basic auth (see `.env.example`).
+The TSDB is **not** managed by this compose stack — point `VM_URL` at any Prometheus-API-compatible source (your own VictoriaMetrics, Prometheus, Thanos, Mimir, etc.). `install.sh` writes the runtime env to `/var/lib/drift-cp/.env`; that's the single source of truth for prod env vars.
 
 ---
 
@@ -639,11 +639,9 @@ Full repository tree with one-line descriptions:
 drift/
 ├── README.md                      Quickstart + dev workflow.
 ├── ARCHITECTURE.md                This file.
-├── docker-compose.yml             3 always-up services + 3 demo-profile services.
 ├── Dockerfile                     Frontend: alpine node builder + nginx alpine runtime.
-├── nginx.conf                     SPA fallback + /api proxy with SSE buffering disabled.
+├── nginx.conf                     SPA fallback + /api proxy with SSE buffering disabled. Also tunnel-* server block (v0.1.59+).
 ├── .dockerignore
-├── .env.example                   Root-level env template (compose substitutes).
 ├── .gitignore
 ├── package.json                   Frontend dependencies (React 18, MUI 6, Plotly, Zustand, TanStack Query).
 ├── package-lock.json

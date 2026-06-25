@@ -792,6 +792,13 @@ B2_PREFIX=drift-bundles
 
 VM_BASIC_AUTH=
 VM_BEARER_TOKEN=
+
+# Drift tunnel (v0.1.59+). Sub-label of PUBLIC_URL where the CP mints
+# tunnel subdomains: https://tunnel-<token>.\${TUNNEL_BASE_DOMAIN}/.
+# Defaulted to \$DOMAIN so a single-domain install works out of the
+# box once the operator adds wildcard DNS + a Caddy on_demand_tls block
+# (see post-install summary). Set blank to keep the feature dormant.
+TUNNEL_BASE_DOMAIN=$DOMAIN
 EOF
 )
 # chown to root:docker + chmod 660 so drift-agent (running as 'app'
@@ -1144,6 +1151,38 @@ else
   echo "    Traefik:  $DEPLOY_DIR/config/traefik.yml.sample"
   echo "  None include basic_auth on /vmalert and /am — see each file's"
   echo "  header comment for how to add one if desired."
+  echo
+  echo "  ────────────────────────────────────────────────────────────"
+  echo "  Tunnel feature (optional — for forwarding device-localhost ports"
+  echo "  to your browser via tunnel-<token>.$DOMAIN). To enable:"
+  echo
+  echo "    1. DNS: add wildcard A record  '*.$DOMAIN'  →  this host's IP"
+  echo "    2. Paste this into your host Caddyfile (next to your existing"
+  echo "       $DOMAIN block) and 'caddy reload':"
+  echo
+  echo "       # global block (required for on-demand TLS allowlist)"
+  echo "       {"
+  echo "           on_demand_tls {"
+  echo "               ask http://localhost:${DRIFT_HOST_PORT:-10001}/api/internal/tunnel/check"
+  echo "           }"
+  echo "       }"
+  echo
+  echo "       # subdomain site block"
+  echo "       *.$DOMAIN {"
+  echo "           tls {"
+  echo "               on_demand"
+  echo "           }"
+  echo "           reverse_proxy localhost:${DRIFT_HOST_PORT:-10001} {"
+  echo "               flush_interval -1"
+  echo "           }"
+  echo "       }"
+  echo
+  echo "    The drift-agent's ask hook restricts cert issuance to live"
+  echo "    tunnel sessions only — names like foo.$DOMAIN that aren't"
+  echo "    backed by a session get a clean TLS failure (no quota burn)."
+  echo "    TUNNEL_BASE_DOMAIN=$DOMAIN is already set in .env so the mint"
+  echo "    endpoint will hand out tunnel-<token>.$DOMAIN URLs after the"
+  echo "    DNS + Caddy steps."
 fi
 echo
 echo "  ntfy: subscribe to https://ntfy.sh/$NTFY_TOPIC on your phone"
