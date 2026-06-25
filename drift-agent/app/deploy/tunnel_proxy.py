@@ -212,7 +212,15 @@ async def _proxy_http(
         # to "1.1" because Caddy → nginx → drift-agent is already 1.1 by
         # the time we're here; the upstream app on the device is dialed
         # via raw TCP so HTTP/1.1 is the lingua franca.
-        h11_client = h11.Connection(our_role=h11.CLIENT)
+        #
+        # ONE h11.Connection with role=CLIENT handles BOTH directions —
+        # we send Request/Data/EndOfMessage events and receive Response/
+        # Data/EndOfMessage from the upstream. v0.1.63 incorrectly used
+        # a separate role=SERVER connection for response parsing, which
+        # made h11 try to read the upstream's response as a fresh inbound
+        # REQUEST and choke on `HTTP/1.1 301 Moved Permanently` as a
+        # malformed request line.
+        h11_conn = h11.Connection(our_role=h11.CLIENT)
         target = scope["path"].encode("utf-8")
         if scope.get("query_string"):
             target += b"?" + scope["query_string"]
@@ -223,19 +231,19 @@ async def _proxy_http(
             http_version=b"1.1",
         )
         # Send request head, then body chunks, then EndOfMessage.
-        head_bytes = h11_client.send(request)
+        head_bytes = h11_conn.send(request)
         if head_bytes:
             await state.send_data(channel_id, head_bytes)
         async for chunk in _read_request_body(receive):
-            data_bytes = h11_client.send(h11.Data(data=chunk))
+            data_bytes = h11_conn.send(h11.Data(data=chunk))
             if data_bytes:
                 await state.send_data(channel_id, data_bytes)
-        end_bytes = h11_client.send(h11.EndOfMessage())
+        end_bytes = h11_conn.send(h11.EndOfMessage())
         if end_bytes:
             await state.send_data(channel_id, end_bytes)
 
-        # Read response via h11 from bytes streaming back over the channel.
-        h11_server = h11.Connection(our_role=h11.SERVER)
+        # Read response via the same h11 connection (its role=CLIENT
+        # makes it interpret incoming bytes as a server response).
         response_started = False
         keep_running = True
         while keep_running:
@@ -249,12 +257,12 @@ async def _proxy_http(
                 return
             if chunk is None:
                 # EOF — signal h11 by giving it empty bytes once.
-                h11_server.receive_data(b"")
+                h11_conn.receive_data(b"")
             else:
-                h11_server.receive_data(chunk)
+                h11_conn.receive_data(chunk)
             while True:
                 try:
-                    event = h11_server.next_event()
+                    event = h11_conn.next_event()
                 except h11.RemoteProtocolError as e:
                     log.warning("tunnel %s upstream gave malformed HTTP: %s", state.id, e)
                     if not response_started:
