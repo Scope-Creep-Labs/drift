@@ -1163,7 +1163,7 @@ else
   echo "       # global block (required for on-demand TLS allowlist)"
   echo "       {"
   echo "           on_demand_tls {"
-  echo "               ask http://localhost:${DRIFT_HOST_PORT:-10001}/api/internal/tunnel/check"
+  echo "               ask http://localhost:${DRIFT_HOST_PORT:-10001}/api/deploy/internal/tunnel/check"
   echo "           }"
   echo "       }"
   echo

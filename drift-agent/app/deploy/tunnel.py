@@ -176,9 +176,13 @@ def get_bridge_by_id(session_id: uuid.UUID) -> _BridgeState | None:
 
 
 def _gen_subdomain_token() -> str:
-    """22 chars of url-safe base64. ~132 bits of entropy — comfortably
-    unguessable for the URL-as-capability model."""
-    return _secrets.token_urlsafe(16)
+    """32 hex chars (128 bits). MUST be all-lowercase, no separators —
+    Caddy normalizes the SNI hostname to lowercase before calling the
+    on-demand-TLS ask hook, so a mixed-case token would round-trip
+    through Caddy as a different string than what's in `tunnel_sessions`
+    and the ask hook would 404 (cert refused → browser TLS alert).
+    token_hex gives lowercase a-f digits — safe by construction."""
+    return _secrets.token_hex(16)
 
 
 async def _now() -> datetime:
