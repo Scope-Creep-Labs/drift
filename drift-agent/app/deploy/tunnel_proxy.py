@@ -142,8 +142,14 @@ def _build_request_headers(scope: dict) -> list[tuple[bytes, bytes]]:
     """Translate the ASGI request headers into the form h11 expects.
     Override Host so the upstream app sees the bridge's loopback name
     (most apps don't care; some — Grafana with `serve_from_sub_path` —
-    inspect Host for redirect URLs). Drop Connection: upgrade hop-by-
-    hop headers; h11 manages those itself."""
+    inspect Host for redirect URLs). Drop hop-by-hop headers.
+
+    Content-Length + Transfer-Encoding are KEPT — they're how h11 frames
+    the request body it relays. v0.1.64 dropped Content-Length on the
+    assumption that h11 would compute it from outgoing Data events; it
+    doesn't. The first POST with a body 500'd with "Too much data for
+    declared Content-Length" because h11 framed the Request as no-body
+    (no length header) then got Data events anyway."""
     HOP_BY_HOP = {
         b"connection",
         b"keep-alive",
@@ -151,15 +157,17 @@ def _build_request_headers(scope: dict) -> list[tuple[bytes, bytes]]:
         b"proxy-authorization",
         b"te",
         b"trailer",
-        b"transfer-encoding",
         b"upgrade",
-        b"content-length",  # h11 sets this from Data
     }
+    has_chunked = False
     out: list[tuple[bytes, bytes]] = []
     for name, value in scope["headers"]:
-        if name.lower() in HOP_BY_HOP:
+        nl = name.lower()
+        if nl in HOP_BY_HOP:
             continue
-        if name.lower() == b"host":
+        if nl == b"transfer-encoding" and b"chunked" in value.lower():
+            has_chunked = True
+        if nl == b"host":
             # Replace with localhost so a redirect-emitting app stays
             # within the subdomain (caller's browser will follow back
             # through us). The original Host is also available via
@@ -167,6 +175,12 @@ def _build_request_headers(scope: dict) -> list[tuple[bytes, bytes]]:
             out.append((b"host", b"localhost"))
             continue
         out.append((name, value))
+    # RFC 7230 forbids both Transfer-Encoding and Content-Length on the
+    # same request. If a proxy chain managed to set both, drop CL so
+    # h11 uses chunked framing (the modern fallback) and the upstream
+    # doesn't 400.
+    if has_chunked:
+        out = [(n, v) for (n, v) in out if n.lower() != b"content-length"]
     # Stamp the original host through X-Forwarded-* so an upstream that
     # honors them (rare for debug UIs but harmless) renders correct URLs.
     for name, value in scope["headers"]:
