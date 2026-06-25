@@ -291,7 +291,7 @@ if [ "$PUBLISH" = "true" ]; then
   echo "→ building + pushing images that changed since ${LAST_TAG:-(no prior tag)}"
 
   paths_drift_agent="drift-agent edge-agent"
-  paths_drift_frontend="src index.html Dockerfile package.json package-lock.json vite.config.ts tsconfig.json"
+  paths_drift_frontend="src index.html Dockerfile nginx.conf public package.json package-lock.json vite.config.ts tsconfig.json"
 
   build_image() {
     local name=$1 dockerfile=$2 paths=$3
