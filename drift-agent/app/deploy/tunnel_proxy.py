@@ -28,7 +28,15 @@ from typing import Awaitable, Callable
 
 import h11
 
+import uuid
+
+from sqlalchemy import select
+
 from ..config import settings
+from .db import session as db_session
+from .models import User
+from ..users.deps import SESSION_COOKIE
+from ..users.sessions import get_session
 from .tunnel import (
     PROXY_ATTACH_WAIT_SECONDS,
     _BridgeState,
@@ -90,6 +98,14 @@ class TunnelProxyMiddleware:
         if state is None:
             await _http_404(send, b"tunnel not found or expired")
             return
+        # Auth: the user must be logged into Drift AS the user who minted
+        # the tunnel (or an admin). The 128-bit unguessable subdomain
+        # alone isn't enough — URLs leak through browser history, copies,
+        # screenshots, server access logs. Cookie + owner check brings
+        # the proxy in line with the rest of Drift's surfaces.
+        if not await _authorize(scope, state):
+            await _unauthorized(scope, send)
+            return
         # Block briefly for the bridge to attach if the operator opened the
         # URL before the agent's next check-in surfaced the pending session.
         if not state.paired.is_set():
@@ -105,6 +121,104 @@ class TunnelProxyMiddleware:
             await _proxy_http(state, scope, receive, send)
         else:
             await _proxy_websocket(state, scope, receive, send)
+
+
+# ---------- auth ----------
+
+
+_COOKIE_PAIR_SPLIT = b"; "
+
+
+def _read_cookie(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
+    """Parse a single cookie's value out of an ASGI scope's headers.
+    Doesn't pull http.cookies because we only need one key — the parsing
+    is trivial and avoids the import. Returns None if not present."""
+    for hname, hvalue in headers:
+        if hname.lower() != b"cookie":
+            continue
+        for pair in hvalue.split(_COOKIE_PAIR_SPLIT):
+            if b"=" not in pair:
+                continue
+            k, _, v = pair.partition(b"=")
+            if k.strip() == name:
+                return v.strip().decode("ascii", errors="replace")
+    return None
+
+
+async def _authorize(scope: dict, state: _BridgeState) -> bool:
+    """True if the requester is signed in to Drift AS the user who minted
+    this tunnel — OR is an admin. Anything else (no cookie, expired
+    session, wrong user) returns False. Admins bypass owner check so
+    operators can poke at a teammate's tunnel when troubleshooting."""
+    sid_str = _read_cookie(scope.get("headers", []), SESSION_COOKIE.encode("ascii"))
+    if not sid_str:
+        return False
+    try:
+        sid = uuid.UUID(sid_str)
+    except ValueError:
+        return False
+    async with db_session() as db:
+        sess = await get_session(db, sid)
+        if sess is None:
+            return False
+        if sess.user_id == state.user_id:
+            return True
+        # Non-owner: only admins are allowed in.
+        user = await db.get(User, sess.user_id)
+        return bool(user and user.role == "admin")
+
+
+async def _unauthorized(scope: dict, send: Callable) -> None:
+    """For HTML requests, redirect to Drift's login (browser flow). For
+    everything else (curl, JSON clients, scripts), 401 with a plain
+    pointer at where to sign in. WebSocket requests get a 4401 close.
+
+    The redirect target is the bare PUBLIC_URL — we don't ship a
+    `?next=` back-link to the tunnel subdomain because the Drift login
+    is an SPA route, not a URL-based redirect; round-tripping the user
+    back to the tunnel manually after login is a small one-time cost."""
+    if scope["type"] == "websocket":
+        await send({"type": "websocket.close", "code": 4401})
+        return
+    accept = b""
+    for name, value in scope.get("headers", []):
+        if name.lower() == b"accept":
+            accept = value
+            break
+    login_url = settings.public_url or ""
+    if b"text/html" in accept:
+        # Browser — 302 to login. The SPA's session cookie is
+        # Domain-scoped (when SESSION_COOKIE_DOMAIN is set), so once
+        # the user signs in there the next request to this tunnel
+        # subdomain will carry it.
+        await send({
+            "type": "http.response.start",
+            "status": 302,
+            "headers": [
+                (b"location", (login_url or "/").encode("ascii", errors="replace")),
+                (b"content-type", b"text/plain; charset=utf-8"),
+            ],
+        })
+        body = (
+            f"Sign in to Drift first: {login_url or '/'}\n"
+            "Then re-open this tunnel URL."
+        ).encode()
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+        return
+    # Non-browser — 401 plain text so curl/scripts can see what happened.
+    body = (
+        f"Drift session required. Sign in at {login_url or '/'} and retry.\n"
+    ).encode()
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"content-type", b"text/plain; charset=utf-8"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"www-authenticate", b'Cookie realm="drift"'),
+        ],
+    })
+    await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 # ---------- HTTP proxy ----------

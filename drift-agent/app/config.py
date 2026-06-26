@@ -147,6 +147,16 @@ class Settings(BaseSettings):
     # so cookies require HTTPS.
     dev_mode: bool = False
 
+    # When set, `Set-Cookie` on login uses Domain=<value> so the session
+    # cookie is sent to every subdomain of that domain — required for the
+    # tunnel feature, where `tunnel-<token>.<base>` needs to read the
+    # caller's drift_session to authorize the proxy. Leave empty for the
+    # default behavior (host-scoped — cookie only goes to the exact host
+    # where login happened). install.sh sets this to $DOMAIN on fresh
+    # installs; existing logins keep working but won't reach tunnel
+    # subdomains until the user logs out + back in once.
+    session_cookie_domain: str = ""
+
     # Device-freshness reaper: if a device's last_seen is older than this
     # many seconds AND its status is still "online", flip it to "offline"
     # on the next observability-refresh tick. 300s = 5 min, ~20 missed

@@ -799,6 +799,14 @@ VM_BEARER_TOKEN=
 # box once the operator adds wildcard DNS + a Caddy on_demand_tls block
 # (see post-install summary). Set blank to keep the feature dormant.
 TUNNEL_BASE_DOMAIN=$DOMAIN
+
+# Cookie scope for the Drift session (v0.1.68+). Setting this to
+# \$DOMAIN makes the cookie visible to every subdomain of \$DOMAIN —
+# required for the tunnel feature's cookie-based owner check on
+# tunnel-*.\${TUNNEL_BASE_DOMAIN} requests. Without it the proxy would
+# 401 even when the user is already signed in to the SPA. Set blank
+# to keep the cookie scoped strictly to the SPA host.
+SESSION_COOKIE_DOMAIN=$DOMAIN
 EOF
 )
 # chown to root:docker + chmod 660 so drift-agent (running as 'app'

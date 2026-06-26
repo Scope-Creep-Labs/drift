@@ -162,6 +162,10 @@ async def login(
         secure=not settings.dev_mode,
         max_age=30 * 24 * 3600,
         path="/",
+        # Setting Domain makes the cookie visible to subdomains too
+        # (required for the tunnel feature — see SESSION_COOKIE_DOMAIN
+        # in config.py). Empty value = default host-only scope.
+        domain=settings.session_cookie_domain or None,
     )
     return _user_out(user, groups)
 
@@ -180,7 +184,15 @@ async def logout(
         if sid is not None:
             await revoke_session(db, sid)
             await db.commit()
-    response.delete_cookie(SESSION_COOKIE, path="/")
+    # Pass domain= so a Domain-scoped cookie is actually deleted (the
+    # browser matches the exact (name, path, domain) tuple when
+    # interpreting an expiring Set-Cookie). delete_cookie with no
+    # domain wouldn't touch a cookie that was set with one.
+    response.delete_cookie(
+        SESSION_COOKIE,
+        path="/",
+        domain=settings.session_cookie_domain or None,
+    )
 
 
 @router.get("/me", response_model=UserOut)
