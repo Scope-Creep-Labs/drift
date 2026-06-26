@@ -27,11 +27,13 @@ import SystemUpdateAltIcon from '@mui/icons-material/SystemUpdateAltOutlined'
 import TerminalIcon from '@mui/icons-material/Terminal'
 import TuneIcon from '@mui/icons-material/TuneOutlined'
 import LanIcon from '@mui/icons-material/Lan'
+import TelegramIcon from '@mui/icons-material/Telegram'
 import { useAuth, isDeploy } from '../../auth/AuthContext'
 import { useInvestigationStore } from '../../state/investigationStore'
 import { useFleetStore } from '../../state/fleetStore'
 import { useTerminalUiStore } from '../../state/terminalUiStore'
 import { useTunnelUiStore } from '../../state/tunnelUiStore'
+import { useTelegramUiStore } from '../../state/telegramUiStore'
 import { costForUsage, costForUsageByModel, formatUsd, totalTokens } from '../../lib/pricing'
 import { AppModal, type AppModalMode } from '../AppModal'
 import { ChangePasswordModal } from '../ChangePasswordModal'
@@ -138,6 +140,7 @@ export function InvestigationList() {
   const [tab, setTab] = useState<'conversations' | 'devices' | 'apps'>('conversations')
   const openTerminal = useTerminalUiStore((s) => s.open)
   const openTunnel = useTunnelUiStore((s) => s.open)
+  const openTelegram = useTelegramUiStore((s) => s.show)
   const [filter, setFilter] = useState('')
   const auth = useAuth()
   const user = auth.status === 'authenticated' ? auth.user : undefined
@@ -767,6 +770,13 @@ export function InvestigationList() {
               <FilterAltOutlinedIcon sx={{ fontSize: 14 }} />
             </IconButton>
           </Tooltip>
+          {!user?.demo_mode && (
+            <Tooltip title="Link Telegram">
+              <IconButton size="small" onClick={openTelegram} sx={{ p: 0.4 }}>
+                <TelegramIcon sx={{ fontSize: 14 }} />
+              </IconButton>
+            </Tooltip>
+          )}
           <Tooltip title="Change password">
             <IconButton size="small" onClick={() => setPasswordModalOpen(true)} sx={{ p: 0.4 }}>
               <LockResetIcon sx={{ fontSize: 14 }} />

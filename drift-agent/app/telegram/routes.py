@@ -51,9 +51,11 @@ async def create_link_code(
     Any prior unredeemed code for this user is invalidated."""
     _feature_or_503()
     payload = await tglinks.issue_link_code(user.id)
-    link = await tgapi.deep_link(payload["code"])
+    link, qr = await tgapi.deep_link_and_qr(payload["code"])
     if link:
         payload["deep_link"] = link
+    if qr:
+        payload["qr_data_uri"] = qr
     return payload
 
 

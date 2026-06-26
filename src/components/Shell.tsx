@@ -16,8 +16,10 @@ import { DemoBanner } from './DemoBanner'
 import { PromptInput } from './PromptInput'
 import { TerminalModal } from './TerminalModal'
 import { TunnelModal } from './TunnelModal'
+import { TelegramLinkModal } from './TelegramLinkModal'
 import { useTerminalUiStore } from '../state/terminalUiStore'
 import { useTunnelUiStore } from '../state/tunnelUiStore'
+import { useTelegramUiStore } from '../state/telegramUiStore'
 import { useInvestigationStore } from '../state/investigationStore'
 
 const SIDEBAR_WIDTH = 260
@@ -29,6 +31,8 @@ export function Shell() {
   const close = useTerminalUiStore((s) => s.close)
   const openTunnelDevice = useTunnelUiStore((s) => s.openDevice)
   const closeTunnel = useTunnelUiStore((s) => s.close)
+  const telegramOpen = useTelegramUiStore((s) => s.open)
+  const closeTelegram = useTelegramUiStore((s) => s.close)
 
   const theme = useTheme()
   // md = 900px. Below this the persistent sidebar collapses into a
@@ -84,6 +88,9 @@ export function Shell() {
             deviceName={openTunnelDevice}
             onClose={closeTunnel}
           />
+        )}
+        {telegramOpen && (
+          <TelegramLinkModal open={telegramOpen} onClose={closeTelegram} />
         )}
       </Box>
     )
@@ -156,6 +163,9 @@ export function Shell() {
           deviceName={openTunnelDevice}
           onClose={closeTunnel}
         />
+      )}
+      {telegramOpen && (
+        <TelegramLinkModal open={telegramOpen} onClose={closeTelegram} />
       )}
     </Box>
   )

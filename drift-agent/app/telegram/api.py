@@ -154,3 +154,26 @@ async def deep_link(code: str) -> str | None:
     if not username:
         return None
     return f"https://t.me/{username}?start={code}"
+
+
+def _qr_data_uri(data: str) -> str | None:
+    """A PNG data: URI of `data` as a QR code, or None if segno isn't
+    installed (older runtime image before v0.1.67). Frontends embed the
+    returned string directly as `<img src={uri}>` — no extra fetch."""
+    try:
+        import segno
+    except ImportError:
+        return None
+    return segno.make(data, error="m").png_data_uri(scale=5, border=2)
+
+
+async def deep_link_and_qr(code: str) -> tuple[str | None, str | None]:
+    """(deep_link, qr_data_uri) for a /link code. Either may be None: the
+    deep link if the bot's username isn't resolvable (token bad / network);
+    the QR if `segno` isn't installed. Callers fall back to the plain code
+    so the flow degrades gracefully — operators can still type the code
+    into the bot manually."""
+    link = await deep_link(code)
+    if not link:
+        return None, None
+    return link, _qr_data_uri(link)
