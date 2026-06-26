@@ -48,6 +48,8 @@ if settings.drift_pg_url:
     from .deploy.tunnel_proxy import TunnelProxyMiddleware
     from .filters.routes import router as filters_router
     from .models_meta import router as models_router
+    from .telegram.bot import start_telegram_bot, stop_telegram_bot
+    from .telegram.routes import router as telegram_router
     from .users.bootstrap import ensure_bootstrap_admin
     from .users.routes import router as auth_router
 
@@ -58,6 +60,7 @@ if settings.drift_pg_url:
     app.include_router(deploy_agent_router)
     app.include_router(terminal_router)
     app.include_router(tunnel_router)
+    app.include_router(telegram_router)
     app.include_router(filters_router)
     app.include_router(models_router)
 
@@ -78,12 +81,16 @@ if settings.drift_pg_url:
         start_background_refresh()
         start_updates_poller()
         start_tunnel_sweep()
+        # Telegram bot — no-op if TELEGRAM_BOT_TOKEN is unset, so the
+        # feature is fully opt-in via .env without rebuild.
+        start_telegram_bot()
 
     @app.on_event("shutdown")
     async def _on_shutdown() -> None:
         await stop_background_refresh()
         await stop_updates_poller()
         await stop_tunnel_sweep()
+        await stop_telegram_bot()
 
     @app.middleware("http")
     async def _record_http_metrics(request: Request, call_next) -> Response:

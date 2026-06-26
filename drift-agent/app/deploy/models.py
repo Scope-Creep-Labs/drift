@@ -308,6 +308,51 @@ class TunnelSession(Base):
     )
 
 
+class TelegramLinkCode(Base):
+    """Short-lived /link code (6 chars). The user generates one via
+    POST /api/telegram/link/code, then sends it to the bot as
+    `/link <code>` (or scans the QR / taps the t.me deep link) to bind
+    their chat to their account. One-time-use — the row is deleted on
+    successful redemption. TTL enforced at lookup, not via cron."""
+
+    __tablename__ = "telegram_link_codes"
+
+    code: Mapped[str] = mapped_column(String(16), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+
+
+class TelegramChat(Base):
+    """A resolved chat ↔ user binding. Lookup direction is chat_id →
+    user (the bot loop's hot path: incoming Telegram message → which
+    Drift account does it belong to). chat_id is stored as text — see
+    the alembic migration's note."""
+
+    __tablename__ = "telegram_chats"
+
+    chat_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    title: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, nullable=False
+    )
+
+
 class RegistryCredential(Base):
     """Per-registry pull credentials, scoped to a group. password_encrypted
     is Fernet ciphertext (see deploy.secrets). The same registry can have

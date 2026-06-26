@@ -93,6 +93,33 @@ class Settings(BaseSettings):
     public_url: str = ""
     reporter_password: str = ""
 
+    # Telegram bot (v0.1.66+). Two surfaces: chat with the agent over
+    # long polling, and an Alertmanager → Telegram bridge. Both opt-in
+    # via TELEGRAM_BOT_TOKEN; with it unset, the router still mounts but
+    # every endpoint returns 503 and the bot loop never starts.
+    telegram_bot_token: str = ""
+    # Long-poll timeout per getUpdates call (Telegram cap is 50, recommended
+    # 25-50; the client adds a 10s grace so the connection isn't cut).
+    telegram_poll_timeout: int = 30
+    # TTL on a /link code before it's rejected.
+    telegram_link_code_ttl_min: int = 10
+    # Comma-separated chat IDs the Alertmanager bridge fans alerts out to.
+    # Empty = alerts disabled even with a bot token configured (chat side
+    # still works). Whitespace tolerated; non-digit entries dropped.
+    telegram_alert_chats: str = ""
+    # Shared secret in the Alertmanager webhook URL. Empty = webhook is
+    # closed even if the bot is otherwise live (returns 404). Generate
+    # something opaque, e.g. python -c "import secrets; print(secrets.token_urlsafe(24))".
+    telegram_webhook_secret: str = ""
+
+    @property
+    def telegram_alert_chats_list(self) -> list[str]:
+        return [
+            x.strip()
+            for x in (self.telegram_alert_chats or "").split(",")
+            if x.strip()
+        ]
+
     # Base domain for tunnel subdomains. When set, the tunnel feature mints
     # sessions whose URLs look like `tunnel-<token>.<tunnel_base_domain>`;
     # the subdomain router matches incoming requests by `Host` header.
