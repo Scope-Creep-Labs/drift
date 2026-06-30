@@ -169,7 +169,7 @@ chmod 755 "$TEXTFILE_DIR" 2>/dev/null || true
 # devices are running which agent. Companion sha256 (12 chars) computed
 # at startup so even if the version is forgotten, the running code can
 # always be identified.
-AGENT_VERSION="0.14.0"
+AGENT_VERSION="0.14.1"
 AGENT_SHA="$(sha256sum "$0" 2>/dev/null | cut -c1-12 || echo unknown)"
 LOCK_ACQUIRED_AT="$STATE_DIR/.lock-acquired-at"
 
@@ -516,6 +516,29 @@ collect_disk_observability() {
         bytes=$(nsenter -m -t 1 nice -n 19 ionice -c 3 du -B1 -sx "$p" 2>/dev/null | awk '{print $1}')
         [ -n "$bytes" ] && printf 'host_path_bytes{path="%s"} %s\n' "$p" "$bytes"
       done
+
+      # Per-volume sizes — the host_path_bytes total above lumps every
+      # named volume together, which is useless for "which volume is
+      # eating the disk?" attribution. du each volume's _data subtree
+      # individually; one metric per named volume keyed by `name`. Same
+      # nsenter + nice + ionice posture as the host_path_bytes section
+      # so a 100-volume host doesn't IO-thrash the device. v0.1.69+.
+      printf '# HELP docker_volume_bytes Bytes used by a single named docker volume (du -sx of _data).\n'
+      printf '# TYPE docker_volume_bytes gauge\n'
+      nsenter -m -t 1 sh -c '
+        for vol in /var/lib/docker/volumes/*/; do
+          [ -d "$vol" ] || continue
+          name=$(basename "$vol")
+          # backingFsBlockDev is an internal marker file in the volumes
+          # dir, not a real volume — skip it.
+          [ "$name" = "backingFsBlockDev" ] && continue
+          # _data is the canonical mount source. Skip volumes whose
+          # _data is missing (rare; usually a half-created volume).
+          [ -d "${vol}_data" ] || continue
+          bytes=$(nice -n 19 ionice -c 3 du -B1 -sx "${vol}_data" 2>/dev/null | awk "{print \$1}")
+          [ -n "$bytes" ] && printf "docker_volume_bytes{name=\"%s\"} %s\n" "$name" "$bytes"
+        done
+      '
 
       printf '# HELP docker_disk_bytes Bytes used by docker artifact category (from docker system df).\n'
       printf '# TYPE docker_disk_bytes gauge\n'
